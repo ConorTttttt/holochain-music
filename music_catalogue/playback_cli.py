@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from holochain_storage.package import create_package, public_key_bytes
-from .buffered_playback import BufferedPcmPlayer, play_granted_wav_realtime
+from .buffered_playback import BufferedPcmPlayer, PlaybackStopped, play_granted_wav_realtime
 from .content_grants import issue_content_grant
 from .granted_audio import PlaybackError
 
@@ -69,6 +69,7 @@ def _run_with_controls(kwargs: dict, backend: str, device: str, controls: bool) 
     engine = BufferedPcmPlayer(backend=backend, device=device)
     outcome: dict = {}
     error: list[BaseException] = []
+    stop_requested = False
 
     def task():
         try:
@@ -97,11 +98,14 @@ def _run_with_controls(kwargs: dict, backend: str, device: str, controls: bool) 
                     engine.resume()
                 elif line in ("s", "stop"):
                     engine.stop()
+                    stop_requested = True
                     break
             except PlaybackError as exc:
                 print(f"Playback control unavailable: {exc}", file=sys.stderr)
     thread.join()
     if error:
+        if stop_requested and isinstance(error[0], PlaybackStopped):
+            return engine.stopped_report()
         raise error[0]
     if not outcome:
         raise PlaybackError("playback stopped or incomplete")
