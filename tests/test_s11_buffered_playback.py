@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 from pathlib import Path
 import shutil
@@ -102,6 +103,30 @@ class S11GrantToBufferTests(unittest.TestCase):
         self.assertEqual(report["output_frames"], 3200)
         self.assertTrue(report["playback_complete"])
         self.assertEqual(report["audio_backend"], "null")
+
+    def test_cli_user_stop_is_clean_but_not_marked_complete(self):
+        from music_catalogue.playback_cli import _demo_inputs, _run_with_controls
+        with tempfile.TemporaryDirectory(prefix="s11-stop-demo-") as d:
+            kwargs = _demo_inputs(Path(d), 1.0)
+            control = io.StringIO("s\n")
+            with patch("music_catalogue.playback_cli.sys.stdin", control):
+                with patch("music_catalogue.playback_cli.select.select", return_value=([control], [], [])):
+                    report = _run_with_controls(kwargs, "null", "default", True)
+        self.assertTrue(report["playback_stopped"])
+        self.assertFalse(report["playback_complete"])
+        self.assertLess(report["output_frames"], 16000)
+        self.assertLessEqual(report["max_buffered_pcm_bytes"], report["buffer_capacity_bytes"])
+
+    def test_cli_unrelated_failure_is_not_hidden_by_stop(self):
+        from music_catalogue.playback_cli import _demo_inputs, _run_with_controls
+        with tempfile.TemporaryDirectory(prefix="s11-bad-grant-demo-") as d:
+            kwargs = _demo_inputs(Path(d), 1.0)
+            kwargs["listener_agent"] = "wrong-listener"
+            control = io.StringIO("s\n")
+            with patch("music_catalogue.playback_cli.sys.stdin", control):
+                with patch("music_catalogue.playback_cli.select.select", return_value=([control], [], [])):
+                    with self.assertRaises(StorageError):
+                        _run_with_controls(kwargs, "null", "default", True)
 
     def test_format_callback_precedes_any_pcm_and_matches_wav(self):
         calls = []
