@@ -223,6 +223,53 @@ async fn bob_discovers_catalogue_and_matching_owner_storage_identity() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].author, host);
     assert_eq!(nodes[0].body, node_claim);
+    // S6: exercise the *real* Rust Holochain 0.7 admin/app WebSocket client,
+    // not merely the SweetConductorHandle shortcut used by the rest of this test.
+    // Sweettest's default role names are the DNA hashes; production hApps use
+    // the role names declared in `integration/workdir/happ.yaml`.
+    let port = net.conductors[BOB]
+        .get_arbitrary_admin_websocket_port()
+        .expect("Bob's admin WebSocket port");
+    let music_role = net.catalogue_cells[BOB].cell_id().dna_hash().to_string();
+    let storage_role = net.storage_cells[BOB].cell_id().dna_hash().to_string();
+    let mut bridge_args = vec![
+        "--admin".to_string(), format!("127.0.0.1:{port}"),
+        "--app-id".into(), "catalogue-storage-integration".into(),
+        "--catalogue-role".into(), music_role.clone(),
+        "--storage-role".into(), storage_role.clone(),
+        "--expect-catalogue-dna".into(), music_role.clone(),
+        "--expect-storage-dna".into(), storage_role.clone(),
+        "--artist".into(), alice.to_string(),
+        "--node".into(), bob.to_string(),
+        "--track-id".into(), track.track_id.clone(),
+    ];
+    let bridge_binary = env!("CARGO_BIN_EXE_music_conductor_bridge");
+    let positive = tokio::task::spawn_blocking({
+        let args = bridge_args.clone();
+        move || std::process::Command::new(bridge_binary).args(&args).output().expect("start local bridge")
+    }).await.unwrap();
+    assert!(positive.status.success(), "bridge stderr: {}", String::from_utf8_lossy(&positive.stderr));
+    let ipc: serde_json::Value = serde_json::from_slice(&positive.stdout).expect("typed bridge JSON");
+    assert_eq!(ipc["schema"], "holochain-music/conductor-read/v1");
+    assert_eq!(ipc["app_id"], "catalogue-storage-integration");
+    assert_eq!(ipc["reader_agent"], bob.to_string());
+    assert_eq!(ipc["catalogue_dna"], music_role);
+    assert_eq!(ipc["storage_dna"], storage_role);
+    assert_eq!(ipc["track"]["author"], alice.to_string());
+    assert_eq!(ipc["track"]["body"]["file_id"], file_id);
+    assert_eq!(ipc["owner_key_binding"]["author"], alice.to_string());
+    assert_eq!(ipc["owner_commitment"]["body"]["manifest_sha256"], digest);
+    assert_eq!(ipc["node_key_binding"]["author"], bob.to_string());
+    assert_eq!(ipc["replica_claim"]["author"], bob.to_string());
+
+    // A conductor returning the correct data for the wrong DNA MUST NOT
+    // be accepted. This verifies that the trust boundary uses DNA pins.
+    let pin_position = bridge_args.iter().position(|a| a == "--expect-catalogue-dna").unwrap() + 1;
+    bridge_args[pin_position] = "incorrect-dna-hash".into();
+    let negative = tokio::task::spawn_blocking(move ||
+        std::process::Command::new(bridge_binary).args(&bridge_args).output().expect("start bridge with bad pin")
+    ).await.unwrap();
+    assert!(!negative.status.success(), "bridge accepted a non-matching catalogue DNA pin");
 }
 
 #[tokio::test(flavor = "multi_thread")]
