@@ -384,13 +384,22 @@ async fn bob_plays_granted_pcm_before_last_moq_chunk_arrives() {
     assert_eq!(result["streaming"], Value::Bool(true));
     assert_eq!(result["first_pcm_before_last_chunk"], Value::Bool(true),
         "S12 must produce audible PCM while later authenticated MoQ objects are still arriving");
-    assert!(result["first_pcm_after_verified_chunks"].as_u64().unwrap_or(u64::MAX)
-        < result["ciphertext_chunks"].as_u64().unwrap_or(0),
+    let chunks_at_first_pcm = result["first_pcm_after_verified_chunks"].as_u64()
+        .expect("missing first PCM verified-chunk count");
+    let received_chunks = result["received_chunks"].as_u64()
+        .expect("missing final MoQ receiver chunk count");
+    let verified_chunks = result["verified_ciphertext_chunks"].as_u64()
+        .expect("missing final independently verified chunk count");
+    assert!(received_chunks > 0, "MoQ must deliver ciphertext: {result}");
+    assert_eq!(verified_chunks, received_chunks, "all received chunks must be verified");
+    assert!(chunks_at_first_pcm < verified_chunks,
         "first authenticated PCM must precede final verified MoQ chunk: {result}");
     assert_eq!(s(&result, "file_id"), file_id);
     assert_eq!(s(&result, "pcm_sha256"), s(&fixture, "sample_pcm_sha256"));
     assert_eq!(result["frames"].as_u64(), fixture["pcm_frames"].as_u64());
-    assert!(result["ciphertext_chunks"].as_u64().unwrap_or(0) > 0);
+    assert!(result["last_chunk_minus_first_pcm_ms"].as_f64()
+        .expect("missing measured first PCM/last MoQ timing") > 0.0,
+        "first PCM must precede the final verified MoQ chunk in time: {result}");
     assert!(result["max_sink_block_bytes"].as_u64().unwrap_or(99999) <= 16_384);
     // S11 must preserve the exact PCM digest while respecting its queue
     // bound. The sink is real-time paced but silent on headless CI.
