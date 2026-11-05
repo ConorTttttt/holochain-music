@@ -30,6 +30,7 @@ RESPONSE_SCHEMA = "holochain-storage/audit-response/v1"
 MAX_SAMPLE_COUNT = 8
 MAX_SAMPLE_CIPHER_BYTES = 5 * 1024 * 1024
 MAX_CHALLENGE_TTL = 300  # seconds
+MAX_PENDING_CHALLENGES = 4096
 
 
 def _clock(now: int | None) -> int:
@@ -177,8 +178,13 @@ class AuditVerifier:
     def issue(self, package: dict[str, Any], trusted_artist: bytes, trusted_node: bytes,
               *, sample_count: int = 4, ttl_seconds: int = 60,
               now: int | None = None) -> dict[str, Any]:
+        clock = _clock(now)
+        # Expired challenges must not accumulate indefinitely in long-lived verifiers.
+        self._pending = {nonce: c for nonce, c in self._pending.items() if c["expires_at"] >= clock}
+        if len(self._pending) >= MAX_PENDING_CHALLENGES:
+            raise StorageError("too many pending audit challenges")
         challenge = make_challenge(package, trusted_artist, trusted_node,
-                                   sample_count=sample_count, ttl_seconds=ttl_seconds, now=now)
+                                   sample_count=sample_count, ttl_seconds=ttl_seconds, now=clock)
         self._pending[challenge["nonce"]] = challenge
         return challenge
 

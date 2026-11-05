@@ -57,6 +57,17 @@ class AuditAndRepairTests(unittest.TestCase):
         with self.assertRaisesRegex(StorageError, 'already-used'):
             verifier.verify(c, r, self.package, self.artist_pk, self.node_pk, now=1002)
 
+    def test_pending_challenges_are_bounded_and_expired_are_pruned(self):
+        from unittest.mock import patch
+        verifier = AuditVerifier()
+        with patch('holochain_storage.audit.MAX_PENDING_CHALLENGES', 2):
+            verifier.issue(self.package, self.artist_pk, self.node_pk, now=1000, ttl_seconds=5)
+            verifier.issue(self.package, self.artist_pk, self.node_pk, now=1000, ttl_seconds=5)
+            with self.assertRaisesRegex(StorageError, 'too many pending'):
+                verifier.issue(self.package, self.artist_pk, self.node_pk, now=1001)
+            # Both expired challenges can be discarded by the next issuance.
+            verifier.issue(self.package, self.artist_pk, self.node_pk, now=1006)
+
     def test_new_challenge_has_unpredictable_nonce(self):
         c1 = make_challenge(self.package, self.artist_pk, self.node_pk, now=1000)
         c2 = make_challenge(self.package, self.artist_pk, self.node_pk, now=1000)

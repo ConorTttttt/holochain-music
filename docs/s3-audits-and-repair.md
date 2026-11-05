@@ -6,7 +6,7 @@
 
 - An auditor selects a cryptographically random 32-byte challenge nonce and up to eight randomly chosen ciphertext chunk indices from a **signed file manifest**. It binds the expected host key, exact signed-manifest digest, expiration time and index selection.
 - The target node reads and SHA-256 verifies the requested ciphertext, then signs a response containing those bytes and a digest of the exact challenge.
-- An `AuditVerifier` accepts a response **once** for a registered, unexpired challenge and verifies the expected node signature and every sampled chunk. It consumes invalid responses too. Only short-lived outstanding challenges are kept in memory.
+- An `AuditVerifier` accepts a response **once** for a registered, unexpired challenge and verifies the expected node signature and every sampled chunk. It consumes invalid responses too. Only short-lived outstanding challenges are kept in memory; pending state is capped and expired challenges are pruned at issuance.
 - A conservative local `repair_full_replica` function selects a **fully verified** alternative source, restores missing or corrupt ciphertext chunks, verifies the complete destination and issues a **new** signed acceptance receipt.
 - Existing artist-signed X25519-wrapped buyer grants still permit independent plaintext export after the artist goes offline. A new end-to-end regression demonstrates that path following failed storage and repair.
 
@@ -44,7 +44,7 @@ Sampling only gives *detection probability* under assumptions about missing chun
 ## What is deliberately deferred
 
 - **Networked storage daemon:** At present a host is a local filesystem directory. Add signed authenticated request/response and constrained streaming over QUIC before claiming a distributed service.
-- **Durable replay protection:** `AuditVerifier` holds pending challenges in memory. A production auditor must persist its nonce registry and challenge/result history across restarts, with bounded cleanup and rate limiting.
+- **Durable replay protection:** `AuditVerifier` holds pending challenges in memory. A production auditor must persist its nonce registry and challenge/result history across restarts, with bounded cleanup and rate limiting (the local in-memory registry has a finite cap and only prunes on new issuance).
 - **DoS and quotas:** Byte budgets and expiry are enforced on challenge structure. Network gateways still need authentication, upload/download limits, bandwidth quotas, concurrency caps and transport-level deadlines.
 - **Multi-file atomic repair:** A restored object is atomically replaced, then the whole file is verified, but a power failure can leave a partially repaired replica. Host should withhold acceptance until complete verification and persist a recovery journal.
 - **Adversarial filesystem:** These local functions are not safe when untrusted processes can modify host storage directories, including symlink replacement races. Production host should run with isolated directories and atomic dirfd/openat operations.
