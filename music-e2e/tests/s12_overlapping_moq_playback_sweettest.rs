@@ -385,7 +385,8 @@ async fn bob_plays_granted_pcm_before_last_moq_chunk_arrives() {
     assert_eq!(result["first_pcm_before_last_chunk"], Value::Bool(true),
         "S12 must produce audible PCM while later authenticated MoQ objects are still arriving");
     assert!(result["first_pcm_after_verified_chunks"].as_u64().unwrap_or(u64::MAX)
-        < result["ciphertext_chunks"].as_u64().unwrap_or(0));
+        < result["ciphertext_chunks"].as_u64().unwrap_or(0),
+        "first authenticated PCM must precede final verified MoQ chunk: {result}");
     assert_eq!(s(&result, "file_id"), file_id);
     assert_eq!(s(&result, "pcm_sha256"), s(&fixture, "sample_pcm_sha256"));
     assert_eq!(result["frames"].as_u64(), fixture["pcm_frames"].as_u64());
