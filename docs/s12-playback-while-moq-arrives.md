@@ -38,7 +38,10 @@ system, FLAC/Opus decoder, or public/seekable/adaptive player.**
 The `stream_granted_moq_from_live_conductor` report includes
 `first_pcm_before_last_chunk`: true means the **first output write occurred
 before the last independently verified MoQ chunk became available**, not just
-before the QUIC session closed. A last-chunk timestamp is recorded when its
+before the QUIC session closed. The first-PCM timestamp and verified-chunk
+count are now captured atomically under the same lock used for chunk progress,
+preventing a race in the integration check where the timestamp came from
+before the final chunk but the count was read after it arrived. A last-chunk timestamp is recorded when its
 CAS hash is validated. The test deliberately spaces objects apart with the
 publisher's **test-only** `--chunk-delay-ms 150`. For normal publishing the
 existing 2ms default remains. S12 still requires the transfer's full verified
