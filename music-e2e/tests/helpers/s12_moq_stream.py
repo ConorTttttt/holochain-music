@@ -33,8 +33,9 @@ def main() -> None:
     fixture = json.loads((root / "fixture.json").read_text())
     if args.track_id != fixture["track_id"]:
         raise ValueError("S12 test track identity mismatch")
-    if (root / "content.key").exists() or (root / "artist.ed25519").exists():
-        raise ValueError("S12 reader must never have owner private/content key files")
+    if (root / "content.key").exists() or (root / "artist.ed25519").exists() or \
+            (root / "sample.wav").exists():
+        raise ValueError("S12 reader must not access owner signing/content keys or original WAV")
     listener_key = X25519PrivateKey.from_private_bytes((root / "listener.x25519").read_bytes())
     grant = json.loads((root / "grant.json").read_text())
     report = stream_granted_moq_from_live_conductor(
