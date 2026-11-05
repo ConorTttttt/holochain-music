@@ -82,6 +82,16 @@ class VerifiedChunkGate:
             self._complete = True
             self._condition.notify_all()
 
+    def snapshot(self) -> tuple[float, int]:
+        """Timestamp and verified count at ONE point in the progress timeline.
+
+        The output thread and receiver progress thread race at chunk boundaries.
+        Reading `time.monotonic()` and `released` separately can mix a time
+        before the final chunk with a count from after that final chunk.
+        """
+        with self._condition:
+            return time.monotonic(), self._released
+
     @property
     def released(self) -> int:
         with self._condition:
@@ -151,8 +161,11 @@ def stream_granted_moq_from_live_conductor(
 
         def first() -> None:
             if not first_output:
-                first_output.append(time.monotonic())
-                first_output_chunks.append(gate.released)
+                # Obtain a coherent observation under the same gate lock
+                # used by `mark()`: one first-output event, one verified count.
+                instant, verified = gate.snapshot()
+                first_output.append(instant)
+                first_output_chunks.append(verified)
 
         def make_output(fmt: AudioFormat):
             sink = AlsaOutput(fmt, device=device) if backend == "alsa" else NullOutput(fmt)
@@ -212,7 +225,10 @@ def stream_granted_moq_from_live_conductor(
             raise PlaybackError("S12 output does not match final authenticated transfer")
         return {**report, **playable,
                 "streaming": True,
-                "first_pcm_before_last_chunk": first_output[0] < gate.last_chunk_at,
+                "first_pcm_before_last_chunk": (
+                    first_output_chunks[0] < gate.total and
+                    first_output[0] < gate.last_chunk_at
+                ),
                 "first_pcm_after_verified_chunks": first_output_chunks[0],
                 "verified_ciphertext_chunks": gate.released}
     except BaseException as exc:
