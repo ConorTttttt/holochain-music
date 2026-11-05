@@ -18,7 +18,8 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from holochain_storage.package import (
-    StorageError, _aad, _read_verified_chunk, from_b64, verify_package,
+    StorageError, _aad, _read_verified_chunk, _assert_manifest, _verify_signed,
+    from_b64, verify_package,
 )
 from .content_grants import unwrap_content_grant
 
@@ -33,11 +34,13 @@ class PlaybackError(StorageError):
 class _PlainReader:
     """Forward-only read adapter: at most one decrypted S1 chunk in memory."""
 
-    def __init__(self, chunks, key: bytes, file_id: str, ciphertext_store: Path):
+    def __init__(self, chunks, key: bytes, file_id: str, ciphertext_store: Path,
+                 chunk_waiter: Callable[[dict], None] | None = None):
         self._chunks = iter(chunks)
         self._aes = AESGCM(key)
         self._file_id = file_id
         self._store = ciphertext_store
+        self._chunk_waiter = chunk_waiter
         self._buffer = b""
         self._offset = 0
 
@@ -52,6 +55,11 @@ class _PlainReader:
                     chunk = next(self._chunks)
                 except StopIteration:
                     break
+                # S12: wait for this exact, independently verified CAS object.
+                # Never read partial .incoming files, skip missing chunks or
+                # substitute progress messages for SHA-256/AES-GCM checks.
+                if self._chunk_waiter is not None:
+                    self._chunk_waiter(chunk)
                 ciphertext = _read_verified_chunk(self._store, chunk)
                 try:
                     plain = self._aes.decrypt(
@@ -76,8 +84,9 @@ def play_granted_wav(
     grant: dict, trusted_artist: bytes, owner_agent: str, listener_agent: str,
     recipient_private: X25519PrivateKey, pcm_sink: Callable[[bytes], None],
     format_callback: Callable[[dict], None] | None = None,
+    chunk_waiter: Callable[[dict], None] | None = None,
 ) -> dict:
-    """Verify ALL ciphertext before feeding the first authenticated PCM frame.
+    """Verify signed metadata before reading PCM; authenticate every emitted chunk.
 
     Sends PCM16 little-endian bytes to a caller-provided sink in blocks of at
     most 16 KiB. The sink may be a test hash, a bounded audio queue or a
@@ -86,13 +95,24 @@ def play_granted_wav(
     """
     if not callable(pcm_sink):
         raise PlaybackError("PCM output sink required")
-    body = verify_package(signed_manifest, ciphertext_store, trusted_artist)
+    if chunk_waiter is None:
+        # S10/S11: complete CAS verified before any output (unchanged).
+        body = verify_package(signed_manifest, ciphertext_store, trusted_artist)
+    else:
+        # S12: complete CAS cannot exist before playout; the signed manifest
+        # is checked up-front, then each exact ciphertext object and GCM tag
+        # is checked immediately before it can supply PCM.
+        if not callable(chunk_waiter):
+            raise PlaybackError("invalid authenticated chunk waiter")
+        body = _verify_signed(signed_manifest, trusted_artist, "manifest")
+        _assert_manifest(body)
     content_key = unwrap_content_grant(
         grant, trusted_artist=trusted_artist, owner_agent=owner_agent,
         listener_agent=listener_agent, recipient_private=recipient_private,
         signed_manifest=signed_manifest,
     )
-    stream = _PlainReader(body["chunks"], content_key, body["file_id"], Path(ciphertext_store))
+    stream = _PlainReader(body["chunks"], content_key, body["file_id"],
+                          Path(ciphertext_store), chunk_waiter=chunk_waiter)
     header = stream.read(_WAV_HEADER.size)
     if len(header) != _WAV_HEADER.size:
         raise PlaybackError("truncated WAV header")
@@ -113,8 +133,8 @@ def play_granted_wav(
                          "bits_per_sample": bits})
     played = 0
     digest = hashlib.sha256()
-    # No PCM data is emitted before metadata, ciphertext CAS and the signed
-    # owner-to-listener grant have all been authenticated.
+    # No PCM is emitted before signed metadata, the grant, and the
+    # *corresponding* chunk SHA-256 plus AES-GCM tag are authenticated.
     block = PCM_BLOCK_BYTES - PCM_BLOCK_BYTES % block_align
     while played < data_len:
         to_read = min(block, data_len - played)

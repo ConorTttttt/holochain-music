@@ -33,6 +33,8 @@ enum Command {
         #[arg(long)] cert_dir: PathBuf,
         #[arg(long)] ready_file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:0")] bind: SocketAddr,
+        /// Test-only inter-object pacing to show playback/receive overlap.
+        #[arg(long, default_value_t = 2)] chunk_delay_ms: u64,
     },
     /// Receive ciphertext into a separate listener-side CAS without a key.
     Receive {
@@ -42,6 +44,8 @@ enum Command {
         #[arg(long)] expected_manifest_sha256: String,
         #[arg(long)] url: Url,
         #[arg(long)] cert_fingerprint_hex: String,
+        /// Opt-in per-verified-chunk progress JSONL (no secrets or plaintext).
+        #[arg(long, default_value_t = false)] progress_jsonl: bool,
     },
 }
 
@@ -54,19 +58,20 @@ const TRACK: &str = "ciphertext-chunks-v1";
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
-        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind } => {
-            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind).await
+        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms } => {
+            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms).await
         }
-        Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex } => {
-            receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex).await
+        Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl } => {
+            receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl).await
         }
     }
 }
 
 async fn publish(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
-    cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr,
+    cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr, chunk_delay_ms: u64,
 ) -> Result<()> {
+    ensure!(chunk_delay_ms <= 1000, "invalid per-chunk delay (max 1000 ms)");
     ensure!(bind.ip().is_loopback(), "publisher must bind to a loopback address (S8 local prototype)");
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
     ensure!(!manifest.body.chunks.is_empty(), "S8 stream requires at least one chunk");
@@ -106,7 +111,7 @@ async fn publish(
         publication.send(Bytes::from(data)).await.context("MoQ object send failed")?;
         // Keep this prototype's small ordered stream ahead of the QUIC reader
         // but below the existing MoQ receiver's 256-object / 32MiB queue.
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(Duration::from_millis(chunk_delay_ms)).await;
     }
     tokio::time::sleep(Duration::from_millis(600)).await;
     drop(publication); // closes the track for this one-shot stream
@@ -116,7 +121,7 @@ async fn publish(
 
 async fn receive(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
-    url: Url, fingerprint_hex: String,
+    url: Url, fingerprint_hex: String, progress_jsonl: bool,
 ) -> Result<()> {
     ensure!(url.scheme() == "https" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
         "S8 receiver only supports localhost QUIC endpoints");
@@ -141,6 +146,14 @@ async fn receive(
             "MoQ stream incomplete: received {received} of {} chunks", manifest.body.chunks.len()
         ))?;
         store_verified_chunk(&store, chunk, &payload)?;
+        if progress_jsonl {
+            // Emit progress ONLY AFTER atomic CAS persistence and full signed
+            // manifest SHA-256 verification. Still no decryption or key.
+            let event = json!({"kind": "chunk_verified", "index": chunk.index,
+                "sha256": chunk.sha256, "cipher_bytes": chunk.cipher_bytes});
+            println!("{event}");
+            std::io::stdout().flush()?;
+        }
         received += 1;
         bytes += payload.len() as u64;
     }
@@ -148,8 +161,11 @@ async fn receive(
     drop(receiver);
     // No plaintext is reconstructed here. The S1 decryptor requires a
     // separately provided 32-byte AES key and performs AES-GCM tag checks.
-    println!("{}", json!({"verified": true, "received_chunks": received,
+    let mut report = json!({"verified": true, "received_chunks": received,
         "cipher_bytes": bytes, "manifest_sha256": manifest.digest,
-        "file_id": manifest.body.file_id}));
+        "file_id": manifest.body.file_id});
+    if progress_jsonl { report["kind"] = json!("transfer_complete"); }
+    println!("{report}");
+    std::io::stdout().flush()?;
     Ok(())
 }
