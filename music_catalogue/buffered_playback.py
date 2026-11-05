@@ -135,6 +135,10 @@ class AlsaOutput:
                 pass
 
 
+class PlaybackStopped(PlaybackError):
+    """Listener deliberately stopped playback; not an audio-device failure."""
+
+
 class BufferedPcmPlayer:
     """Bounded FIFO PCM player. Commands can be called from another thread.
 
@@ -177,8 +181,10 @@ class BufferedPcmPlayer:
             raise PlaybackError("invalid trusted PCM metadata")
         audio = AudioFormat(**fmt)
         with self._cv:
-            if self._worker is not None or self._stopped:
-                raise PlaybackError("PCM player already started/stopped")
+            if self._stopped:
+                raise PlaybackStopped("PCM playback stopped")
+            if self._worker is not None:
+                raise PlaybackError("PCM player already started")
             # Open before any PCM is accepted, so a missing device fails closed.
             if self._factory is not None:
                 output = self._factory(audio)
@@ -194,7 +200,7 @@ class BufferedPcmPlayer:
         if self._error is not None:
             raise PlaybackError("PCM playback device failed") from self._error
         if self._stopped:
-            raise PlaybackError("PCM playback stopped")
+            raise PlaybackStopped("PCM playback stopped")
 
     def feed(self, block: bytes) -> None:
         fmt = self._format
@@ -244,6 +250,28 @@ class BufferedPcmPlayer:
             self._worker.join(timeout=5)
             if self._worker.is_alive():
                 raise PlaybackError("PCM playback worker did not stop")
+
+    def stopped_report(self) -> dict:
+        """Report an intentional stop *without* claiming full PCM delivery.
+
+        This is not a success report. Only use it after the caller explicitly
+        requested stop, never to downgrade a decoding/ALSA/device error.
+        """
+        with self._cv:
+            if not self._stopped or self._error is not None or (self._worker and self._worker.is_alive()):
+                raise PlaybackError("cannot report an unfinished or failed player as stopped")
+            return {
+                "audio_backend": self.backend,
+                "playback_complete": False,
+                "playback_stopped": True,
+                "output_pcm_sha256": self._digest.hexdigest(),
+                "output_pcm_bytes": self._played_bytes,
+                "output_frames": self._played_bytes // self._format.frame_size if self._format else 0,
+                "max_buffered_pcm_bytes": self._max_seen,
+                "buffer_capacity_bytes": self.max_blocks * MAX_FRAME_BYTES,
+                "buffer_underruns": self._underruns,
+                "audio_blocks_output": self._callbacks,
+            }
 
     def finish(self, *, timeout: float = 60.0) -> dict:
         with self._cv:
