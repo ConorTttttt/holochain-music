@@ -19,6 +19,7 @@ from typing import Callable
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from .buffered_playback import AlsaOutput, AudioFormat, BufferedPcmPlayer, NullOutput, play_granted_wav_realtime
+from .adaptive_playback import AdaptivePcmPlayer
 from .content_grants import unwrap_content_grant
 from holochain_storage.package import manifest_digest
 from .granted_audio import PlaybackError
@@ -124,7 +125,7 @@ def stream_granted_moq_from_live_conductor(
     artist_agent: str, node_agent: str, track_id: str, storage_url: str,
     target_store: str | Path, catalogue_role: str = "music_catalogue",
     storage_role: str = "music_storage", backend: str = "null",
-    device: str = "default", timeout: int = 120,
+    device: str = "default", timeout: int = 120, adaptive_buffer: bool = False,
 ) -> dict:
     """Play authenticated PCM while later MoQ chunks are still arriving.
 
@@ -132,6 +133,8 @@ def stream_granted_moq_from_live_conductor(
     real pinned Holochain conductor before MoQ starts. Caller must obtain the
     owner grant via a trusted rights decision; no key ever reaches S4/MoQ/DHT.
     """
+    if type(adaptive_buffer) is not bool:
+        raise PlaybackError("adaptive buffer setting must be boolean")
     if backend not in ("null", "alsa"):
         raise PlaybackError("unsupported S12 output backend")
     if not isinstance(recipient_private, X25519PrivateKey):
@@ -171,7 +174,8 @@ def stream_granted_moq_from_live_conductor(
             sink = AlsaOutput(fmt, device=device) if backend == "alsa" else NullOutput(fmt)
             return _ObservedOutput(sink, first)
 
-        player = BufferedPcmPlayer(backend=backend, device=device, output_factory=make_output)
+        player_type = AdaptivePcmPlayer if adaptive_buffer else BufferedPcmPlayer
+        player = player_type(backend=backend, device=device, output_factory=make_output)
         state["manifest_sha256"] = manifest_digest(manifest)
 
         def run_audio() -> None:
@@ -225,6 +229,7 @@ def stream_granted_moq_from_live_conductor(
             raise PlaybackError("S12 output does not match final authenticated transfer")
         return {**report, **playable,
                 "streaming": True,
+                "adaptive_buffer": adaptive_buffer,
                 "first_pcm_before_last_chunk": (
                     first_output_chunks[0] < gate.total and
                     first_output[0] < gate.last_chunk_at
