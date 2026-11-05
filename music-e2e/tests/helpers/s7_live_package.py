@@ -35,14 +35,33 @@ def _load(root: Path) -> dict:
     return json.loads((root / "fixture.json").read_text())
 
 
-def prepare(root: Path) -> dict:
+def prepare(root: Path, *, pcm_wav: bool = False) -> dict:
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     artist = Ed25519PrivateKey.generate()
     _write_private(root / "artist.ed25519", artist.private_bytes_raw())
-    # Synthetic opaque audio bytes; this is NOT a real FLAC decoder test.
-    sample = (b"S7 synthetic opaque audio test fixture - " * 1024) + os.urandom(4096)
-    (root / "sample.flac").write_bytes(sample)
-    manifest, secret = create_package(root / "sample.flac", root / "alice-store", artist, chunk_size=4096)
+    # S7/S9 remain synthetic opaque bytes. S10 opts into a genuine WAV/PCM
+    # fixture, generated without a hardware sound device or codec dependency.
+    if pcm_wav:
+        import io
+        import math
+        import struct
+        import wave
+        rate = 16000
+        pcm = b"".join(struct.pack("<h", int(10000 * math.sin(2 * math.pi * 440 * i / rate)))
+                       for i in range(16000))
+        out = io.BytesIO()
+        with wave.open(out, "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(rate)
+            audio.writeframes(pcm)
+        sample = out.getvalue()
+        filename = "sample.wav"
+    else:
+        sample = (b"S7 synthetic opaque audio test fixture - " * 1024) + os.urandom(4096)
+        filename = "sample.flac"
+    (root / filename).write_bytes(sample)
+    manifest, secret = create_package(root / filename, root / "alice-store", artist, chunk_size=4096)
     _write_private(root / "content.key", secret)
     (root / "manifest.json").write_bytes(canonical(manifest))
     pub = public_key_bytes(artist)
@@ -53,6 +72,8 @@ def prepare(root: Path) -> dict:
         "manifest_sha256": manifest_digest(manifest),
         "track_id": os.urandom(16).hex(),
         "sample_sha256": sha256(sample),
+        **({"sample_pcm_sha256": sha256(pcm), "pcm_frames": len(pcm) // 2,
+            "audio_format": "audio/wav"} if pcm_wav else {}),
     }
     (root / "fixture.json").write_bytes(canonical(fixture))
     return fixture
@@ -116,6 +137,7 @@ def download(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=("prepare", "upload", "download"))
+    parser.add_argument("--pcm-wav", action="store_true", help="S10: create valid canonical PCM16 WAV fixture")
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--node-url")
     parser.add_argument("--node-root", type=Path)
@@ -132,7 +154,7 @@ def main() -> None:
     parser.add_argument("--storage-role")
     args = parser.parse_args()
     if args.stage == "prepare":
-        result = prepare(args.root)
+        result = prepare(args.root, pcm_wav=args.pcm_wav)
     elif args.stage == "upload":
         if args.node_url is None or args.node_root is None:
             parser.error("upload requires --node-url and --node-root")
