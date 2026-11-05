@@ -4,7 +4,7 @@
 //! preverified S1 signed manifest and the publisher's TLS cert fingerprint.
 //! Deliberately no agent private keys, content keys, plaintext, playback or
 //! Holochain admin WebSocket are provided to the MoQ processes.
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
 use holochain_moq_protocol::TransportIdentity;
@@ -131,18 +131,29 @@ async fn receive(
         .context("MoQ subscription timed out")??;
     let mut received = 0usize;
     let mut bytes = 0u64;
-    loop {
+    // A signed S1 manifest commits to the exact ordered chunk count and
+    // hashes. Treat receiving all of those objects as completion: a QUIC
+    // peer may close or time out after sending the last object without
+    // delivering a separate clean end-of-track notification. Waiting for
+    // another recv() would reject a fully authenticated download.
+    //
+    // This is an ordered *finite file transfer*, not a live media stream.
+    // An early track end, missing chunk, or SHA-256 mismatch still fails.
+    for chunk in &manifest.body.chunks {
         let next = tokio::time::timeout(OBJECT_TIMEOUT, subscription.recv()).await
             .context("missing/truncated MoQ ciphertext stream")??;
-        let Some(payload) = next else { break; };
-        let chunk = manifest.body.chunks.get(received)
-            .ok_or_else(|| anyhow!("unexpected extra MoQ object"))?;
+        let payload = next.ok_or_else(|| anyhow!(
+            "MoQ stream incomplete: received {received} of {} chunks",
+            manifest.body.chunks.len()
+        ))?;
         store_verified_chunk(&store, chunk, &payload)?;
         received += 1;
         bytes += payload.len() as u64;
     }
-    ensure!(received == manifest.body.chunks.len(),
-        "MoQ stream incomplete: received {received} of {} chunks", manifest.body.chunks.len());
+    // Done: the independently pinned manifest authenticates the object
+    // count, order, lengths and hashes. Do not wait for a QUIC close.
+    drop(subscription);
+    drop(receiver);
     // No plaintext is reconstructed here. The S1 decryptor requires a
     // separately provided 32-byte AES key and performs AES-GCM tag checks.
     println!("{}", json!({"verified": true, "received_chunks": received,
