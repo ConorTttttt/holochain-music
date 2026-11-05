@@ -126,6 +126,58 @@ class NetworkedStorageTests(unittest.TestCase):
         self.client.upload(m, source_store)
         self.client.commit(m, self.node_pub)
 
+    def test_two_independent_nodes_survive_artist_source_loss(self):
+        """Two distinct Rust node roots, keys and TCP listeners hold full replicas."""
+        m, secret, source_store = self.package(bytes(range(256)) * 16, "dual-host")
+        self.client.upload(m, source_store)
+        self.client.commit(m, self.node_pub)
+
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            alt_port = sock.getsockname()[1]
+        second_root = self.root / "second-independent-node"
+        alt_url = f"http://127.0.0.1:{alt_port}"
+        cmd = [self.bin, "--root", str(second_root), "--listen", f"127.0.0.1:{alt_port}",
+               "--artist-key", base64.b64encode(self.artist_pub).decode()]
+        second = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        try:
+            for _ in range(80):
+                if second.poll() is not None:
+                    raise AssertionError("second node exited before health")
+                try:
+                    with urlopen(alt_url + "/health", timeout=0.2) as response:
+                        if response.read() == b"ok":
+                            break
+                except (OSError, URLError):
+                    time.sleep(0.1)
+            else:
+                raise AssertionError("second node never became healthy")
+            second_private = Ed25519PrivateKey.from_private_bytes(
+                (second_root / "node.ed25519").read_bytes()
+            )
+            second_public = public_key_bytes(second_private)
+            self.assertNotEqual(second_public, self.node_pub)
+            another = StorageNodeClient(alt_url, self.artist)
+            another.upload(m, source_store)
+            receipt_b = another.commit(m, second_public)
+            verify_receipt(receipt_b, m, second_public, self.artist_pub)
+            for chunk in m["body"]["chunks"]:
+                object_path(source_store, chunk["sha256"]).unlink()
+            recovered_store = self.root / "downloads" / "dual-host"
+            another.fetch(m, recovered_store, second_public)
+            export = decrypt_package(
+                m, recovered_store, self.root / "dual-host.out", secret, self.artist_pub
+            )
+            self.assertEqual(export.read_bytes(), bytes(range(256)) * 16)
+        finally:
+            second.terminate()
+            try:
+                second.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                second.kill()
+                second.wait(timeout=5)
+            second.stderr.close()
+
     def test_wrong_artist_cannot_start_or_upload(self):
         other = StorageNodeClient(self.url, Ed25519PrivateKey.generate())
         m, _, store = self.package(b"artist", "foreign")
