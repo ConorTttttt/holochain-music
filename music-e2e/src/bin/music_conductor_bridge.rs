@@ -162,7 +162,7 @@ fn choose_unique(
     selected.checked(author)
 }
 
-async fn call<I: Serialize + std::fmt::Debug, O: DeserializeOwned>(
+async fn call<I: Serialize + std::fmt::Debug, O: DeserializeOwned + std::fmt::Debug>(
     app: &AppWebsocket,
     role: &str,
     zome: &str,
