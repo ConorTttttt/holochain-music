@@ -309,5 +309,7 @@ def receive_moq_from_live_conductor(
                 "verified_reader_agent": reader_agent,
                 "verified_owner_agent": artist_agent,
                 "verified_node_key_hex": host_public.hex(),
-                "verified_node_agent": node_agent}
+                "verified_node_agent": node_agent,
+                "verified_moq_url": moq_url,
+                "verified_moq_cert_fingerprint_hex": body["cert_fingerprint_hex"]}
     return report
