@@ -55,6 +55,10 @@ jobs:
             cd ../dna
             cargo build --release --target wasm32-unknown-unknown
             hc dna pack workdir
-            cd ../music-e2e
+            cd ..
+            cp music-dna/workdir/music_catalogue.dna integration/workdir/
+            cp dna/workdir/music_storage.dna integration/workdir/
+            hc app pack integration/workdir
+            cd music-e2e
             cargo test --test catalogue_storage_identity_sweettest -- --nocapture
           '

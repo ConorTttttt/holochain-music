@@ -50,7 +50,11 @@ hc dna pack workdir
 cd ../dna
 cargo build --release --target wasm32-unknown-unknown
 hc dna pack workdir
-cd ../music-e2e
+cd ..
+cp music-dna/workdir/music_catalogue.dna integration/workdir/
+cp dna/workdir/music_storage.dna integration/workdir/
+hc app pack integration/workdir
+cd music-e2e
 cargo test --test catalogue_storage_identity_sweettest -- --nocapture
 ```
 
@@ -84,3 +88,15 @@ unless you need to reclaim space. Run `df -h /mnt/holochain /tmp /` first.
   reader who knows the file ID; content keys remain out of band.
 - S2 and S4 are still WIP PRs. This integration PR is stacked and not a
   substitute for reviewing or merging those independently.
+
+## Combined hApp bundle
+
+`integration/workdir/happ.yaml` declares **two roles in one hApp**: S5
+`music_catalogue` and S2 `music_storage`. Installing them as a single hApp
+uses one agent identity for both roles. The `hc app pack` command above
+packages `integration/workdir/holochain_music.happ` after both DNA archives
+have been copied to `integration/workdir`. The Rust Sweettest uses the same
+relationship in-process.
+
+The Holochain 0.7 hApp bundle is a development artifact and does not package
+the Rust HTTP storage-node service, encrypted audio, or any decryption key.
