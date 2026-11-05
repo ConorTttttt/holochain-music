@@ -35,12 +35,14 @@ def _load(root: Path) -> dict:
     return json.loads((root / "fixture.json").read_text())
 
 
-def prepare(root: Path, *, pcm_wav: bool = False) -> dict:
+def prepare(root: Path, *, pcm_wav: bool = False, pcm_seconds: int = 1) -> dict:
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     artist = Ed25519PrivateKey.generate()
     _write_private(root / "artist.ed25519", artist.private_bytes_raw())
     # S7/S9 remain synthetic opaque bytes. S10 opts into a genuine WAV/PCM
     # fixture, generated without a hardware sound device or codec dependency.
+    if type(pcm_seconds) is not int or not 1 <= pcm_seconds <= 30:
+        raise ValueError("test PCM duration must be 1..30 seconds")
     if pcm_wav:
         import io
         import math
@@ -48,7 +50,7 @@ def prepare(root: Path, *, pcm_wav: bool = False) -> dict:
         import wave
         rate = 16000
         pcm = b"".join(struct.pack("<h", int(10000 * math.sin(2 * math.pi * 440 * i / rate)))
-                       for i in range(16000))
+                       for i in range(16000 * pcm_seconds))
         out = io.BytesIO()
         with wave.open(out, "wb") as audio:
             audio.setnchannels(1)
@@ -138,6 +140,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("stage", choices=("prepare", "upload", "download"))
     parser.add_argument("--pcm-wav", action="store_true", help="S10: create valid canonical PCM16 WAV fixture")
+    parser.add_argument("--pcm-seconds", type=int, default=1, help="S12: WAV playback duration")
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--node-url")
     parser.add_argument("--node-root", type=Path)
@@ -154,7 +157,7 @@ def main() -> None:
     parser.add_argument("--storage-role")
     args = parser.parse_args()
     if args.stage == "prepare":
-        result = prepare(args.root, pcm_wav=args.pcm_wav)
+        result = prepare(args.root, pcm_wav=args.pcm_wav, pcm_seconds=args.pcm_seconds)
     elif args.stage == "upload":
         if args.node_url is None or args.node_root is None:
             parser.error("upload requires --node-url and --node-root")

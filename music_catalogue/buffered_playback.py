@@ -6,8 +6,9 @@ is queued in small frames, with bounded backpressure; PCM never touches a
 plaintext file. `NullOutput` is an observable silent test sink. Real ALSA
 uses `aplay` with argv, not a shell. No microphone or network device access.
 
-This stage plays *after* the finite S9 MoQ download completes; it does not
-claim network-adaptive live playback, random access or key revocation.
+S11 plays after the finite S9 download; S12 additionally supports opt-in
+waiting for independently verified S1 chunks during the same MoQ session.
+Neither mode claims seek, adaptive live playback or key revocation.
 """
 from __future__ import annotations
 
@@ -359,6 +360,7 @@ def play_granted_wav_realtime(
     recipient_private: X25519PrivateKey,
     backend: str = "null", device: str = "default",
     player: BufferedPcmPlayer | None = None,
+    chunk_waiter: Callable[[dict], None] | None = None,
 ) -> dict:
     """S10 trusted grant/decrypt gate -> S11 bounded real-time PCM queue.
 
@@ -372,6 +374,7 @@ def play_granted_wav_realtime(
             grant=grant, trusted_artist=trusted_artist, owner_agent=owner_agent,
             listener_agent=listener_agent, recipient_private=recipient_private,
             pcm_sink=engine.feed, format_callback=engine.start,
+            chunk_waiter=chunk_waiter,
         )
         playout = engine.finish()
         if playout["output_pcm_sha256"] != decoded["pcm_sha256"] or \

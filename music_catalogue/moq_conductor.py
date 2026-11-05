@@ -8,10 +8,13 @@ from the publisher's local readiness file. Only ciphertext crosses MoQ.
 from __future__ import annotations
 
 import json
+import os
+import select
+import time
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from holochain_storage.holochain_identity import (
@@ -19,7 +22,9 @@ from holochain_storage.holochain_identity import (
     verify_owned_manifest, verify_replica_claim,
 )
 from holochain_storage.network_client import ReadOnlyStorageNodeClient
-from holochain_storage.package import StorageError, canonical, verify_package
+from holochain_storage.package import (
+    StorageError, canonical, verify_package, _read_verified_chunk,
+)
 from .contract import verify_track_manifest
 from .live_conductor import ConductorBridgeError, _record
 
@@ -31,6 +36,100 @@ EXPECTED_KEYS = {
     "replica_claim", "moq_endpoint",
 }
 HEX = frozenset("0123456789abcdef")
+
+
+def _receive_verified_progress(
+    argv: list[str], signed_manifest: dict, store: Path,
+    on_chunk: Callable[[int], None], timeout: int,
+) -> dict:
+    """Consume bounded JSONL from trusted local MoQ CLI with per-CAS hash checks.
+
+    stdout progress is merely a notification; the listener re-hashes the
+    signed-manifest object from its CAS BEFORE releasing each chunk to S12.
+    No untrusted readiness URL, key, plaintext or audio is present here.
+    """
+    chunks = signed_manifest["body"]["chunks"]
+    argv = [*argv, "--progress-jsonl"]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                bufsize=0)
+    except OSError as exc:
+        raise ConductorBridgeError("cannot start pinned MoQ progress receiver") from exc
+    expected = 0
+    end: dict | None = None
+    pending = bytearray()
+    total_stdout = 0
+    deadline = time.monotonic() + timeout
+    try:
+        assert proc.stdout is not None
+        while end is None:
+            remaining = min(deadline - time.monotonic(), 30.0)
+            if remaining <= 0:
+                raise ConductorBridgeError("MoQ progress timed out")
+            readable, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not readable:
+                raise ConductorBridgeError("MoQ chunk progress stalled")
+            data = os.read(proc.stdout.fileno(), 4096)
+            if not data:
+                raise ConductorBridgeError("MoQ terminated without transfer-complete event")
+            total_stdout += len(data)
+            if total_stdout > len(chunks) * 512 + 4096:
+                raise ConductorBridgeError("oversized MoQ progress channel")
+            pending.extend(data)
+            if len(pending) > 8192 and b"\n" not in pending:
+                raise ConductorBridgeError("oversized MoQ event")
+            while b"\n" in pending:
+                line, _, rest = pending.partition(b"\n")
+                pending = bytearray(rest)
+                if len(line) > 4096:
+                    raise ConductorBridgeError("oversized MoQ event line")
+                try:
+                    event = json.loads(line)
+                except (UnicodeError, ValueError) as exc:
+                    raise ConductorBridgeError("non-JSON MoQ progress event") from exc
+                if not isinstance(event, dict):
+                    raise ConductorBridgeError("invalid MoQ progress event")
+                if event.get("kind") == "chunk_verified":
+                    if (set(event) != {"kind", "index", "sha256", "cipher_bytes"} or
+                            expected >= len(chunks)):
+                        raise ConductorBridgeError("unexpected MoQ chunk progress")
+                    chunk = chunks[expected]
+                    if (type(event["index"]) is not int or event["index"] != expected or
+                            event["sha256"] != chunk["sha256"] or
+                            type(event["cipher_bytes"]) is not int or
+                            event["cipher_bytes"] != chunk["cipher_bytes"]):
+                        raise ConductorBridgeError("out-of-order or forged MoQ chunk report")
+                    # Independently verify that the object was atomically
+                    # stored by the receiver, not just announced on stdout.
+                    _read_verified_chunk(store, chunk)
+                    on_chunk(expected)
+                    expected += 1
+                elif event.get("kind") == "transfer_complete":
+                    if expected != len(chunks) or set(event) != {
+                        "kind", "verified", "received_chunks", "cipher_bytes",
+                        "manifest_sha256", "file_id",
+                    }:
+                        raise ConductorBridgeError("MoQ completed before all signed chunks")
+                    end = {k: v for k, v in event.items() if k != "kind"}
+                    if pending:
+                        raise ConductorBridgeError("MoQ emitted output after complete event")
+                    break
+                else:
+                    raise ConductorBridgeError("unknown MoQ progress event kind")
+        # A success line is not enough; the QUIC receiver must exit cleanly.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or proc.wait(timeout=remaining) != 0:
+            raise ConductorBridgeError("MoQ receiver failed after progress event")
+        return end
+    except subprocess.TimeoutExpired as exc:
+        raise ConductorBridgeError("MoQ process did not terminate") from exc
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        if proc.stdout:
+            proc.stdout.close()
+
 
 
 def _pin(label: str, value: str) -> None:
@@ -66,6 +165,8 @@ def receive_moq_from_live_conductor(
     storage_role: str = "music_storage", timeout: int = 120,
     reader: ReadOnlyStorageNodeClient | None = None,
     include_trust_context: bool = False,
+    on_trusted_manifest: Callable[[dict, bytes, str, str], None] | None = None,
+    on_verified_chunk: Callable[[int], None] | None = None,
 ) -> dict:
     """Retrieve and verify a finite encrypted music package over pinned MoQ.
 
@@ -161,6 +262,10 @@ def receive_moq_from_live_conductor(
     receipt = storage.receipt(signed_manifest)
     verify_replica_claim(receipt, signed_manifest, artist_agent, node_agent,
                          owner_key, node_key, owner_commitment, claim)
+    # S12: only reveal independently authenticated S1 and Holochain public
+    # pins to the local authorised player; no MoQ connection exists yet.
+    if on_trusted_manifest is not None:
+        on_trusted_manifest(signed_manifest, artist_public, artist_agent, reader_agent)
     with tempfile.TemporaryDirectory(prefix="holochain-music-s9-manifest-") as directory:
         signed_path = Path(directory) / "signed-manifest.json"
         signed_path.write_bytes(canonical(signed_manifest))
@@ -170,17 +275,23 @@ def receive_moq_from_live_conductor(
                 "--expected-manifest-sha256", digest,
                 "--url", moq_url,
                 "--cert-fingerprint-hex", body["cert_fingerprint_hex"]]
-        try:
-            result = subprocess.run(recv, capture_output=True, text=True,
-                                    timeout=timeout, check=False)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise ConductorBridgeError("MoQ ciphertext transfer failed") from exc
-        if result.returncode or len(result.stdout.encode("utf-8")) > 4096:
-            raise ConductorBridgeError("pinned MoQ ciphertext transfer rejected or incomplete")
-        try:
-            report = json.loads(result.stdout)
-        except ValueError as exc:
-            raise ConductorBridgeError("invalid MoQ ciphertext report") from exc
+        if on_verified_chunk is not None:
+            report = _receive_verified_progress(recv, signed_manifest,
+                                                Path(target_store),
+                                                on_verified_chunk, timeout)
+        else:
+            # Backwards compatible S9-S11 synchronous completion behaviour.
+            try:
+                result = subprocess.run(recv, capture_output=True, text=True,
+                                        timeout=timeout, check=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise ConductorBridgeError("MoQ ciphertext transfer failed") from exc
+            if result.returncode or len(result.stdout.encode("utf-8")) > 4096:
+                raise ConductorBridgeError("pinned MoQ ciphertext transfer rejected or incomplete")
+            try:
+                report = json.loads(result.stdout)
+            except ValueError as exc:
+                raise ConductorBridgeError("invalid MoQ ciphertext report") from exc
     if not isinstance(report, dict) or set(report) != {
         "verified", "received_chunks", "cipher_bytes", "manifest_sha256", "file_id"
     } or report["verified"] is not True or report["file_id"] != file_id or (
