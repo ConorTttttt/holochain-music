@@ -1,0 +1,40 @@
+name: S8 encrypted music over real MoQ QUIC
+
+on:
+  pull_request:
+    paths:
+      - 'crates/moq-music/**'
+      - 'tests/test_s8_moq.py'
+      - 'docs/s8-moq-encrypted-transport.md'
+      - '.github/workflows/music-moq-transport.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-quic-and-rust-node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build/test real MoQ/QUIC sender and receiver
+        run: |
+          cargo test --manifest-path crates/moq-music/Cargo.toml
+          cargo build --manifest-path crates/moq-music/Cargo.toml
+      - name: Build existing real S4 encrypted storage node
+        run: cargo build --manifest-path crates/storage-node/Cargo.toml
+      - name: Run S8 signed-manifest and real QUIC/S4 tests
+        env:
+          HOLOCHAIN_MOQ_BIN: ${{ github.workspace }}/crates/moq-music/target/debug/holochain-music-moq
+          HOLOCHAIN_STORAGE_NODE_BIN: ${{ github.workspace }}/crates/storage-node/target/debug/holochain-storage-node
+        run: |
+          python -m pip install -e .
+          python -m unittest discover -s tests -p test_s8_moq.py -v
