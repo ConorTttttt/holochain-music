@@ -101,11 +101,15 @@ python -m music_catalogue.playback_cli demo --backend alsa --device default --se
 ```
 
 Controls: type `p` then Enter to pause, `r` then Enter to resume, `s` then
-Enter to stop. When successful, the command prints `"playback_complete":
-true` and the two PCM hashes match. If the device fails or stops early, it
-must exit with an error, **not** claim a completed transfer. Devices may
-require a different ALSA name, or running under a desktop user session with
-PipeWire/PulseAudio configured. Do not run the audio demo as root.
+Enter to stop. A normally completed command prints `"playback_complete":
+true` and matching authenticated/output PCM hashes. Explicit `s` is a
+**successful user cancellation**, not a completed track: it exits cleanly with
+`"playback_complete": false` and `"playback_stopped": true`, plus partial
+output bytes/frames/digest. Never treat that partial digest as a fully
+authenticated playback report. Missing grants, wrong keys, invalid ciphertext,
+device failures and unexpected early termination **still fail with errors**.
+Devices may require a different ALSA name, or running under a desktop user
+session with PipeWire/PulseAudio configured. Do not run the audio demo as root.
 
 For a locally installed *actual* owner-signed S10 grant/manifest/ciphertext,
 advanced developers can use `python -m music_catalogue.playback_cli play
