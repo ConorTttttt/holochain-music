@@ -9,6 +9,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fs, io::Read, path::{Path, PathBuf}};
 
+pub mod serve;
+
 pub const MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CHUNKS: usize = 16_384;
 pub const MAX_MANIFEST_BYTES: usize = 8 * 1024 * 1024;

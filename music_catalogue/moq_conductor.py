@@ -170,6 +170,8 @@ def _bound_local_url(value: Any, *, allow_lan: bool = False) -> str:
                 raise ConductorBridgeError("MoQ LAN endpoint must use a literal IPv4 address") from exc
             if not allow_lan or not any(addr in network for network in RFC1918):
                 raise ConductorBridgeError("remote MoQ requires explicit RFC1918 LAN opt-in")
+    except ConductorBridgeError:
+        raise
     except ValueError as exc:
         raise ConductorBridgeError("malformed MoQ URL") from exc
     return value

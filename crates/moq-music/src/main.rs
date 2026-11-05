@@ -14,6 +14,7 @@ use holochain_moq_realtime::{
     MoqPublishNode, MoqSubscribeNode,
 };
 use holochain_music_moq::{load_manifest, read_verified_chunk, repair_track, store_verified_chunk};
+use holochain_music_moq::serve::{self as host, HOST_NAMESPACE};
 use serde_json::json;
 use std::{fs, io::Write, net::{IpAddr, Ipv4Addr, SocketAddr}, path::PathBuf, time::Duration};
 use url::Url;
@@ -74,7 +75,39 @@ enum Command {
         /// S17 opt-in: allow a certificate-pinned RFC1918 LAN endpoint.
         #[arg(long, default_value_t = false)] allow_lan: bool,
     },
+    /// v1 long-running host: serve many signed packages to many subscribers
+    /// with a stable certificate; subscribers select start index or object.
+    Serve {
+        /// JSON {"files":[{"manifest","trusted_artist_hex","manifest_sha256"}]}
+        #[arg(long)] served_list: PathBuf,
+        #[arg(long)] store: PathBuf,
+        #[arg(long)] cert_dir: PathBuf,
+        #[arg(long)] ready_file: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:0")] bind: SocketAddr,
+        #[arg(long, default_value_t = false)] allow_lan: bool,
+        #[arg(long)] advertise_ip: Option<Ipv4Addr>,
+        #[arg(long, default_value_t = 16)] max_sessions: usize,
+        /// Per-track pacing ceiling; bounds host memory per subscriber.
+        #[arg(long, default_value_t = 8 * 1024 * 1024)] bytes_per_second: u64,
+    },
+    /// v1 subscriber for `serve`: ordered objects from `--start-index`, or an
+    /// explicit bounded set of `--objects` (listener-driven repair).
+    Fetch {
+        #[arg(long)] manifest: PathBuf,
+        #[arg(long)] store: PathBuf,
+        #[arg(long)] trusted_artist_hex: String,
+        #[arg(long)] expected_manifest_sha256: String,
+        #[arg(long)] url: Url,
+        #[arg(long)] cert_fingerprint_hex: String,
+        #[arg(long, default_value_t = 0)] start_index: usize,
+        /// Comma-separated indices; mutually exclusive with a nonzero start.
+        #[arg(long)] objects: Option<String>,
+        #[arg(long, default_value_t = false)] allow_lan: bool,
+        #[arg(long, default_value_t = 30)] object_timeout_secs: u64,
+    },
 }
+
+const MAX_FETCH_OBJECTS: usize = 256;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const PUBLISH_WAIT_FOR_DHT: Duration = Duration::from_secs(180);
@@ -123,6 +156,15 @@ async fn main() -> Result<()> {
         }
         Command::RepairReceive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index, allow_lan } => {
             repair_receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index, allow_lan).await
+        }
+        Command::Serve { served_list, store, cert_dir, ready_file, bind, allow_lan, advertise_ip, max_sessions, bytes_per_second } => {
+            let advertised = advertised_host(bind, allow_lan, advertise_ip)?;
+            host::serve(host::ServeArgs { served_list, store, cert_dir, ready_file, bind, advertised,
+                max_sessions, bytes_per_second }).await
+        }
+        Command::Fetch { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, start_index, objects, allow_lan, object_timeout_secs } => {
+            fetch(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex,
+                start_index, objects, allow_lan, object_timeout_secs).await
         }
     }
 }
@@ -300,6 +342,100 @@ async fn repair_receive(
 }
 
 
+fn parse_objects(text: &str, total: usize) -> Result<Vec<usize>> {
+    let mut out = Vec::new();
+    for part in text.split(',') {
+        ensure!(!part.is_empty() && part.len() <= 5 && part.bytes().all(|b| b.is_ascii_digit())
+            && (part.len() == 1 || !part.starts_with('0')), "invalid object index list");
+        let index: usize = part.parse()?;
+        ensure!(index < total, "object index outside signed manifest");
+        ensure!(!out.contains(&index), "duplicate object index");
+        out.push(index);
+    }
+    ensure!(!out.is_empty() && out.len() <= MAX_FETCH_OBJECTS, "object list must have 1..=256 entries");
+    Ok(out)
+}
+
+fn emit(value: serde_json::Value) -> Result<()> {
+    println!("{value}");
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+/// Each object is SHA-256/length-verified against the signed manifest and
+/// atomically persisted BEFORE its progress line is printed. Any timeout,
+/// truncation, substitution or certificate mismatch is a hard failure; the
+/// caller decides whether to retry from the first missing index.
+async fn fetch(
+    manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
+    url: Url, fingerprint_hex: String, start_index: usize, objects: Option<String>,
+    allow_lan: bool, object_timeout_secs: u64,
+) -> Result<()> {
+    validate_endpoint(&url, allow_lan)?;
+    ensure!((1..=300).contains(&object_timeout_secs), "invalid object timeout");
+    let object_timeout = Duration::from_secs(object_timeout_secs);
+    let fingerprint = hex::decode(fingerprint_hex).context("invalid TLS certificate pin hex")?;
+    let fingerprint: [u8; 32] = fingerprint.try_into().map_err(|_| anyhow!("TLS pin must be SHA-256"))?;
+    let manifest = load_manifest(&manifest_path, &artist, &digest)?;
+    let total = manifest.body.chunks.len();
+    ensure!(total > 0, "package requires at least one chunk");
+    let file_id = manifest.body.file_id.clone();
+    let receiver_url = url.clone();
+    let mut receiver = MoqSubscribeNode::new_with_pinned_identity(url, HOST_NAMESPACE, TransportIdentity { fingerprint })?;
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, receiver.connect()).await
+        .context("MoQ/TLS connection timed out")??;
+    let mut received = 0usize;
+    match objects {
+        Some(list) => {
+            ensure!(start_index == 0, "--objects and --start-index are exclusive");
+            let indices = parse_objects(&list, total)?;
+            // One subscription per connection in the realtime subscriber, so
+            // reconnect (same pinned identity) for each bounded batch.
+            for (batch_no, batch) in indices.chunks(host::MAX_OBJECTS_PER_REQUEST).enumerate() {
+                if batch_no > 0 {
+                    receiver = MoqSubscribeNode::new_with_pinned_identity(
+                        receiver_url.clone(), HOST_NAMESPACE, TransportIdentity { fingerprint })?;
+                    tokio::time::timeout(HANDSHAKE_TIMEOUT, receiver.connect()).await
+                        .context("MoQ/TLS reconnection timed out")??;
+                }
+                let mut sub = tokio::time::timeout(HANDSHAKE_TIMEOUT,
+                    receiver.subscribe(&host::objects_track(&file_id, batch))).await
+                    .context("object subscription timed out")??;
+                for &index in batch {
+                    let chunk = &manifest.body.chunks[index];
+                    let payload = tokio::time::timeout(object_timeout, sub.recv()).await
+                        .context("requested ciphertext object timed out")??
+                        .ok_or_else(|| anyhow!("host sent no object for index {index}"))?;
+                    store_verified_chunk(&store, chunk, &payload)?;
+                    emit(json!({"kind": "chunk_verified", "index": index, "sha256": chunk.sha256,
+                        "cipher_bytes": chunk.cipher_bytes}))?;
+                    received += 1;
+                }
+                drop(sub);
+            }
+        }
+        None => {
+            ensure!(start_index < total, "start index outside signed manifest");
+            let mut sub = tokio::time::timeout(HANDSHAKE_TIMEOUT,
+                receiver.subscribe(&host::stream_track(&file_id, start_index))).await
+                .context("stream subscription timed out")??;
+            for chunk in &manifest.body.chunks[start_index..] {
+                let payload = tokio::time::timeout(object_timeout, sub.recv()).await
+                    .context("ciphertext stream stalled")??
+                    .ok_or_else(|| anyhow!("stream ended at index {} of {total}", chunk.index))?;
+                store_verified_chunk(&store, chunk, &payload)?;
+                emit(json!({"kind": "chunk_verified", "index": chunk.index, "sha256": chunk.sha256,
+                    "cipher_bytes": chunk.cipher_bytes}))?;
+                received += 1;
+            }
+            drop(sub);
+        }
+    }
+    drop(receiver);
+    emit(json!({"kind": "fetch_complete", "received_chunks": received,
+        "manifest_sha256": manifest.digest, "file_id": file_id}))
+}
+
 #[cfg(test)]
 mod s17_lan_tests {
     use super::*;
@@ -327,5 +463,14 @@ mod s17_lan_tests {
         assert_eq!(advertised_host(all, true, Some(lan)).unwrap(), IpAddr::V4(lan));
         assert!(advertised_host(localhost, true, Some(lan)).is_err());
         assert!(advertised_host(all, true, Some("8.8.8.8".parse().unwrap())).is_err());
+    }
+    #[test]
+    fn object_lists_are_bounded_unique_and_in_range() {
+        assert_eq!(parse_objects("0,3,2", 4).unwrap(), vec![0, 3, 2]);
+        for bad in ["", "1,1", "4", "01", "1,,2", "-1", "a"] {
+            assert!(parse_objects(bad, 4).is_err(), "{bad}");
+        }
+        let many: Vec<String> = (0..257).map(|i| i.to_string()).collect();
+        assert!(parse_objects(&many.join(","), 300).is_err());
     }
 }

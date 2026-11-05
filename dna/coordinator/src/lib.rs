@@ -3,7 +3,13 @@
 //! An authenticated local Holochain conductor returns the action authors.
 
 use hdk::prelude::*;
-use music_storage_integrity::{EntryTypes, FileCommitment, LinkTypes, MoqEndpoint, ReplicaClaim, SigningKeyBinding};
+use music_storage_integrity::{
+    AccessRequest, EntryTypes, FileCommitment, GrantRecord, LinkTypes, ListenerKeyBinding,
+    MoqEndpoint, ReplicaClaim, SigningKeyBinding,
+};
+
+/// Hard cap on rows returned from a link index anyone can write to.
+const MAX_INDEX_ROWS: usize = 200;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AuthoredRecord<T> {
@@ -117,4 +123,67 @@ pub fn get_moq_endpoints(host: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<M
     let expected = host.to_string();
     Ok(linked_records::<MoqEndpoint>(host, LinkTypes::AgentToMoqEndpoint)?
         .into_iter().filter(|r| r.author == expected && r.body.node_agent == expected).collect())
+}
+
+/// Listener publishes the X25519 public key artists should wrap grants to.
+#[hdk_extern]
+pub fn register_listener_key(entry: ListenerKeyBinding) -> ExternResult<ActionHash> {
+    let agent = agent_info()?.agent_initial_pubkey;
+    let hash = create_entry(EntryTypes::ListenerKeyBinding(entry))?;
+    create_link(agent, hash.clone(), LinkTypes::AgentToListenerKey, ())?;
+    Ok(hash)
+}
+
+#[hdk_extern]
+pub fn get_listener_keys(agent: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<ListenerKeyBinding>>> {
+    let expected = agent.to_string();
+    Ok(linked_records::<ListenerKeyBinding>(agent, LinkTypes::AgentToListenerKey)?
+        .into_iter().filter(|r| r.author == expected && r.body.agent == expected).collect())
+}
+
+/// Listener asks an artist for access. Carries only public data.
+#[hdk_extern]
+pub fn request_access(entry: AccessRequest) -> ExternResult<ActionHash> {
+    let owner = AgentPubKey::try_from(entry.owner_agent.as_str())
+        .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("invalid owner agent: {e}"))))?;
+    let hash = create_entry(EntryTypes::AccessRequest(entry))?;
+    create_link(owner, hash.clone(), LinkTypes::OwnerToAccessRequest, ())?;
+    Ok(hash)
+}
+
+/// Requests addressed to the calling agent (artist). Newest first, bounded.
+#[hdk_extern]
+pub fn get_my_access_requests(_: ()) -> ExternResult<Vec<AuthoredRecord<AccessRequest>>> {
+    let me = agent_info()?.agent_initial_pubkey;
+    let expected = me.to_string();
+    let mut rows: Vec<_> = linked_records::<AccessRequest>(me, LinkTypes::OwnerToAccessRequest)?
+        .into_iter().filter(|r| r.author == r.body.listener_agent && r.body.owner_agent == expected)
+        .collect();
+    rows.reverse();
+    rows.truncate(MAX_INDEX_ROWS);
+    Ok(rows)
+}
+
+/// Artist delivers a signed grant to a listener through the DHT.
+#[hdk_extern]
+pub fn publish_grant(entry: GrantRecord) -> ExternResult<ActionHash> {
+    let listener = AgentPubKey::try_from(entry.listener_agent.as_str())
+        .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("invalid listener agent: {e}"))))?;
+    let hash = create_entry(EntryTypes::GrantRecord(entry))?;
+    create_link(listener, hash.clone(), LinkTypes::ListenerToGrant, ())?;
+    Ok(hash)
+}
+
+/// Grant records addressed to the calling agent, newest first, bounded.
+/// Callers must still verify every inner grant signature and binding.
+#[hdk_extern]
+pub fn get_my_grants(_: ()) -> ExternResult<Vec<AuthoredRecord<GrantRecord>>> {
+    let me = agent_info()?.agent_initial_pubkey;
+    let expected = me.to_string();
+    let mut rows: Vec<_> = linked_records::<GrantRecord>(me, LinkTypes::ListenerToGrant)?
+        .into_iter().filter(|r| r.author == r.body.owner_agent && r.body.listener_agent == expected)
+        .collect();
+    rows.reverse();
+    rows.truncate(MAX_INDEX_ROWS);
+    Ok(rows)
 }

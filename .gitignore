@@ -20,3 +20,9 @@ music-dna/target/
 music-dna/workdir/*.dna
 music-dna/workdir/*.happ
 music-e2e/target/
+# v1: all Rust target dirs and packed bundles are generated
+dna/target/
+dna/workdir/*.dna
+crates/*/target/
+integration/workdir/*.dna
+integration/workdir/*.happ

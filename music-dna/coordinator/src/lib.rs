@@ -181,3 +181,20 @@ pub fn search_tracks(input: SearchInput) -> ExternResult<Vec<AuthoredRecord<Trac
         .take(input.limit as usize)
         .collect())
 }
+
+/// Newest published tracks across all artists for the app's browse view.
+/// Bounded output; the same small-scale index caveat as `search_tracks`.
+#[hdk_extern]
+pub fn browse_tracks(limit: u8) -> ExternResult<Vec<AuthoredRecord<Track>>> {
+    if limit == 0 || limit > 100 {
+        return Err(wasm_error!(WasmErrorInner::Guest("invalid browse limit".into())));
+    }
+    let base = typed_path(TRACKS_PATH)?.path_entry_hash()?;
+    let mut seen = HashSet::new();
+    Ok(linked_records::<Track>(base, LinkTypes::AllTracks)?
+        .into_iter()
+        .filter(|r| r.author == r.body.artist_agent
+            && seen.insert((r.author.clone(), r.body.track_id.clone())))
+        .take(limit as usize)
+        .collect())
+}

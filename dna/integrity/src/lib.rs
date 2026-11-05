@@ -9,6 +9,12 @@ pub const KEY_SCHEMA: &str = "holochain-storage/key-binding/v1";
 pub const FILE_SCHEMA: &str = "holochain-storage/file-commitment/v1";
 pub const REPLICA_SCHEMA: &str = "holochain-storage/replica-claim/v1";
 pub const MOQ_SCHEMA: &str = "holochain-storage/moq-endpoint/v1";
+pub const LISTENER_KEY_SCHEMA: &str = "holochain-music/listener-key/v1";
+pub const ACCESS_REQUEST_SCHEMA: &str = "holochain-music/access-request/v1";
+pub const GRANT_RECORD_SCHEMA: &str = "holochain-music/grant-record/v1";
+/// Signed grant JSON envelopes are small (S10 grants are capped at 4 KiB).
+pub const MAX_GRANT_JSON_BYTES: usize = 8192;
+pub const GRANT_KINDS: [&str; 2] = ["stream", "perpetual-personal"];
 
 #[hdk_entry_helper]
 #[derive(Clone, PartialEq)]
@@ -57,13 +63,83 @@ pub struct MoqEndpoint {
     pub cert_fingerprint_hex: String,
 }
 
-/// S9 local-only test network. Internet address / port policy is a separate
-/// release gate; this MVP only registers loopback HTTPS/QUIC endpoints.
-pub fn valid_moq_url(url: &str) -> bool {
-    let Some(port) = url.strip_prefix("https://127.0.0.1:") else { return false; };
+/// Listener-authored X25519 *public* key used as the recipient of artist
+/// grants. The private key never leaves the listener's device.
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ListenerKeyBinding {
+    pub schema: String,
+    pub agent: String,
+    pub x25519_public_hex: String,
+}
+
+/// Listener-authored request to the owner of one encrypted file. Purely a
+/// notification: it grants nothing and carries no secret.
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AccessRequest {
+    pub schema: String,
+    pub listener_agent: String,
+    pub owner_agent: String,
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub x25519_public_hex: String,
+    pub kind: String,
+    pub note: String,
+}
+
+/// Owner-authored delivery of an *already signed* grant envelope. The grant
+/// wraps the content key to the listener's X25519 key, so only metadata
+/// (who was granted what) is public. Clients verify the inner Ed25519
+/// signature against the owner's S2 key binding; the DHT does not.
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct GrantRecord {
+    pub schema: String,
+    pub owner_agent: String,
+    pub listener_agent: String,
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub kind: String,
+    pub grant_json: String,
+}
+
+fn valid_port(port: &str) -> bool {
     !port.is_empty() && port.len() <= 5
         && port.bytes().all(|c| c.is_ascii_digit())
         && port.parse::<u16>().is_ok_and(|n| n != 0)
+}
+
+/// Literal RFC1918 IPv4 only: no DNS names, public, link-local or IPv6 hosts.
+fn rfc1918(host: &str) -> bool {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 || parts.iter().any(|p| p.is_empty() || p.len() > 3
+        || !p.bytes().all(|c| c.is_ascii_digit()) || (p.len() > 1 && p.starts_with('0'))) {
+        return false;
+    }
+    let Ok(o) = parts.iter().map(|p| p.parse::<u8>()).collect::<Result<Vec<u8>, _>>() else { return false };
+    o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
+}
+
+/// Loopback or private-LAN QUIC endpoint. Whether a *listener* accepts a LAN
+/// endpoint remains an explicit client-side opt-in (S17); the DNA only stops
+/// hosts advertising DNS names or public addresses. Internet endpoints are a
+/// separate, unreviewed release gate.
+pub fn valid_moq_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else { return false; };
+    let Some((host, port)) = rest.rsplit_once(':') else { return false; };
+    valid_port(port) && (host == "127.0.0.1" || rfc1918(host))
+}
+
+fn valid_note(note: &str) -> bool {
+    note.len() <= 500 && !note.chars().any(|c| c == '\0' || (c.is_control() && c != '\n'))
+}
+
+fn valid_agent_text(agent: &str) -> bool {
+    !agent.is_empty() && agent.len() <= 160
 }
 
 #[hdk_entry_types]
@@ -73,6 +149,9 @@ pub enum EntryTypes {
     FileCommitment(FileCommitment),
     ReplicaClaim(ReplicaClaim),
     MoqEndpoint(MoqEndpoint),
+    ListenerKeyBinding(ListenerKeyBinding),
+    AccessRequest(AccessRequest),
+    GrantRecord(GrantRecord),
 }
 
 #[hdk_link_types]
@@ -82,6 +161,12 @@ pub enum LinkTypes {
     FileToReplica,
     Anchor,
     AgentToMoqEndpoint,
+    AgentToListenerKey,
+    /// Base: the owner agent the request is addressed to. Any listener may
+    /// create one (spam is bounded client-side), but only for its own entry.
+    OwnerToAccessRequest,
+    /// Base: the listener agent the grant is addressed to.
+    ListenerToGrant,
 }
 
 #[hdk_extern]
@@ -145,6 +230,34 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
                 } else { Ok(()) }
             })
         }
+        EntryTypes::ListenerKeyBinding(k) => {
+            check_author(author, &k.agent).and_then(|_| {
+                if k.schema != LISTENER_KEY_SCHEMA || !is_hex32(&k.x25519_public_hex) {
+                    Err("invalid listener X25519 key binding".into())
+                } else { Ok(()) }
+            })
+        }
+        EntryTypes::AccessRequest(r) => {
+            check_author(author, &r.listener_agent).and_then(|_| {
+                if r.schema != ACCESS_REQUEST_SCHEMA || !valid_agent_text(&r.owner_agent)
+                    || r.owner_agent == r.listener_agent
+                    || !is_hex32(&r.file_id) || !is_hex32(&r.manifest_sha256)
+                    || !is_hex32(&r.x25519_public_hex)
+                    || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note) {
+                    Err("invalid access request".into())
+                } else { Ok(()) }
+            })
+        }
+        EntryTypes::GrantRecord(g) => {
+            check_author(author, &g.owner_agent).and_then(|_| {
+                if g.schema != GRANT_RECORD_SCHEMA || !valid_agent_text(&g.listener_agent)
+                    || !is_hex32(&g.file_id) || !is_hex32(&g.manifest_sha256)
+                    || !GRANT_KINDS.contains(&g.kind.as_str())
+                    || g.grant_json.is_empty() || g.grant_json.len() > MAX_GRANT_JSON_BYTES {
+                    Err("invalid grant record".into())
+                } else { Ok(()) }
+            })
+        }
     };
     match result { Ok(()) => ValidateCallbackResult::Valid, Err(reason) => invalid(reason) }
 }
@@ -179,8 +292,10 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             Ok(validate_app_entry(action.author(), &app_entry)),
         FlatOp::CreateEntry(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => match link_type {
-            LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint => validate_agent_link(&action),
-            LinkTypes::FileToReplica => validate_owned_target(&action),
+            LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint
+                | LinkTypes::AgentToListenerKey => validate_agent_link(&action),
+            LinkTypes::FileToReplica | LinkTypes::OwnerToAccessRequest
+                | LinkTypes::ListenerToGrant => validate_owned_target(&action),
             LinkTypes::Anchor => Ok(ValidateCallbackResult::Valid),
         },
         FlatOp::Link(OpLink::DeleteLink { .. }) => Ok(invalid("index links are append-only")),
@@ -202,12 +317,28 @@ mod tests {
         assert!(!is_hex32(&"g".repeat(64)));
     }
     #[test]
-    fn endpoint_urls_are_loopback_only_and_port_validated() {
+    fn endpoint_urls_are_loopback_or_rfc1918_and_port_validated() {
         assert!(valid_moq_url("https://127.0.0.1:443"));
         assert!(valid_moq_url("https://127.0.0.1:65535"));
         assert!(!valid_moq_url("https://127.0.0.1:0"));
         assert!(!valid_moq_url("https://127.0.0.1:65536"));
         assert!(!valid_moq_url("https://example.org:443"));
         assert!(!valid_moq_url("https://127.0.0.1:443/bad"));
+        // S17/v1: literal private-LAN IPv4 hosts only.
+        for ok in ["https://192.168.1.50:4443", "https://10.0.0.7:1", "https://172.16.0.1:9000", "https://172.31.255.255:9000"] {
+            assert!(valid_moq_url(ok), "{ok}");
+        }
+        for bad in ["https://8.8.8.8:443", "https://172.32.0.1:443", "https://169.254.1.1:443",
+                    "https://192.168.1.050:443", "https://192.168.1:443", "https://[fd00::1]:443",
+                    "http://192.168.1.5:443", "https://u@192.168.1.5:443", "https://192.168.1.5:443/x",
+                    "https://192.168.1.5", "https://localhost:443", "https://192.168.1.5:0"] {
+            assert!(!valid_moq_url(bad), "{bad}");
+        }
+    }
+    #[test]
+    fn grant_notes_reject_control_characters() {
+        assert!(valid_note("please\nthanks"));
+        assert!(!valid_note("bad\0"));
+        assert!(!valid_note(&"x".repeat(501)));
     }
 }

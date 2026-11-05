@@ -26,3 +26,7 @@ serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 url = "2"
+# Already in the lockfile via holochain-moq; pinned exactly for the v1 host.
+moq-transport = "=0.16.5"
+moq-native-ietf = "=0.10.0"
+tracing = "0.1"
