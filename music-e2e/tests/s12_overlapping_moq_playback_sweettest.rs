@@ -298,6 +298,10 @@ async fn bob_plays_granted_pcm_before_last_moq_chunk_arrives() {
     assert_eq!(issued["issued"], Value::Bool(true));
     assert!(!fixture_dir.join("content.key").exists(), "content key not cleared after grant issue");
     assert!(!fixture_dir.join("artist.ed25519").exists(), "artist test private key not cleared");
+    // The S12 receiver must not read the fixture original WAV rather than
+    // recovering it through the grant and streaming MoQ ciphertext path.
+    fs::remove_file(fixture_dir.join("sample.wav")).expect("remove owner test-only plaintext WAV");
+    assert!(!fixture_dir.join("sample.wav").exists(), "receiver may not access fixture plaintext");
 
     // The S4/QUIC publisher announces its address/cert in a local readiness
     // file which only the *host* uses to create a DHT record. Bob NEVER
