@@ -22,6 +22,8 @@ def main() -> None:
     p.add_argument("--bridge-binary", type=Path, required=True)
     p.add_argument("--moq-binary", type=Path, required=True)
     p.add_argument("--node-url", required=True)
+    p.add_argument("--audio-backend", choices=("null", "alsa"), default="null")
+    p.add_argument("--audio-device", default="default")
     p.add_argument("--admin-port", type=int, required=True)
     for name in ("app_id", "catalogue_dna", "storage_dna", "reader_agent", "artist_agent",
                  "node_agent", "track_id", "catalogue_role", "storage_role"):
@@ -44,7 +46,7 @@ def main() -> None:
         node_agent=args.node_agent, track_id=args.track_id,
         storage_url=args.node_url, target_store=root / "bob-s12-moq-store",
         catalogue_role=args.catalogue_role, storage_role=args.storage_role,
-        backend="null", timeout=150,
+        backend=args.audio_backend, device=args.audio_device, timeout=150,
     )
     if not report["first_pcm_before_last_chunk"] or not report["playback_complete"]:
         raise ValueError("S12 PCM did not overlap authenticated MoQ transfer")
