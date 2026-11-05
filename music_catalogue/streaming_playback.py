@@ -230,6 +230,7 @@ def stream_granted_moq_from_live_conductor(
                     first_output[0] < gate.last_chunk_at
                 ),
                 "first_pcm_after_verified_chunks": first_output_chunks[0],
+                "last_chunk_minus_first_pcm_ms": round((gate.last_chunk_at - first_output[0]) * 1000, 3),
                 "verified_ciphertext_chunks": gate.released}
     except BaseException as exc:
         if gate is not None:
