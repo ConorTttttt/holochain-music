@@ -352,8 +352,14 @@ async fn bob_plays_granted_pcm_before_last_moq_chunk_arrives() {
     // readiness.cert_fingerprint_hex. The Python client MUST read those from
     // Bob's validated, pinned storage DNA via the S6 Rust WebSocket bridge.
     let s12_script = root.join("music-e2e/tests/helpers/s12_moq_stream.py");
+    // CI stays silent; optionally select ALSA explicitly on a local desktop.
+    let audio_backend = env::var("HOLOCHAIN_S12_AUDIO_BACKEND")
+        .unwrap_or_else(|_| "null".into());
+    assert!(audio_backend == "null" || audio_backend == "alsa",
+        "only null or opt-in ALSA output is supported");
     let result = python_stage(&python, &s12_script, vec![
         "receive".into(),
+        "--audio-backend".into(), audio_backend.clone(),
         "--root".into(), fixture_arg,
         "--node-url".into(), url,
         "--bridge-binary".into(), bridge.to_string_lossy().to_string(),
@@ -383,7 +389,7 @@ async fn bob_plays_granted_pcm_before_last_moq_chunk_arrives() {
     assert!(result["max_sink_block_bytes"].as_u64().unwrap_or(99999) <= 16_384);
     // S11 must preserve the exact PCM digest while respecting its queue
     // bound. The sink is real-time paced but silent on headless CI.
-    assert_eq!(s(&result, "audio_backend"), "null");
+    assert_eq!(s(&result, "audio_backend"), audio_backend);
     assert_eq!(result["playback_complete"], Value::Bool(true));
     assert_eq!(result["output_frames"].as_u64(), fixture["pcm_frames"].as_u64());
     assert_eq!(s(&result, "output_pcm_sha256"), s(&fixture, "sample_pcm_sha256"));
