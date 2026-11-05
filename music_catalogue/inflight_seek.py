@@ -195,6 +195,7 @@ def stream_seek_granted_moq_from_live_conductor(
     target_store: str | Path, seek_ranges: tuple[tuple[int, int], ...],
     catalogue_role: str = "music_catalogue", storage_role: str = "music_storage",
     backend: str = "null", device: str = "default", timeout: int = 150,
+    allow_lan_moq: bool = False,
 ) -> dict:
     """Play selected WAV ranges during genuine S9 Holochain-pinned MoQ download.
 
@@ -289,6 +290,7 @@ def stream_seek_granted_moq_from_live_conductor(
             storage_url=storage_url, target_store=target_store,
             catalogue_role=catalogue_role, storage_role=storage_role,
             timeout=timeout, on_trusted_manifest=trusted, on_verified_chunk=chunk,
+            allow_lan_moq=allow_lan_moq,
         )
         if gate is None:
             raise PlaybackError("S16 missing Holochain-authenticated MoQ metadata")

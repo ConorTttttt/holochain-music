@@ -15,7 +15,7 @@ use holochain_moq_realtime::{
 };
 use holochain_music_moq::{load_manifest, read_verified_chunk, repair_track, store_verified_chunk};
 use serde_json::json;
-use std::{fs, io::Write, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{fs, io::Write, net::{IpAddr, Ipv4Addr, SocketAddr}, path::PathBuf, time::Duration};
 use url::Url;
 
 #[derive(Parser)]
@@ -33,6 +33,10 @@ enum Command {
         #[arg(long)] cert_dir: PathBuf,
         #[arg(long)] ready_file: PathBuf,
         #[arg(long, default_value = "127.0.0.1:0")] bind: SocketAddr,
+        /// S17 opt-in: permit a LAN interface (never enabled by default).
+        #[arg(long, default_value_t = false)] allow_lan: bool,
+        /// S17 advertised RFC1918 IPv4 host address; mandatory with --allow-lan.
+        #[arg(long)] advertise_ip: Option<Ipv4Addr>,
         /// Test-only inter-object pacing to show playback/receive overlap.
         #[arg(long, default_value_t = 2)] chunk_delay_ms: u64,
         /// Test-only repeatable network jitter: after every N objects.
@@ -55,6 +59,8 @@ enum Command {
         #[arg(long)] cert_fingerprint_hex: String,
         /// Opt-in per-verified-chunk progress JSONL (no secrets or plaintext).
         #[arg(long, default_value_t = false)] progress_jsonl: bool,
+        /// S17 opt-in: allow a certificate-pinned RFC1918 LAN endpoint.
+        #[arg(long, default_value_t = false)] allow_lan: bool,
     },
     /// Fetch exactly one S1-manifest-pinned ciphertext CAS object via new MoQ session.
     RepairReceive {
@@ -65,6 +71,8 @@ enum Command {
         #[arg(long)] url: Url,
         #[arg(long)] cert_fingerprint_hex: String,
         #[arg(long)] index: usize,
+        /// S17 opt-in: allow a certificate-pinned RFC1918 LAN endpoint.
+        #[arg(long, default_value_t = false)] allow_lan: bool,
     },
 }
 
@@ -74,31 +82,62 @@ const OBJECT_TIMEOUT: Duration = Duration::from_secs(30);
 fn namespace(file_id: &str) -> String { format!("holochain-music/file/{file_id}") }
 const TRACK: &str = "ciphertext-chunks-v1";
 
+/// S17 deliberately permits only literal RFC1918 IPv4 for remote hosts: no
+/// DNS rebinding, internet exposure, userinfo, URL paths or local-link hosts.
+/// The TLS certificate is still verified against Bob's DHT-authenticated pin.
+fn validate_endpoint(url: &Url, allow_lan: bool) -> Result<()> {
+    ensure!(url.scheme() == "https" && url.username().is_empty()
+        && url.password().is_none() && url.port().is_some()
+        && url.port() != Some(0) && url.path() == "/"
+        && url.query().is_none() && url.fragment().is_none(),
+        "invalid MoQ HTTPS endpoint");
+    let host = url.host_str().ok_or_else(|| anyhow!("MoQ URL has no host"))?;
+    if matches!(host, "127.0.0.1" | "localhost" | "::1") { return Ok(()); }
+    let ip: Ipv4Addr = host.parse().context("MoQ LAN host must be literal IPv4")?;
+    ensure!(allow_lan && ip.is_private(),
+        "non-loopback MoQ endpoint needs explicit --allow-lan and RFC1918 IPv4");
+    Ok(())
+}
+
+fn advertised_host(bind: SocketAddr, allow_lan: bool, advertise_ip: Option<Ipv4Addr>) -> Result<IpAddr> {
+    if !allow_lan {
+        ensure!(advertise_ip.is_none() && bind.ip().is_loopback(),
+            "default MoQ publisher must bind to loopback without --advertise-ip");
+        return Ok(bind.ip());
+    }
+    let advertised = advertise_ip.context("--allow-lan requires --advertise-ip")?;
+    ensure!(advertised.is_private(), "S17 advertise IP must be RFC1918 private IPv4");
+    ensure!(bind.ip().is_unspecified() || bind.ip() == IpAddr::V4(advertised),
+        "S17 bind must match --advertise-ip or be 0.0.0.0");
+    Ok(IpAddr::V4(advertised))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
-        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index } => {
-            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index).await
+        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, allow_lan, advertise_ip, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index } => {
+            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, allow_lan, advertise_ip, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index).await
         }
-        Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl } => {
-            receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl).await
+        Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl, allow_lan } => {
+            receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl, allow_lan).await
         }
-        Command::RepairReceive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index } => {
-            repair_receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index).await
+        Command::RepairReceive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index, allow_lan } => {
+            repair_receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index, allow_lan).await
         }
     }
 }
 
 async fn publish(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
-    cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr, chunk_delay_ms: u64,
+    cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr,
+    allow_lan: bool, advertise_ip: Option<Ipv4Addr>, chunk_delay_ms: u64,
     jitter_every: u64, jitter_delay_ms: u64, repair_index: Option<usize>,
 ) -> Result<()> {
     ensure!(chunk_delay_ms <= 1000, "invalid per-chunk delay (max 1000 ms)");
     ensure!(jitter_delay_ms <= 2000, "invalid jitter delay (max 2000 ms)");
     ensure!((jitter_every == 0) == (jitter_delay_ms == 0),
         "jitter-every and jitter-delay-ms must both be zero or both nonzero");
-    ensure!(bind.ip().is_loopback(), "publisher must bind to a loopback address (S8 local prototype)");
+    let endpoint_ip = advertised_host(bind, allow_lan, advertise_ip)?;
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
     ensure!(!manifest.body.chunks.is_empty(), "S8 stream requires at least one chunk");
     if let Some(index) = repair_index {
@@ -112,7 +151,7 @@ async fn publish(
     let mut publisher = MoqPublishNode::bind(bind, &cert, &key, &namespace(&manifest.body.file_id))?;
     let addr = publisher.local_addr();
     let readiness = json!({
-        "url": format!("https://{addr}"),
+        "url": format!("https://{}", SocketAddr::new(endpoint_ip, addr.port())),
         "cert_fingerprint_hex": hex::encode(identity.fingerprint),
         "namespace": namespace(&manifest.body.file_id),
         "track": TRACK,
@@ -174,10 +213,9 @@ async fn publish(
 
 async fn receive(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
-    url: Url, fingerprint_hex: String, progress_jsonl: bool,
+    url: Url, fingerprint_hex: String, progress_jsonl: bool, allow_lan: bool,
 ) -> Result<()> {
-    ensure!(url.scheme() == "https" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
-        "S8 receiver only supports localhost QUIC endpoints");
+    validate_endpoint(&url, allow_lan)?;
     let fingerprint = hex::decode(fingerprint_hex).context("invalid TLS certificate pin hex")?;
     let fingerprint: [u8; 32] = fingerprint.try_into().map_err(|_| anyhow!("TLS pin must be SHA-256"))?;
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
@@ -228,10 +266,9 @@ async fn receive(
 /// his authenticated local Holochain conductor, NOT a publisher ready file.
 async fn repair_receive(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
-    url: Url, fingerprint_hex: String, index: usize,
+    url: Url, fingerprint_hex: String, index: usize, allow_lan: bool,
 ) -> Result<()> {
-    ensure!(url.scheme() == "https" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
-        "S15 selective repair supports only localhost QUIC endpoints");
+    validate_endpoint(&url, allow_lan)?;
     let fingerprint = hex::decode(fingerprint_hex).context("invalid pinned TLS fingerprint")?;
     let fingerprint: [u8; 32] = fingerprint.try_into().map_err(|_| anyhow!("TLS pin must be SHA-256"))?;
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
@@ -260,4 +297,35 @@ async fn repair_receive(
         "cipher_bytes": payload.len(), "manifest_sha256": manifest.digest,
         "file_id": manifest.body.file_id, "repair_transport": "pinned-moq-quic-v1"}));
     Ok(())
+}
+
+
+#[cfg(test)]
+mod s17_lan_tests {
+    use super::*;
+    #[test]
+    fn endpoint_requires_explicit_lan_and_exact_scheme() {
+        let local = Url::parse("https://127.0.0.1:4567").unwrap();
+        assert!(validate_endpoint(&local, false).is_ok());
+        let private = Url::parse("https://192.168.5.20:4567").unwrap();
+        assert!(validate_endpoint(&private, false).is_err());
+        assert!(validate_endpoint(&private, true).is_ok());
+        for rejected in ["https://8.8.8.8:4567", "http://192.168.1.2:4567",
+                         "https://192.168.1.2:4567/secret", "https://u@192.168.1.2:4567",
+                         "https://192.168.1.2:4567/?x=1", "https://127.0.0.1:0"] {
+            assert!(validate_endpoint(&Url::parse(rejected).unwrap(), true).is_err(), "{rejected}");
+        }
+    }
+    #[test]
+    fn publisher_advertisement_must_be_private_and_explicit() {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        assert!(advertised_host(localhost, false, None).is_ok());
+        let all: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        assert!(advertised_host(all, false, None).is_err());
+        assert!(advertised_host(all, true, None).is_err());
+        let lan: Ipv4Addr = "192.168.5.20".parse().unwrap();
+        assert_eq!(advertised_host(all, true, Some(lan)).unwrap(), IpAddr::V4(lan));
+        assert!(advertised_host(localhost, true, Some(lan)).is_err());
+        assert!(advertised_host(all, true, Some("8.8.8.8".parse().unwrap())).is_err());
+    }
 }

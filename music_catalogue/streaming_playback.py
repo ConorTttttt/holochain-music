@@ -126,16 +126,17 @@ def stream_granted_moq_from_live_conductor(
     target_store: str | Path, catalogue_role: str = "music_catalogue",
     storage_role: str = "music_storage", backend: str = "null",
     device: str = "default", timeout: int = 120, adaptive_buffer: bool = False,
-    include_trust_context: bool = False,
+    include_trust_context: bool = False, allow_lan_moq: bool = False,
 ) -> dict:
     """Play authenticated PCM while later MoQ chunks are still arriving.
 
-    This is explicitly a localhost-only post-grant prototype. S9 queries a
+    Default is localhost-only; opt-in RFC1918 LAN needs independently pinned
+    Holochain endpoint identity. S9 queries a
     real pinned Holochain conductor before MoQ starts. Caller must obtain the
     owner grant via a trusted rights decision; no key ever reaches S4/MoQ/DHT.
     """
-    if type(include_trust_context) is not bool:
-        raise PlaybackError("invalid trusted context setting")
+    if type(include_trust_context) is not bool or type(allow_lan_moq) is not bool:
+        raise PlaybackError("invalid trusted context or LAN setting")
     if type(adaptive_buffer) is not bool:
         raise PlaybackError("adaptive buffer setting must be boolean")
     if backend not in ("null", "alsa"):
@@ -217,6 +218,7 @@ def stream_granted_moq_from_live_conductor(
             catalogue_role=catalogue_role, storage_role=storage_role,
             timeout=timeout, on_trusted_manifest=trusted,
             on_verified_chunk=chunk, include_trust_context=include_trust_context,
+            allow_lan_moq=allow_lan_moq,
         )
         if gate is None:
             raise PlaybackError("trusted MoQ manifest was not supplied")

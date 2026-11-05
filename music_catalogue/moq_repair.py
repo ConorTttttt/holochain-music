@@ -39,7 +39,7 @@ def repair_missing_ciphertext_over_moq(
     *, signed_manifest: dict, ciphertext_store: str | Path,
     trusted_artist: bytes, expected_manifest_sha256: str,
     moq_binary: str | Path, moq_url: str, moq_cert_fingerprint_hex: str,
-    timeout: int = 60,
+    timeout: int = 60, allow_lan_moq: bool = False,
 ) -> dict:
     """Fetch exactly one missing signed S1 ciphertext CAS object via pinned MoQ.
 
@@ -61,9 +61,9 @@ def repair_missing_ciphertext_over_moq(
     if type(timeout) is not int or not 1 <= timeout <= 120:
         raise PlaybackError("invalid S15 MoQ repair timeout")
     try:
-        _bound_local_url(moq_url)
+        _bound_local_url(moq_url, allow_lan=allow_lan_moq)
     except ConductorBridgeError as exc:
-        raise PlaybackError("S15 requires Holochain-verified loopback QUIC endpoint") from exc
+        raise PlaybackError("S17 requires Holochain-verified loopback or opt-in LAN endpoint") from exc
     _fingerprint(moq_cert_fingerprint_hex)
     binary = Path(moq_binary).expanduser()
     if not binary.is_absolute() or not binary.is_file():
@@ -98,6 +98,8 @@ def repair_missing_ciphertext_over_moq(
                 "--url", moq_url,
                 "--cert-fingerprint-hex", moq_cert_fingerprint_hex,
                 "--index", str(chunk["index"])]
+        if allow_lan_moq and not moq_url.startswith("https://127.0.0.1:"):
+            argv.append("--allow-lan")
         try:
             completed = subprocess.run(argv, capture_output=True, text=True,
                                        timeout=timeout, check=False)
