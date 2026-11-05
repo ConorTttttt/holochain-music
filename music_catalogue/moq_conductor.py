@@ -65,6 +65,7 @@ def receive_moq_from_live_conductor(
     target_store: str | Path, catalogue_role: str = "music_catalogue",
     storage_role: str = "music_storage", timeout: int = 120,
     reader: ReadOnlyStorageNodeClient | None = None,
+    include_trust_context: bool = False,
 ) -> dict:
     """Retrieve and verify a finite encrypted music package over pinned MoQ.
 
@@ -189,4 +190,11 @@ def receive_moq_from_live_conductor(
         raise ConductorBridgeError("MoQ output mismatched the trusted manifest")
     # Defence in depth: don't trust a child process' success JSON alone.
     verify_package(signed_manifest, Path(target_store), artist_public)
+    if include_trust_context:
+        # S10 owner-grant verifier must use the SAME owner signing key and
+        # Bob agent that the trusted, DNA-pinned conductor authenticated.
+        # Only public metadata leaves this function: NEVER a content key.
+        return {**report, "verified_owner_key_hex": artist_public.hex(),
+                "verified_reader_agent": reader_agent,
+                "verified_owner_agent": artist_agent}
     return report
