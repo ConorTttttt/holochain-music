@@ -78,6 +78,26 @@ nix develop ./music-e2e --command bash -euc '
 '
 ```
 
+After the default silent test succeeds, the already-confirmed HP Pro Mini ALSA
+speakers can optionally be exercised through the **same live S12 conductor +
+MoQ + grant stream** by explicitly selecting the backend (comfortable volume
+recommended; no special system privileges):
+
+```bash
+cd /mnt/holochain/holochain-music
+export HOLOCHAIN_S12_AUDIO_BACKEND=alsa
+nix develop ./music-e2e --command bash -euc '
+  cd /mnt/holochain/holochain-music/music-e2e
+  cargo test --test s12_overlapping_moq_playback_sweettest -- --nocapture
+'
+unset HOLOCHAIN_S12_AUDIO_BACKEND
+```
+
+The Rust Sweettest defaults to **null** unless this variable is explicitly
+set to `alsa`. The 4-second tone may sound uneven under intentional 150ms
+inter-chunk delays; no PCM is silently skipped. Actual speaker overlap has
+not been tested by the authoring environment.
+
 **Expected only after actual Ubuntu/CI verification:** one test
 `bob_plays_granted_pcm_before_last_moq_chunk_arrives` passes. It installs
 **three distinct actual Holochain conductors** (Alice, Bob, Carol), uploads a
