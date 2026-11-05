@@ -15,7 +15,7 @@ The original first QUIC stream and S9–S14 defaults are unchanged.
 - Bob's new `holochain-music-moq repair-receive --index 3` opens a fresh
   cert-pinned QUIC connection to that same endpoint, subscribes to the
   matching repair track, validates object SHA-256/length against the pinned
-  signed artist manifest, rejects extra objects, and writes only ciphertext.
+  signed artist manifest, ignores all unrequested objects, and writes only ciphertext.
 - `music_catalogue.moq_repair.repair_missing_ciphertext_over_moq` checks
   artist signature and **Holochain-verified manifest digest**, expected
   one-object-missing local CAS layout, local symlink/corruption refusal,
