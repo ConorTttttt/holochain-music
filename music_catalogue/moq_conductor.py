@@ -8,6 +8,7 @@ from the publisher's local readiness file. Only ciphertext crosses MoQ.
 from __future__ import annotations
 
 import json
+from ipaddress import IPv4Address, IPv4Network, AddressValueError
 import os
 import select
 import time
@@ -142,16 +143,33 @@ def _hex(label: str, value: Any, length: int = 64) -> None:
         raise ConductorBridgeError(f"invalid {label}")
 
 
-def _bound_local_url(value: Any) -> str:
-    if not isinstance(value, str) or len(value) > 80:
-        raise ConductorBridgeError("invalid host MoQ URL")
+RFC1918 = (IPv4Network("10.0.0.0/8"), IPv4Network("172.16.0.0/12"),
+           IPv4Network("192.168.0.0/16"))
+
+
+def _bound_local_url(value: Any, *, allow_lan: bool = False) -> str:
+    """Reject DNS, userinfo and public endpoints even in opt-in LAN mode.
+
+    The URL must still come from Carol's authenticated Holochain S2 action,
+    and the certificate fingerprint remains pinned independently. No host
+    readiness JSON or untrusted DNS value can promote a remote connection.
+    """
+    if type(allow_lan) is not bool or not isinstance(value, str) or len(value) > 80:
+        raise ConductorBridgeError("invalid host MoQ URL/allow_lan")
     try:
         u = urlsplit(value)
-        if (u.scheme != "https" or u.hostname != "127.0.0.1" or
-                u.username is not None or u.password is not None or u.port is None or
+        if (u.scheme != "https" or u.username is not None or
+                u.password is not None or u.port is None or
                 not 1 <= u.port <= 65535 or u.path or u.query or u.fragment or
-                value != f"https://127.0.0.1:{u.port}"):
-            raise ConductorBridgeError("MoQ URL must be an exact loopback HTTPS endpoint")
+                not u.hostname or value != f"https://{u.hostname}:{u.port}"):
+            raise ConductorBridgeError("MoQ endpoint must be canonical HTTPS IPv4:port")
+        if u.hostname != "127.0.0.1":
+            try:
+                addr = IPv4Address(u.hostname)
+            except AddressValueError as exc:
+                raise ConductorBridgeError("MoQ LAN endpoint must use a literal IPv4 address") from exc
+            if not allow_lan or not any(addr in network for network in RFC1918):
+                raise ConductorBridgeError("remote MoQ requires explicit RFC1918 LAN opt-in")
     except ValueError as exc:
         raise ConductorBridgeError("malformed MoQ URL") from exc
     return value
@@ -167,6 +185,7 @@ def receive_moq_from_live_conductor(
     include_trust_context: bool = False,
     on_trusted_manifest: Callable[[dict, bytes, str, str], None] | None = None,
     on_verified_chunk: Callable[[int], None] | None = None,
+    allow_lan_moq: bool = False,
 ) -> dict:
     """Retrieve and verify a finite encrypted music package over pinned MoQ.
 
@@ -189,6 +208,8 @@ def receive_moq_from_live_conductor(
         raise ConductorBridgeError("invalid local Holochain admin port")
     if type(timeout) is not int or not 1 <= timeout <= 300:
         raise ConductorBridgeError("invalid timeout")
+    if type(allow_lan_moq) is not bool:
+        raise ConductorBridgeError("allow_lan_moq must be a boolean")
     for label, value in (
         ("app ID", app_id), ("catalogue DNA", catalogue_dna),
         ("storage DNA", storage_dna), ("reader agent", reader_agent),
@@ -246,7 +267,7 @@ def receive_moq_from_live_conductor(
         body.get(k) != v for k, v in expected_endpoint.items()
     ):
         raise ConductorBridgeError("MoQ endpoint does not bind the exact host/file/manifest")
-    moq_url = _bound_local_url(body["url"])
+    moq_url = _bound_local_url(body["url"], allow_lan=allow_lan_moq)
     _hex("MoQ certificate fingerprint", body["cert_fingerprint_hex"])
     # The signed manifest/receipt are public. Do not fetch ciphertext through
     # HTTP: MoQ must be the only path that transfers ciphertext for this test.
@@ -275,6 +296,8 @@ def receive_moq_from_live_conductor(
                 "--expected-manifest-sha256", digest,
                 "--url", moq_url,
                 "--cert-fingerprint-hex", body["cert_fingerprint_hex"]]
+        if allow_lan_moq and not moq_url.startswith("https://127.0.0.1:"):
+            recv.append("--allow-lan")
         if on_verified_chunk is not None:
             report = _receive_verified_progress(recv, signed_manifest,
                                                 Path(target_store),
