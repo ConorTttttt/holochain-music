@@ -1,0 +1,32 @@
+name: Music catalogue two-conductor Sweettest
+
+on:
+  pull_request:
+    paths:
+      - 'music-dna/**'
+      - 'music-e2e/**'
+      - '.github/workflows/music-catalogue-sweettest.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  two-conductors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build catalogue DNA and run genuine Holochain 0.7 Sweettest conductors
+        run: |
+          nix develop ./music-e2e --command bash -euc '
+            cd music-dna
+            cargo build --release --target wasm32-unknown-unknown
+            hc dna pack workdir
+            cd ../music-e2e
+            cargo test --test catalogue_sweettest -- --nocapture
+          '

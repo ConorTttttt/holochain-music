@@ -1,0 +1,16 @@
+[package]
+name = "music-catalogue-e2e"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Separate native workspace: Holochain conductor/Sweettest must NOT enter the
+# music-dna Wasm workspace, which targets wasm32-unknown-unknown.
+
+[workspace]
+resolver = "2"
+
+[dev-dependencies]
+holochain = { version = "=0.7.0", default-features = false, features = ["sweettest", "wasmer-sys-cranelift"] }
+holo_hash = "=0.7.0"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

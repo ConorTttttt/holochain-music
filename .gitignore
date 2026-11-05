@@ -14,3 +14,9 @@ local-library/
 *.flac
 *.m4a
 *.wav
+
+# Generated Holochain DNA/hApp bundles and Rust build outputs
+music-dna/target/
+music-dna/workdir/*.dna
+music-dna/workdir/*.happ
+music-e2e/target/
