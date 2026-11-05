@@ -253,7 +253,7 @@ def receive_moq_from_live_conductor(
     storage = reader if reader is not None else ReadOnlyStorageNodeClient(storage_url)
     signed_manifest = storage.manifest(file_id)
     artist_public = key_for_agent(owner_key, artist_agent, OWNER_PURPOSE)
-    key_for_agent(node_key, node_agent, HOST_PURPOSE)
+    host_public = key_for_agent(node_key, node_agent, HOST_PURPOSE)
     track_body = verify_track_manifest(track.body, signed_manifest,
                                        author=artist_agent, trusted_signer=artist_public)
     owned = verify_owned_manifest(signed_manifest, artist_agent, owner_key, owner_commitment)
@@ -307,5 +307,7 @@ def receive_moq_from_live_conductor(
         # Only public metadata leaves this function: NEVER a content key.
         return {**report, "verified_owner_key_hex": artist_public.hex(),
                 "verified_reader_agent": reader_agent,
-                "verified_owner_agent": artist_agent}
+                "verified_owner_agent": artist_agent,
+                "verified_node_key_hex": host_public.hex(),
+                "verified_node_agent": node_agent}
     return report
