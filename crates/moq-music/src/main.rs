@@ -13,7 +13,7 @@ use holochain_moq_realtime::{
     transport::{Publication, PublishTransport, SubscribeTransport, Subscription},
     MoqPublishNode, MoqSubscribeNode,
 };
-use holochain_music_moq::{load_manifest, read_verified_chunk, store_verified_chunk};
+use holochain_music_moq::{load_manifest, read_verified_chunk, repair_track, store_verified_chunk};
 use serde_json::json;
 use std::{fs, io::Write, net::SocketAddr, path::PathBuf, time::Duration};
 use url::Url;
@@ -39,6 +39,11 @@ enum Command {
         #[arg(long, default_value_t = 0)] jitter_every: u64,
         /// Test-only extra milliseconds after each jittered object.
         #[arg(long, default_value_t = 0)] jitter_delay_ms: u64,
+        /// S15 opt-in: after the normal stream, serve exactly one missing
+        /// ciphertext index on a second QUIC/MoQ session at the same TLS pin.
+        /// Host side must choose the index in advance (test choreography);
+        /// arbitrary subscriber-driven requests are NOT supported yet.
+        #[arg(long)] repair_index: Option<usize>,
     },
     /// Receive ciphertext into a separate listener-side CAS without a key.
     Receive {
@@ -51,6 +56,16 @@ enum Command {
         /// Opt-in per-verified-chunk progress JSONL (no secrets or plaintext).
         #[arg(long, default_value_t = false)] progress_jsonl: bool,
     },
+    /// Fetch exactly one S1-manifest-pinned ciphertext CAS object via new MoQ session.
+    RepairReceive {
+        #[arg(long)] manifest: PathBuf,
+        #[arg(long)] store: PathBuf,
+        #[arg(long)] trusted_artist_hex: String,
+        #[arg(long)] expected_manifest_sha256: String,
+        #[arg(long)] url: Url,
+        #[arg(long)] cert_fingerprint_hex: String,
+        #[arg(long)] index: usize,
+    },
 }
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -62,11 +77,14 @@ const TRACK: &str = "ciphertext-chunks-v1";
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
-        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms } => {
-            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms).await
+        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index } => {
+            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms, repair_index).await
         }
         Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl } => {
             receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl).await
+        }
+        Command::RepairReceive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index } => {
+            repair_receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, index).await
         }
     }
 }
@@ -74,7 +92,7 @@ async fn main() -> Result<()> {
 async fn publish(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
     cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr, chunk_delay_ms: u64,
-    jitter_every: u64, jitter_delay_ms: u64,
+    jitter_every: u64, jitter_delay_ms: u64, repair_index: Option<usize>,
 ) -> Result<()> {
     ensure!(chunk_delay_ms <= 1000, "invalid per-chunk delay (max 1000 ms)");
     ensure!(jitter_delay_ms <= 2000, "invalid jitter delay (max 2000 ms)");
@@ -83,6 +101,9 @@ async fn publish(
     ensure!(bind.ip().is_loopback(), "publisher must bind to a loopback address (S8 local prototype)");
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
     ensure!(!manifest.body.chunks.is_empty(), "S8 stream requires at least one chunk");
+    if let Some(index) = repair_index {
+        ensure!(index < manifest.body.chunks.len(), "S15 repair index outside signed manifest");
+    }
     // Validate the S4 replica *before* accepting a remote subscriber. We
     // validate again immediately before each send against file mutations.
     for c in &manifest.body.chunks { read_verified_chunk(&store, c)?; }
@@ -125,8 +146,29 @@ async fn publish(
         tokio::time::sleep(Duration::from_millis(chunk_delay_ms + periodic_jitter)).await;
     }
     tokio::time::sleep(Duration::from_millis(600)).await;
-    drop(publication); // closes the track for this one-shot stream
-    println!("{}", json!({"sent_chunks": manifest.body.chunks.len(), "cipher_bytes": sent}));
+    drop(publication); // closes the primary MoQ track
+    // S15 bounded proof of a selective ciphertext request using a new MoQ
+    // SUBSCRIBE, NOT an S4 HTTP chunk read. This same bound server and TLS
+    // certificate remains live, so Bob's validated DHT pin remains valid.
+    // Host and test runner have preselected ONE repair index: this does NOT
+    // implement arbitrary peer-driven repair requests, a relay or automatic
+    // network-loss resumption. Each session serves only the selected object.
+    if let Some(index) = repair_index {
+        tokio::time::timeout(PUBLISH_WAIT_FOR_DHT, publisher.connect()).await
+            .context("S15 selective MoQ repair subscriber did not connect")??;
+        let mut repair = publisher.publish(&repair_track(index)).await?;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let ciphertext = read_verified_chunk(&store, &manifest.body.chunks[index])?;
+        let repair_bytes = ciphertext.len();
+        repair.send(Bytes::from(ciphertext)).await.context("MoQ selective ciphertext repair send failed")?;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        drop(repair);
+        println!("{}", json!({"sent_chunks": manifest.body.chunks.len(), "cipher_bytes": sent,
+            "repair_index": index, "repair_cipher_bytes": repair_bytes,
+            "repair_transport": "pinned-moq-quic-v1"}));
+    } else {
+        println!("{}", json!({"sent_chunks": manifest.body.chunks.len(), "cipher_bytes": sent}));
+    }
     Ok(())
 }
 
@@ -178,5 +220,44 @@ async fn receive(
     if progress_jsonl { report["kind"] = json!("transfer_complete"); }
     println!("{report}");
     std::io::stdout().flush()?;
+    Ok(())
+}
+
+/// S15 single-index subscriber request over a separate pinned QUIC/MoQT
+/// session. Bob must already know this URL and certificate fingerprint from
+/// his authenticated local Holochain conductor, NOT a publisher ready file.
+async fn repair_receive(
+    manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
+    url: Url, fingerprint_hex: String, index: usize,
+) -> Result<()> {
+    ensure!(url.scheme() == "https" && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")),
+        "S15 selective repair supports only localhost QUIC endpoints");
+    let fingerprint = hex::decode(fingerprint_hex).context("invalid pinned TLS fingerprint")?;
+    let fingerprint: [u8; 32] = fingerprint.try_into().map_err(|_| anyhow!("TLS pin must be SHA-256"))?;
+    let manifest = load_manifest(&manifest_path, &artist, &digest)?;
+    ensure!(index < manifest.body.chunks.len(), "repair index outside signed S1 manifest");
+    let chunk = &manifest.body.chunks[index];
+    let identity = TransportIdentity { fingerprint };
+    let mut receiver = MoqSubscribeNode::new_with_pinned_identity(
+        url, &namespace(&manifest.body.file_id), identity)?;
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, receiver.connect()).await
+        .context("S15 pinned MoQ repair QUIC connection timeout")??;
+    let mut subscription = tokio::time::timeout(HANDSHAKE_TIMEOUT,
+        receiver.subscribe(&repair_track(index))).await
+        .context("S15 repair subscription timed out")??;
+    let next = tokio::time::timeout(OBJECT_TIMEOUT, subscription.recv()).await
+        .context("S15 missing selective MoQ repair object")??;
+    let payload = next.ok_or_else(|| anyhow!("S15 repair publisher sent no ciphertext"))?;
+    // Reject oversized or mismatched objects before local filesystem write.
+    store_verified_chunk(&store, chunk, &payload)?;
+    // No second/extra object may be accepted in this one-object protocol.
+    let end = tokio::time::timeout(OBJECT_TIMEOUT, subscription.recv()).await
+        .context("S15 repair publisher did not cleanly finish one-object track")??;
+    ensure!(end.is_none(), "S15 publisher sent extra unrequested ciphertext objects");
+    drop(subscription);
+    drop(receiver);
+    println!("{}", json!({"repair_verified": true, "repair_index": index,
+        "cipher_bytes": payload.len(), "manifest_sha256": manifest.digest,
+        "file_id": manifest.body.file_id, "repair_transport": "pinned-moq-quic-v1"}));
     Ok(())
 }
