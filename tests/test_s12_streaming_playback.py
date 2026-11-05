@@ -64,6 +64,18 @@ class TestVerifiedChunkGate(unittest.TestCase):
         self.assertTrue(done.wait(2))
         self.assertEqual(result, ["failed"])
 
+
+    def test_first_output_snapshot_is_atomic_with_chunk_progress(self):
+        gate = VerifiedChunkGate(total=2)
+        gate.mark(0)
+        first_at, first_count = gate.snapshot()
+        gate.mark(1)
+        self.assertEqual(first_count, 1)
+        self.assertLess(first_at, gate.last_chunk_at)
+        late_at, late_count = gate.snapshot()
+        self.assertEqual(late_count, 2)
+        self.assertGreater(late_at, gate.last_chunk_at)
+
     def test_missing_chunk_times_out_and_incomplete_finish_fails(self):
         gate = VerifiedChunkGate(total=2, stall_timeout=0.02)
         with self.assertRaises(PlaybackError):
