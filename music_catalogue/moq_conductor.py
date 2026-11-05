@@ -1,0 +1,192 @@
+"""S9: bind a real Holochain-author-authenticated host MoQ endpoint to S1.
+
+No JSON from a third-party peer is accepted as provenance. Only a trusted
+local conductor app and two *independently supplied* DNA pins anchor records.
+The endpoint URL/certificate pin comes from the host-authored S2 entry, never
+from the publisher's local readiness file. Only ciphertext crosses MoQ.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+from typing import Any
+from urllib.parse import urlsplit
+
+from holochain_storage.holochain_identity import (
+    HOST_PURPOSE, OWNER_PURPOSE, key_for_agent,
+    verify_owned_manifest, verify_replica_claim,
+)
+from holochain_storage.network_client import ReadOnlyStorageNodeClient
+from holochain_storage.package import StorageError, canonical, verify_package
+from .contract import verify_track_manifest
+from .live_conductor import ConductorBridgeError, _record
+
+MOQ_BRIDGE_SCHEMA = "holochain-music/conductor-moq-read/v1"
+MOQ_ENDPOINT_SCHEMA = "holochain-storage/moq-endpoint/v1"
+EXPECTED_KEYS = {
+    "schema", "app_id", "reader_agent", "catalogue_dna", "storage_dna",
+    "track", "owner_key_binding", "owner_commitment", "node_key_binding",
+    "replica_claim", "moq_endpoint",
+}
+HEX = frozenset("0123456789abcdef")
+
+
+def _pin(label: str, value: str) -> None:
+    if not isinstance(value, str) or not value or len(value) > 200 or "\x00" in value:
+        raise ConductorBridgeError(f"invalid {label}")
+
+
+def _hex(label: str, value: Any, length: int = 64) -> None:
+    if not isinstance(value, str) or len(value) != length or any(c not in HEX for c in value):
+        raise ConductorBridgeError(f"invalid {label}")
+
+
+def _bound_local_url(value: Any) -> str:
+    if not isinstance(value, str) or len(value) > 80:
+        raise ConductorBridgeError("invalid host MoQ URL")
+    try:
+        u = urlsplit(value)
+        if (u.scheme != "https" or u.hostname != "127.0.0.1" or
+                u.username is not None or u.password is not None or u.port is None or
+                not 1 <= u.port <= 65535 or u.path or u.query or u.fragment or
+                value != f"https://127.0.0.1:{u.port}"):
+            raise ConductorBridgeError("MoQ URL must be an exact loopback HTTPS endpoint")
+    except ValueError as exc:
+        raise ConductorBridgeError("malformed MoQ URL") from exc
+    return value
+
+
+def receive_moq_from_live_conductor(
+    *, bridge_binary: str | Path, moq_binary: str | Path, admin_port: int,
+    app_id: str, catalogue_dna: str, storage_dna: str, reader_agent: str,
+    artist_agent: str, node_agent: str, track_id: str, storage_url: str,
+    target_store: str | Path, catalogue_role: str = "music_catalogue",
+    storage_role: str = "music_storage", timeout: int = 120,
+    reader: ReadOnlyStorageNodeClient | None = None,
+) -> dict:
+    """Retrieve and verify a finite encrypted music package over pinned MoQ.
+
+    1. Authenticate Bob's *local* Holochain app, role→DNA hashes and agent.
+    2. Read real DHT-authored S5/S2 artist, file, host, MoQ endpoint records.
+    3. Fetch S1 manifest & S4 receipt (not ciphertext) and verify signer,
+       catalogue digest, file commitment, receipt and replica claim.
+    4. Give MoQ CLI only the DHT-derived URL/certificate fingerprint and
+       independently verified artist signing key, manifest digest and file.
+    5. Verify every received ciphertext chunk against the signed S1 manifest.
+
+    No plaintext, content key, artist private key or host signing secret goes
+    to Holochain, MoQ, or the S4 server. A test-only reader may be injected;
+    production must use ReadOnlyStorageNodeClient. Admin WebSocket localhost.
+    """
+    bridge, moq = Path(bridge_binary).expanduser(), Path(moq_binary).expanduser()
+    if any(not p.is_absolute() or not p.is_file() for p in (bridge, moq)):
+        raise ConductorBridgeError("trusted bridge and MoQ binaries must be existing absolute files")
+    if type(admin_port) is not int or not 1 <= admin_port <= 65535:
+        raise ConductorBridgeError("invalid local Holochain admin port")
+    if type(timeout) is not int or not 1 <= timeout <= 300:
+        raise ConductorBridgeError("invalid timeout")
+    for label, value in (
+        ("app ID", app_id), ("catalogue DNA", catalogue_dna),
+        ("storage DNA", storage_dna), ("reader agent", reader_agent),
+        ("artist agent", artist_agent), ("node agent", node_agent),
+        ("catalogue role", catalogue_role), ("storage role", storage_role),
+    ):
+        _pin(label, value)
+    _hex("track ID", track_id, 32)
+    if catalogue_dna == storage_dna:
+        raise ConductorBridgeError("two distinct trusted DNA pins are required")
+    argv = [str(bridge), "--admin", f"127.0.0.1:{admin_port}",
+            "--app-id", app_id, "--catalogue-role", catalogue_role,
+            "--storage-role", storage_role,
+            "--expect-catalogue-dna", catalogue_dna,
+            "--expect-storage-dna", storage_dna,
+            "--artist", artist_agent, "--node", node_agent,
+            "--track-id", track_id, "--include-moq-endpoint", "true"]
+    try:
+        completed = subprocess.run(argv, text=True, capture_output=True,
+                                   timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ConductorBridgeError("unable to query trusted local conductor") from exc
+    if completed.returncode or len(completed.stdout.encode("utf-8")) > 1_000_000:
+        raise ConductorBridgeError("Holochain MoQ bridge refused lookup")
+    try:
+        reply = json.loads(completed.stdout)
+    except ValueError as exc:
+        raise ConductorBridgeError("invalid Holochain MoQ response") from exc
+    if not isinstance(reply, dict) or set(reply) != EXPECTED_KEYS or reply.get("schema") != MOQ_BRIDGE_SCHEMA:
+        raise ConductorBridgeError("unexpected Holochain MoQ bridge schema")
+    for field, pinned in (("app_id", app_id), ("catalogue_dna", catalogue_dna),
+                          ("storage_dna", storage_dna), ("reader_agent", reader_agent)):
+        if reply[field] != pinned:
+            raise ConductorBridgeError(f"Holochain {field} does not match trusted pin")
+    track = _record(reply["track"])
+    owner_key = _record(reply["owner_key_binding"])
+    owner_commitment = _record(reply["owner_commitment"])
+    node_key = _record(reply["node_key_binding"])
+    claim = _record(reply["replica_claim"])
+    endpoint = _record(reply["moq_endpoint"])
+    if any(r.author != artist_agent for r in (track, owner_key, owner_commitment)) or any(
+        r.author != node_agent for r in (node_key, claim, endpoint)
+    ):
+        raise ConductorBridgeError("Holochain action author mismatch")
+    if track.body.get("track_id") != track_id or track.body.get("artist_agent") != artist_agent:
+        raise ConductorBridgeError("incorrect artist/track from Holochain")
+    file_id, digest = track.body.get("file_id"), track.body.get("manifest_sha256")
+    _hex("file ID", file_id)
+    _hex("S1 manifest SHA-256", digest)
+    expected_endpoint = {"schema": MOQ_ENDPOINT_SCHEMA, "node_agent": node_agent,
+                         "owner_agent": artist_agent, "file_id": file_id,
+                         "manifest_sha256": digest}
+    body = endpoint.body
+    if set(body) != (set(expected_endpoint) | {"url", "cert_fingerprint_hex"}) or any(
+        body.get(k) != v for k, v in expected_endpoint.items()
+    ):
+        raise ConductorBridgeError("MoQ endpoint does not bind the exact host/file/manifest")
+    moq_url = _bound_local_url(body["url"])
+    _hex("MoQ certificate fingerprint", body["cert_fingerprint_hex"])
+    # The signed manifest/receipt are public. Do not fetch ciphertext through
+    # HTTP: MoQ must be the only path that transfers ciphertext for this test.
+    storage = reader if reader is not None else ReadOnlyStorageNodeClient(storage_url)
+    signed_manifest = storage.manifest(file_id)
+    artist_public = key_for_agent(owner_key, artist_agent, OWNER_PURPOSE)
+    key_for_agent(node_key, node_agent, HOST_PURPOSE)
+    track_body = verify_track_manifest(track.body, signed_manifest,
+                                       author=artist_agent, trusted_signer=artist_public)
+    owned = verify_owned_manifest(signed_manifest, artist_agent, owner_key, owner_commitment)
+    if owned != track_body:
+        raise StorageError("catalogue and owner commitment do not agree")
+    receipt = storage.receipt(signed_manifest)
+    verify_replica_claim(receipt, signed_manifest, artist_agent, node_agent,
+                         owner_key, node_key, owner_commitment, claim)
+    with tempfile.TemporaryDirectory(prefix="holochain-music-s9-manifest-") as directory:
+        signed_path = Path(directory) / "signed-manifest.json"
+        signed_path.write_bytes(canonical(signed_manifest))
+        recv = [str(moq), "receive", "--manifest", str(signed_path),
+                "--store", str(Path(target_store)),
+                "--trusted-artist-hex", artist_public.hex(),
+                "--expected-manifest-sha256", digest,
+                "--url", moq_url,
+                "--cert-fingerprint-hex", body["cert_fingerprint_hex"]]
+        try:
+            result = subprocess.run(recv, capture_output=True, text=True,
+                                    timeout=timeout, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ConductorBridgeError("MoQ ciphertext transfer failed") from exc
+        if result.returncode or len(result.stdout.encode("utf-8")) > 4096:
+            raise ConductorBridgeError("pinned MoQ ciphertext transfer rejected or incomplete")
+        try:
+            report = json.loads(result.stdout)
+        except ValueError as exc:
+            raise ConductorBridgeError("invalid MoQ ciphertext report") from exc
+    if not isinstance(report, dict) or set(report) != {
+        "verified", "received_chunks", "cipher_bytes", "manifest_sha256", "file_id"
+    } or report["verified"] is not True or report["file_id"] != file_id or (
+        report["manifest_sha256"] != digest or
+        report["received_chunks"] != len(signed_manifest["body"]["chunks"])
+    ):
+        raise ConductorBridgeError("MoQ output mismatched the trusted manifest")
+    # Defence in depth: don't trust a child process' success JSON alone.
+    verify_package(signed_manifest, Path(target_store), artist_public)
+    return report

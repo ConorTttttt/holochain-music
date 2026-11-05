@@ -46,6 +46,7 @@ enum Command {
 }
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
+const PUBLISH_WAIT_FOR_DHT: Duration = Duration::from_secs(180);
 const OBJECT_TIMEOUT: Duration = Duration::from_secs(30);
 fn namespace(file_id: &str) -> String { format!("holochain-music/file/{file_id}") }
 const TRACK: &str = "ciphertext-chunks-v1";
@@ -91,7 +92,7 @@ async fn publish(
     f.write_all(&serde_json::to_vec(&readiness)?)?;
     f.sync_all()?;
 
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, publisher.connect()).await
+    tokio::time::timeout(PUBLISH_WAIT_FOR_DHT, publisher.connect()).await
         .context("timed out waiting for MoQ subscriber")??;
     let mut publication = publisher.publish(TRACK).await?;
     // The QUIC handshake finishes before SUBSCRIBE is processed. MoQ carries
@@ -131,27 +132,18 @@ async fn receive(
         .context("MoQ subscription timed out")??;
     let mut received = 0usize;
     let mut bytes = 0u64;
-    // A signed S1 manifest commits to the exact ordered chunk count and
-    // hashes. Treat receiving all of those objects as completion: a QUIC
-    // peer may close or time out after sending the last object without
-    // delivering a separate clean end-of-track notification. Waiting for
-    // another recv() would reject a fully authenticated download.
-    //
-    // This is an ordered *finite file transfer*, not a live media stream.
-    // An early track end, missing chunk, or SHA-256 mismatch still fails.
+    // A finite signed S1 manifest commits to the exact ordered count/hashes.
+    // Do not await an unreliable end-of-stream signal after all chunks arrive.
     for chunk in &manifest.body.chunks {
         let next = tokio::time::timeout(OBJECT_TIMEOUT, subscription.recv()).await
             .context("missing/truncated MoQ ciphertext stream")??;
         let payload = next.ok_or_else(|| anyhow!(
-            "MoQ stream incomplete: received {received} of {} chunks",
-            manifest.body.chunks.len()
+            "MoQ stream incomplete: received {received} of {} chunks", manifest.body.chunks.len()
         ))?;
         store_verified_chunk(&store, chunk, &payload)?;
         received += 1;
         bytes += payload.len() as u64;
     }
-    // Done: the independently pinned manifest authenticates the object
-    // count, order, lengths and hashes. Do not wait for a QUIC close.
     drop(subscription);
     drop(receiver);
     // No plaintext is reconstructed here. The S1 decryptor requires a

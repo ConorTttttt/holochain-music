@@ -3,7 +3,7 @@
 //! An authenticated local Holochain conductor returns the action authors.
 
 use hdk::prelude::*;
-use music_storage_integrity::{EntryTypes, FileCommitment, LinkTypes, ReplicaClaim, SigningKeyBinding};
+use music_storage_integrity::{EntryTypes, FileCommitment, LinkTypes, MoqEndpoint, ReplicaClaim, SigningKeyBinding};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AuthoredRecord<T> {
@@ -98,4 +98,23 @@ pub fn get_replica_claims(lookup: FileLookup) -> ExternResult<Vec<AuthoredRecord
         .into_iter().filter(|r| r.author == r.body.node_agent
             && r.body.owner_agent == lookup.owner_agent
             && r.body.file_id == lookup.file_id).collect())
+}
+
+/// Host agent advertises QUIC endpoint and cert fingerprint for one encrypted
+/// package; its author must equal `node_agent` (enforced in integrity zome).
+#[hdk_extern]
+pub fn publish_moq_endpoint(endpoint: MoqEndpoint) -> ExternResult<ActionHash> {
+    let me = agent_info()?.agent_initial_pubkey;
+    let hash = create_entry(EntryTypes::MoqEndpoint(endpoint))?;
+    create_link(me, hash.clone(), LinkTypes::AgentToMoqEndpoint, ())?;
+    Ok(hash)
+}
+
+/// Return action-authenticated host endpoint bindings. Readers MUST reject
+/// missing/ambiguous bindings for their target file and manifest SHA-256.
+#[hdk_extern]
+pub fn get_moq_endpoints(host: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<MoqEndpoint>>> {
+    let expected = host.to_string();
+    Ok(linked_records::<MoqEndpoint>(host, LinkTypes::AgentToMoqEndpoint)?
+        .into_iter().filter(|r| r.author == expected && r.body.node_agent == expected).collect())
 }
