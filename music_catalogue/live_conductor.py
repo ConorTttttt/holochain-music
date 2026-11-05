@@ -55,9 +55,9 @@ def fetch_from_live_conductor(
     artist_agent: str,
     node_agent: str,
     track_id: str,
-    signed_manifest: dict,
     storage_url: str,
     target_store: str | Path,
+    signed_manifest: dict | None = None,
     catalogue_role: str = "music_catalogue",
     storage_role: str = "music_storage",
     timeout: int = 120,
@@ -65,8 +65,8 @@ def fetch_from_live_conductor(
 ) -> dict:
     """Query Bob's conductor and download only the authenticated ciphertext.
 
-    The signed manifest must be supplied out-of-band (e.g. fetched from S4)
-    and is verified against the pinned S5+S2 digest and Ed25519 artist key.
+    When omitted, the untrusted S4 signed manifest is fetched by its S5 file
+    ID and verified against the pinned S5+S2 digest and artist Ed25519 key.
     The S4 node is not given any decryption key. The explicit reader_agent and
     DNA hashes must be pinned before the bridge starts: don't obtain them
     from the bridge output itself and call that authentication.
@@ -141,6 +141,12 @@ def fetch_from_live_conductor(
         raise ConductorBridgeError("wrong track returned by Holochain")
 
     node_reader = reader if reader is not None else ReadOnlyStorageNodeClient(storage_url)
+    if signed_manifest is None:
+        file_id = track.body.get("file_id")
+        if (not isinstance(file_id, str) or len(file_id) != 64
+                or any(c not in "0123456789abcdef" for c in file_id)):
+            raise ConductorBridgeError("invalid Holochain-pinned file ID")
+        signed_manifest = node_reader.manifest(file_id)
     return fetch_verified_track(
         track_record=track,
         signed_manifest=signed_manifest,

@@ -150,6 +150,25 @@ class ReadOnlyStorageNodeClient:
         except HTTPError as exc:
             raise RemoteStorageError(f"remote HTTP {exc.code}: {exc.read(4096).decode(errors='replace')}") from exc
 
+    def manifest(self, file_id: str) -> dict:
+        """Fetch an untrusted signed manifest from the node for later pinning.
+
+        A manifest is not authenticated merely because S4 returned it. The
+        caller MUST compare its digest with the validated S5/S2 commitment and
+        verify the artist Ed25519 signature before downloading any chunks.
+        """
+        if (not isinstance(file_id, str) or len(file_id) != 64
+                or any(c not in "0123456789abcdef" for c in file_id)):
+            raise RemoteStorageError("invalid file ID for manifest request")
+        try:
+            document = json.loads(self._get(f"/v1/packages/{file_id}/manifest"))
+        except (ValueError, TypeError) as exc:
+            raise RemoteStorageError("invalid signed manifest JSON from storage node") from exc
+        if (not isinstance(document, dict) or not isinstance(document.get("body"), dict)
+                or document["body"].get("file_id") != file_id):
+            raise RemoteStorageError("remote manifest references the wrong file")
+        return document
+
     def receipt(self, signed_manifest: dict) -> dict:
         """Retrieve the signed acceptance receipt for exactly this package ID."""
         from .package import _assert_manifest, _verify_signed

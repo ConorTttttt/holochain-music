@@ -74,6 +74,46 @@ class LocalConductorBridgeTests(unittest.TestCase):
         self.assertIn("127.0.0.1:9000", argv)
         self.assertFalse(args.kwargs.get("shell", False))
 
+    def test_downloads_manifest_from_node_when_not_supplied(self):
+        class ReaderWithManifest:
+            def __init__(self, inner, package):
+                self.inner = inner
+                self.package = package
+                self.calls = []
+
+            def manifest(self, file_id):
+                self.calls.append(file_id)
+                return self.package
+
+            def receipt(self, package):
+                return self.inner.receipt(package)
+
+            def fetch(self, package, target, *, trusted_artist, trusted_node):
+                return self.inner.fetch(package, target,
+                                        trusted_artist=trusted_artist, trusted_node=trusted_node)
+
+        wrapped = ReaderWithManifest(self.reader, self.manifest)
+        self.kwargs.pop("signed_manifest")
+        self.kwargs["reader"] = wrapped
+        got, _ = self.invoke()
+        self.assertEqual(got["file_id"], self.manifest_body["file_id"])
+        self.assertEqual(wrapped.calls, [self.manifest_body["file_id"]])
+        self.assertEqual(self.reader.fetch_calls, 1)
+
+    def test_wrong_remote_manifest_is_rejected_before_ciphertext(self):
+        class BadManifestReader:
+            def manifest(self, file_id):
+                return {"body": {"file_id": file_id}}
+            def receipt(self, manifest):
+                raise AssertionError("receipt request must not be made")
+            def fetch(self, *args, **kwargs):
+                raise AssertionError("ciphertext must not be downloaded")
+
+        self.kwargs.pop("signed_manifest")
+        self.kwargs["reader"] = BadManifestReader()
+        with self.assertRaises((CatalogueError, StorageError)):
+            self.invoke()
+
     def test_wrong_reader_or_dna_pin_stops_before_network(self):
         for key, wrong in (("reader_agent", "impostor"), ("catalogue_dna", "wrong"),
                            ("storage_dna", "wrong"), ("app_id", "wrong")):

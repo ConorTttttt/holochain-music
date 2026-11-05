@@ -200,6 +200,10 @@ class RealNodeVerifiedTrackTests(unittest.TestCase):
 
     def test_listener_can_download_with_public_keys_only(self):
         self.assertFalse(hasattr(self.reader, "owner_key"))
+        # S6: the read-only listener can obtain the public signed manifest
+        # itself, before verifying its exact hash against Holochain data.
+        remote_manifest = self.reader.manifest(self.manifest_body["file_id"])
+        self.assertEqual(manifest_digest(remote_manifest), self.digest)
         self.assertEqual(self.call()["file_id"], self.manifest_body["file_id"])
         verify_package(self.manifest, self.root / "download", self.artist_pub)
         recovered = decrypt_package(self.manifest, self.root / "download", self.root / "recovered.flac", self.secret, self.artist_pub)

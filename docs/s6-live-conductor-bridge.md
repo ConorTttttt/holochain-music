@@ -109,8 +109,9 @@ cargo build --bin music_conductor_bridge
   and trusted **local admin WebSocket port**.
 - Installed app ID and **both trusted DNA hashes**; the expected **Bob agent**.
 - Alice/artist agent key, chosen host/node agent key, track ID.
-- An S1 signed encrypted manifest (from trusted pinned file package or S4
-  manifest endpoint), S4 `https://...` or localhost URL and a target folder.
+- An optional S1 signed encrypted manifest. If omitted, the manifest is fetched
+  from S4 and authenticated against the Holochain digest and artist signature;
+  an S4 `https://...` or localhost URL and target folder are required.
 
 The function reads the conductor *before* it calls `ReadOnlyStorageNodeClient`;
 all S1/S2/S4/S5 signature, digest, receipt and claim checks still apply.
@@ -129,7 +130,7 @@ fetch_from_live_conductor(
     catalogue_dna=TRUSTED_CATALOGUE_DNA_HASH, storage_dna=TRUSTED_STORAGE_DNA_HASH,
     reader_agent=BOB_HOLOCHAIN_AGENT, artist_agent=ALICE_HOLOCHAIN_AGENT,
     node_agent=STORAGE_NODE_HOLOCHAIN_AGENT, track_id='a' * 32,
-    signed_manifest=SIGNED_ENCRYPTED_MANIFEST, storage_url='http://127.0.0.1:PORT',
+    storage_url='http://127.0.0.1:PORT',
     target_store=Path('/mnt/holochain/downloads'),
 )
 ```
