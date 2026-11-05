@@ -170,6 +170,13 @@ class S16Fixture(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_bridge(fail_index=8, wait=0.01)
 
+    def test_network_break_after_some_pcm_also_refuses_full_success(self):
+        # A network failure after early authorised PCM must never claim
+        # that the entire encrypted song finished successfully.
+        with self.assertRaises(RuntimeError):
+            self.run_bridge(fail_index=24, wait=0.05)
+        self.assertEqual(self.sent, 24)
+
     def test_seek_bounds_reject_before_device(self):
         gate = VerifiedChunkGate(total=len(self.chunks))
         self._copy(0)
