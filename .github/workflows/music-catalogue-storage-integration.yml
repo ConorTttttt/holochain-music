@@ -82,4 +82,5 @@ jobs:
             cargo test --test s11_buffered_granted_moq_sweettest -- --nocapture
             cargo test --test s12_overlapping_moq_playback_sweettest -- --nocapture
             cargo test --test s13_adaptive_moq_playback_sweettest -- --nocapture
+            cargo test --test s14_verified_seek_repair_sweettest -- --nocapture
           '
