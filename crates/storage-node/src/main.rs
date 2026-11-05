@@ -15,7 +15,7 @@ use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use chrono::Utc;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -29,7 +29,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const SCHEMA: &str = "holochain-storage/encrypted-package/v1";
 const RECEIPT_SCHEMA: &str = "holochain-storage/replica-receipt/v1";
@@ -175,7 +175,7 @@ fn authorize(state: &AppState, headers: &HeaderMap, method: &str, path: &str, bo
 fn safe_read(path: &Path, limit: usize) -> ApiResult<Vec<u8>> {
     let meta = fs::symlink_metadata(path).map_err(|_| error(StatusCode::NOT_FOUND, "object missing"))?;
     if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > limit as u64 { return Err(invalid("invalid stored object")); }
-    let mut f = File::open(path).map_err(|_| internal("cannot read object"))?;
+    let f = File::open(path).map_err(|_| internal("cannot read object"))?;
     let mut bytes = Vec::new();
     f.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|_| internal("read failed"))?;
     if bytes.len() > limit { return Err(invalid("stored object too large")); }
@@ -332,7 +332,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let root = root.ok_or("missing --root")?;
-    let artist_raw = b64_32(&artist.ok_or("missing --artist-key")?)?;
+    let artist_raw = b64_32(&artist.ok_or("missing --artist-key")?).map_err(|e| e.message)?;
     let allowed = VerifyingKey::from_bytes(&artist_raw)?;
     let addr: SocketAddr = listen.parse()?;
     if !addr.ip().is_loopback() && !unsafe_remote { return Err("refusing non-loopback plaintext HTTP; use TLS termination or an SSH tunnel".into()); }
