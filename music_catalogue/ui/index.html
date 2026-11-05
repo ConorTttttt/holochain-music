@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Holochain Music — Local Player</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Local library navigation">
+      <div class="brand"><div class="brand-icon" aria-hidden="true">◈</div><div><strong>HOLOCHAIN</strong><small>MUSIC / LOCAL</small></div></div>
+      <nav aria-label="Library sections"><span class="navitem selected">▦ &nbsp; Your library</span><span class="navitem muted">◉ &nbsp; Verified playback</span></nav>
+      <div class="sidebar-bottom"><span class="dot"></span> PRIVATE LISTENER<br><span class="small">Loopback only · 127.0.0.1</span></div>
+    </aside>
+    <main class="main">
+      <div class="topline"><span>YOUR COLLECTION</span><span class="badge">OWNER-GRANTED WAV</span></div>
+      <section class="hero"><div class="hero-copy"><div class="eyebrow">YOUR MUSIC, UNDER YOUR CONTROL</div><h1>Listen to your<br><em>own collection.</em></h1><p>Encrypted at rest. Signed by the artist. Decrypted only for your local playback session.</p></div><div class="hero-art" aria-hidden="true"><div class="disc"><div class="disc-inner"></div></div><div class="orbit"></div></div></section>
+      <section aria-labelledby="library-heading" class="library">
+        <div class="section-head"><div><div class="eyebrow">DISCOVER YOUR LOCAL TRACKS</div><h2 id="library-heading">Library</h2></div><span id="track-count" class="count">Loading…</span></div>
+        <div id="library-items" class="library-items" aria-live="polite"></div>
+      </section>
+      <div class="notice"><span class="notice-icon">⌁</span><p>Track titles are local labels. Playback verifies the signed manifest, the recipient-specific grant and every encrypted chunk. No audio or private keys are sent to this webpage.</p></div>
+    </main>
+  </div>
+  <footer class="player-bar" aria-label="Playback controls">
+    <div class="now-playing"><div class="art-small">◈</div><div class="now-text"><strong id="now-title">Nothing selected</strong><span id="now-artist">Choose a track from your library</span></div></div>
+    <div class="playback"><div class="control-row"><button id="rewind" type="button" title="Back 10 seconds" aria-label="Back 10 seconds">⏮</button><button id="playpause" class="play-button" type="button" aria-label="Play or pause">▶</button><button id="stop" type="button" title="Stop" aria-label="Stop">◼</button><button id="forward" type="button" title="Forward 10 seconds" aria-label="Forward 10 seconds">⏭</button></div><div class="timeline"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek track position"><span id="duration">0:00</span></div></div>
+    <div class="playback-info"><span class="signal" id="playback-state">IDLE</span><span class="backend" id="backend">LOCAL OUTPUT</span></div>
+  </footer>
+  <div role="status" aria-live="polite" id="toast" class="toast" hidden></div>
+</body>
+</html>

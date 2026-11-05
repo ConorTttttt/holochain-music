@@ -11,3 +11,6 @@ dependencies = ["cryptography>=44,<48"]
 
 [tool.setuptools.packages.find]
 include = ["holochain_storage*", "music_catalogue*"]
+
+[tool.setuptools.package-data]
+music_catalogue = ["ui/*.html", "ui/*.css", "ui/*.js"]
