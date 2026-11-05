@@ -8,6 +8,7 @@ use hdi::prelude::*;
 pub const KEY_SCHEMA: &str = "holochain-storage/key-binding/v1";
 pub const FILE_SCHEMA: &str = "holochain-storage/file-commitment/v1";
 pub const REPLICA_SCHEMA: &str = "holochain-storage/replica-claim/v1";
+pub const MOQ_SCHEMA: &str = "holochain-storage/moq-endpoint/v1";
 
 #[hdk_entry_helper]
 #[derive(Clone, PartialEq)]
@@ -41,12 +42,37 @@ pub struct ReplicaClaim {
     pub receipt_sha256: String,
 }
 
+/// Host-authored binding from a particular S1 file to one QUIC/TLS server.
+/// Never includes an artist secret, storage signing secret, or AES content key.
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct MoqEndpoint {
+    pub schema: String,
+    pub node_agent: String,
+    pub owner_agent: String,
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub url: String,
+    pub cert_fingerprint_hex: String,
+}
+
+/// S9 local-only test network. Internet address / port policy is a separate
+/// release gate; this MVP only registers loopback HTTPS/QUIC endpoints.
+pub fn valid_moq_url(url: &str) -> bool {
+    let Some(port) = url.strip_prefix("https://127.0.0.1:") else { return false; };
+    !port.is_empty() && port.len() <= 5
+        && port.bytes().all(|c| c.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|n| n != 0)
+}
+
 #[hdk_entry_types]
 #[unit_enum(UnitEntryTypes)]
 pub enum EntryTypes {
     SigningKeyBinding(SigningKeyBinding),
     FileCommitment(FileCommitment),
     ReplicaClaim(ReplicaClaim),
+    MoqEndpoint(MoqEndpoint),
 }
 
 #[hdk_link_types]
@@ -55,6 +81,7 @@ pub enum LinkTypes {
     AgentToFile,
     FileToReplica,
     Anchor,
+    AgentToMoqEndpoint,
 }
 
 #[hdk_extern]
@@ -105,6 +132,19 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
                 } else { Ok(()) }
             })
         }
+        EntryTypes::MoqEndpoint(endpoint) => {
+            check_author(author, &endpoint.node_agent).and_then(|_| {
+                if endpoint.schema != MOQ_SCHEMA
+                    || endpoint.owner_agent.is_empty() || endpoint.owner_agent.len() > 160
+                    || !is_hex32(&endpoint.file_id)
+                    || !is_hex32(&endpoint.manifest_sha256)
+                    || !is_hex32(&endpoint.cert_fingerprint_hex)
+                    || !valid_moq_url(&endpoint.url)
+                {
+                    Err("invalid host-authored MoQ endpoint metadata".into())
+                } else { Ok(()) }
+            })
+        }
     };
     match result { Ok(()) => ValidateCallbackResult::Valid, Err(reason) => invalid(reason) }
 }
@@ -139,7 +179,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             Ok(validate_app_entry(action.author(), &app_entry)),
         FlatOp::CreateEntry(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => match link_type {
-            LinkTypes::AgentToKey | LinkTypes::AgentToFile => validate_agent_link(&action),
+            LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint => validate_agent_link(&action),
             LinkTypes::FileToReplica => validate_owned_target(&action),
             LinkTypes::Anchor => Ok(ValidateCallbackResult::Valid),
         },
@@ -160,5 +200,14 @@ mod tests {
         assert!(!is_hex32(&"A".repeat(64)));
         assert!(!is_hex32("123"));
         assert!(!is_hex32(&"g".repeat(64)));
+    }
+    #[test]
+    fn endpoint_urls_are_loopback_only_and_port_validated() {
+        assert!(valid_moq_url("https://127.0.0.1:443"));
+        assert!(valid_moq_url("https://127.0.0.1:65535"));
+        assert!(!valid_moq_url("https://127.0.0.1:0"));
+        assert!(!valid_moq_url("https://127.0.0.1:65536"));
+        assert!(!valid_moq_url("https://example.org:443"));
+        assert!(!valid_moq_url("https://127.0.0.1:443/bad"));
     }
 }

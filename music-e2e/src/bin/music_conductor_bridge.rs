@@ -23,6 +23,7 @@ const ORIGIN: &str = "holochain-music-local-listener";
 const CATALOGUE_ZOME: &str = "music_catalogue";
 const STORAGE_ZOME: &str = "music_storage";
 const RESPONSE_SCHEMA: &str = "holochain-music/conductor-read/v1";
+const MOQ_RESPONSE_SCHEMA: &str = "holochain-music/conductor-moq-read/v1";
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     io::Error::new(io::ErrorKind::InvalidData, message.into()).into()
@@ -39,6 +40,7 @@ struct Options {
     artist: AgentPubKey,
     node: AgentPubKey,
     track_id: String,
+    include_moq_endpoint: bool,
 }
 
 impl Options {
@@ -53,7 +55,7 @@ impl Options {
             if !matches!(flag.as_str(),
                 "--admin" | "--app-id" | "--catalogue-role" | "--storage-role" |
                 "--expect-catalogue-dna" | "--expect-storage-dna" |
-                "--artist" | "--node" | "--track-id")
+                "--artist" | "--node" | "--track-id" | "--include-moq-endpoint")
             {
                 return Err(invalid(format!("unknown argument {flag}")));
             }
@@ -91,6 +93,11 @@ impl Options {
             artist,
             node,
             track_id,
+            include_moq_endpoint: match flags.get("--include-moq-endpoint").map(String::as_str) {
+                None | Some("false") => false,
+                Some("true") => true,
+                _ => return Err(invalid("--include-moq-endpoint must be true or false")),
+            },
         })
     }
 }
@@ -125,6 +132,8 @@ impl AuthoredRecord {
 #[derive(Debug, Serialize)]
 struct BridgeResult {
     schema: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    moq_endpoint: Option<RecordOut>,
     app_id: String,
     reader_agent: String,
     catalogue_dna: String,
@@ -219,7 +228,7 @@ async fn collect(opts: Options) -> Result<BridgeResult> {
         (std::net::Ipv4Addr::LOCALHOST, app_port), token, dyn_signer, Some(ORIGIN.into())
     ).await?;
     let reader_agent = music.agent_pubkey().to_string();
-    if app.my_pub_key != *music.agent_pubkey() {
+    if &app.my_pub_key != music.agent_pubkey() {
         return Err(invalid("app socket agent differs from the selected app cells"));
     }
 
@@ -264,8 +273,27 @@ async fn collect(opts: Options) -> Result<BridgeResult> {
         return Err(invalid("node replica claim does not match the catalogue manifest digest"));
     }
 
+    // S9 is strictly opt-in: S6/S7 JSON schema remains unchanged for callers
+    // that do not request a QUIC endpoint. A missing or ambiguous endpoint
+    // for the exact signed package is a hard error, never a fallback to
+    // the publisher's unauthenticated readiness file.
+    let moq_endpoint = if opts.include_moq_endpoint {
+        let endpoints: Vec<AuthoredRecord> = call(
+            &app, &opts.storage_role, STORAGE_ZOME, "get_moq_endpoints", &opts.node,
+        ).await?;
+        let endpoint = choose_unique(endpoints, &node, |b|
+            b.get("node_agent").and_then(Value::as_str) == Some(node.as_str())
+            && b.get("owner_agent").and_then(Value::as_str) == Some(artist.as_str())
+            && b.get("file_id").and_then(Value::as_str) == Some(file_id.as_str())
+            && b.get("manifest_sha256").and_then(Value::as_str) == Some(digest.as_str()),
+            "host-authored MoQ endpoint for pinned file/manifest",
+        )?;
+        Some(endpoint)
+    } else { None };
+
     Ok(BridgeResult {
-        schema: RESPONSE_SCHEMA,
+        schema: if opts.include_moq_endpoint { MOQ_RESPONSE_SCHEMA } else { RESPONSE_SCHEMA },
+        moq_endpoint,
         app_id: opts.app_id,
         reader_agent,
         catalogue_dna: music.dna_hash().to_string(),

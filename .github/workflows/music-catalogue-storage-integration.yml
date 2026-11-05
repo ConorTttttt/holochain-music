@@ -9,6 +9,7 @@ on:
       - 'music_catalogue/**'
       - 'holochain_storage/**'
       - 'crates/storage-node/**'
+      - 'crates/moq-music/**'
       - 'tests/**'
       - '.github/workflows/music-catalogue-storage-integration.yml'
   workflow_dispatch:
@@ -50,6 +51,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build real S4 Rust storage node for S7
         run: cargo build --manifest-path crates/storage-node/Cargo.toml
+      - name: Build real MoQ/QUIC publisher/subscriber for S9
+        run: cargo build --manifest-path crates/moq-music/Cargo.toml
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
@@ -58,6 +61,7 @@ jobs:
         run: |
           export HOLOCHAIN_MUSIC_PYTHON="$(command -v python)"
           export HOLOCHAIN_STORAGE_NODE_BIN="$PWD/crates/storage-node/target/debug/holochain-storage-node"
+          export HOLOCHAIN_MOQ_BIN="$PWD/crates/moq-music/target/debug/holochain-music-moq"
           export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
           nix develop ./music-e2e --command bash -euc '
             cd music-dna
@@ -73,4 +77,5 @@ jobs:
             cd music-e2e
             cargo test --test catalogue_storage_identity_sweettest -- --nocapture
             cargo test --test s7_live_verified_retrieval_sweettest -- --nocapture
+            cargo test --test s9_holochain_moq_sweettest -- --nocapture
           '
