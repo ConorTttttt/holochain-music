@@ -17,8 +17,9 @@ from holochain_storage.package import (
     StorageError, canonical, create_package, manifest_digest, object_path,
     public_key_bytes, verify_package,
 )
+from holochain_storage.package import replicate_package, verify_receipt
 from music_catalogue.moq_host import (
-    MoqFetchCancelled, MoqFetchError, MoqHost, fetch_ciphertext,
+    MoqFetchCancelled, MoqFetchError, MoqHost, fetch_ciphertext, fetch_document,
 )
 
 
@@ -181,6 +182,26 @@ class RealMoqHostTests(unittest.TestCase):
         self.host.start()
         self.fetch(store, start_index=middle)
         verify_package(self.fx.manifest, store, self.fx.artist_pub)
+
+    def test_public_documents_match_holochain_pins(self):
+        host_key = Ed25519PrivateKey.generate()
+        replica = self.root / "replica"
+        receipt = replicate_package(self.fx.manifest, self.fx.host_store, replica,
+                                    self.fx.artist_pub, host_key)
+        (self.root / "receipt.json").write_bytes(canonical(receipt))
+        self.host.store = replica
+        self.host.set_files([{**self.fx.entry(), "receipt": self.root / "receipt.json"}])
+        self.host.start()
+        common = dict(moq_binary=self.binary, url=self.host.url,
+                      cert_fingerprint_hex=self.host.fingerprint, file_id=self.fx.manifest["body"]["file_id"])
+        manifest = fetch_document(document="manifest", **common)
+        self.assertEqual(manifest_digest(manifest), self.fx.digest)
+        got = fetch_document(document="receipt", **common)
+        verify_receipt(got, manifest, public_key_bytes(host_key), self.fx.artist_pub)
+        with self.assertRaises(MoqFetchError):
+            fetch_document(document="receipt", **{**common, "file_id": "f" * 64})
+        with self.assertRaises(MoqFetchError):
+            fetch_document(document="secret", **common)
 
     def test_cancel_stops_promptly(self):
         cancel = threading.Event()

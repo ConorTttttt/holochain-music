@@ -4,7 +4,10 @@
 //! * `file/<file_id>/from/<index>` — ordered objects `index..end` (initial
 //!   streaming, seek-prioritised restart, resumption after interruption);
 //! * `file/<file_id>/objects/<i>,<j>,…` — exactly the listed objects, in
-//!   order, at most 64 per request (listener-driven repair).
+//!   order, at most 64 per request (listener-driven repair);
+//! * `file/<file_id>/manifest` and `file/<file_id>/receipt` — the public
+//!   signed S1 manifest and this host's signed receipt, which the listener
+//!   verifies against Holochain pins (so S4 HTTP need not be LAN-exposed).
 //!
 //! Every object is re-read and re-verified against the artist-signed S1
 //! manifest immediately before it is sent. The host never has a content key,
@@ -47,6 +50,14 @@ const LINGER: Duration = Duration::from_millis(600);
 pub enum TrackRequest {
     From { file_id: String, start: usize },
     Objects { file_id: String, indices: Vec<usize> },
+    Document { file_id: String, kind: DocumentKind },
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum DocumentKind { Manifest, Receipt }
+
+pub fn document_track(file_id: &str, kind: DocumentKind) -> String {
+    format!("file/{file_id}/{}", match kind { DocumentKind::Manifest => "manifest", DocumentKind::Receipt => "receipt" })
 }
 
 pub fn stream_track(file_id: &str, start: usize) -> String { format!("file/{file_id}/from/{start}") }
@@ -69,6 +80,10 @@ fn is_hex64(s: &str) -> bool {
 
 pub fn parse_track(name: &str) -> Option<TrackRequest> {
     let parts: Vec<&str> = name.split('/').collect();
+    if parts.len() == 3 && parts[0] == "file" && is_hex64(parts[1]) {
+        let kind = match parts[2] { "manifest" => DocumentKind::Manifest, "receipt" => DocumentKind::Receipt, _ => return None };
+        return Some(TrackRequest::Document { file_id: parts[1].to_owned(), kind });
+    }
     if parts.len() != 4 || parts[0] != "file" || !is_hex64(parts[1]) { return None; }
     let file_id = parts[1].to_owned();
     match parts[2] {
@@ -92,14 +107,25 @@ struct ServedEntry {
     manifest: PathBuf,
     trusted_artist_hex: String,
     manifest_sha256: String,
+    #[serde(default)]
+    receipt: Option<PathBuf>,
 }
+
+/// One verified package plus the public documents served alongside it.
+pub struct Served {
+    pub manifest: PinnedManifest,
+    pub manifest_bytes: Bytes,
+    pub receipt_bytes: Option<Bytes>,
+}
+
+pub const MAX_RECEIPT_BYTES: usize = 16 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServedList { files: Vec<ServedEntry> }
 
 /// Load and fully verify every listed package before accepting any session.
-pub fn load_catalogue(list: &Path, store: &Path) -> Result<HashMap<String, PinnedManifest>> {
+pub fn load_catalogue(list: &Path, store: &Path) -> Result<HashMap<String, Served>> {
     let bytes = fs::read(list).with_context(|| format!("reading served list {}", list.display()))?;
     ensure!(bytes.len() <= 1024 * 1024, "served list too large");
     let parsed: ServedList = serde_json::from_slice(&bytes).context("invalid served list JSON")?;
@@ -109,7 +135,19 @@ pub fn load_catalogue(list: &Path, store: &Path) -> Result<HashMap<String, Pinne
         let manifest = load_manifest(&entry.manifest, &entry.trusted_artist_hex, &entry.manifest_sha256)?;
         ensure!(!manifest.body.chunks.is_empty(), "served package has no chunks");
         for chunk in &manifest.body.chunks { read_verified_chunk(store, chunk)?; }
-        ensure!(out.insert(manifest.body.file_id.clone(), manifest).is_none(), "duplicate served file");
+        // Serve the exact bytes whose SHA-256 is the Holochain pin.
+        let manifest_bytes = Bytes::from(serde_json::to_vec(&serde_json::from_slice::<serde_json::Value>(&fs::read(&entry.manifest)?)?)?);
+        let receipt_bytes = match entry.receipt {
+            Some(path) => {
+                let data = fs::read(&path)?;
+                ensure!(data.len() <= MAX_RECEIPT_BYTES, "receipt too large");
+                serde_json::from_slice::<serde_json::Value>(&data).context("invalid receipt JSON")?;
+                Some(Bytes::from(data))
+            }
+            None => None,
+        };
+        let id = manifest.body.file_id.clone();
+        ensure!(out.insert(id, Served { manifest, manifest_bytes, receipt_bytes }).is_none(), "duplicate served file");
     }
     Ok(out)
 }
@@ -160,7 +198,7 @@ pub fn load_or_create_cert(dir: &Path) -> Result<(PathBuf, PathBuf, String)> {
 }
 
 /// Push objects into one ordered subgroup, paced to bound host memory.
-async fn serve_track(track: TrackWriter, catalogue: Arc<HashMap<String, PinnedManifest>>,
+async fn serve_track(track: TrackWriter, catalogue: Arc<HashMap<String, Served>>,
                      store: Arc<PathBuf>, bytes_per_second: u64) -> Result<()> {
     let name = track.name.to_string();
     let Some(request) = parse_track(&name) else {
@@ -168,16 +206,35 @@ async fn serve_track(track: TrackWriter, catalogue: Arc<HashMap<String, PinnedMa
         return Ok(());
     };
     let file_id = match &request {
-        TrackRequest::From { file_id, .. } | TrackRequest::Objects { file_id, .. } => file_id,
+        TrackRequest::From { file_id, .. } | TrackRequest::Objects { file_id, .. }
+            | TrackRequest::Document { file_id, .. } => file_id,
     };
-    let Some(manifest) = catalogue.get(file_id) else {
+    let Some(served) = catalogue.get(file_id) else {
         let _ = track.close(ServeError::not_found_ctx("file not served by this host"));
         return Ok(());
     };
+    let manifest = &served.manifest;
     let total = manifest.body.chunks.len();
     let order: Vec<usize> = match request {
         TrackRequest::From { start, .. } => (start..total).collect(),
         TrackRequest::Objects { indices, .. } => indices,
+        TrackRequest::Document { kind, .. } => {
+            let document = match kind {
+                DocumentKind::Manifest => Some(served.manifest_bytes.clone()),
+                DocumentKind::Receipt => served.receipt_bytes.clone(),
+            };
+            let Some(document) = document else {
+                let _ = track.close(ServeError::not_found_ctx("document not available"));
+                return Ok(());
+            };
+            let mut subgroups = track.subgroups().map_err(|e| anyhow!("track claimed: {e}"))?;
+            let mut writer = subgroups.create(Subgroup { group_id: 0, subgroup_id: 0, priority: 0 })
+                .map_err(|e| anyhow!("cannot open subgroup: {e}"))?;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            writer.write(document).map_err(|e| anyhow!("subscriber went away: {e}"))?;
+            tokio::time::sleep(LINGER).await;
+            return Ok(());
+        }
     };
     if order.is_empty() || order.iter().any(|&i| i >= total) {
         let _ = track.close(ServeError::not_found_ctx("index outside signed manifest"));
@@ -201,7 +258,7 @@ async fn serve_track(track: TrackWriter, catalogue: Arc<HashMap<String, PinnedMa
 }
 
 /// Answer subscriber-chosen tracks for one MoQT session until it closes.
-async fn serve_requests(mut requests: serve::TracksRequest, catalogue: Arc<HashMap<String, PinnedManifest>>,
+async fn serve_requests(mut requests: serve::TracksRequest, catalogue: Arc<HashMap<String, Served>>,
                         store: Arc<PathBuf>, bytes_per_second: u64) -> Result<()> {
     let mut served = 0usize;
     while let Some(track) = requests.next().await {
@@ -301,6 +358,9 @@ mod tests {
         assert_eq!(parse_track(&stream_track(&id, 0)), Some(TrackRequest::From { file_id: id.clone(), start: 0 }));
         assert_eq!(parse_track(&objects_track(&id, &[17, 2])),
             Some(TrackRequest::Objects { file_id: id.clone(), indices: vec![17, 2] }));
+        assert_eq!(parse_track(&document_track(&id, DocumentKind::Receipt)),
+            Some(TrackRequest::Document { file_id: id.clone(), kind: DocumentKind::Receipt }));
+        assert_eq!(parse_track(&format!("file/{id}/secret")), None);
         let too_many: Vec<usize> = (0..65).collect();
         for bad in [format!("file/{id}/from/01"), format!("file/{id}/from/-1"), format!("file/{id}/from/"),
                     format!("file/{id}/from/123456"), format!("file/{id}/object/1"),

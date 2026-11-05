@@ -63,10 +63,16 @@ class MoqHost:
         self.ready: dict | None = None
 
     def set_files(self, files: Iterable[dict]) -> None:
-        """Entries: {"manifest": path, "trusted_artist_hex", "manifest_sha256"}."""
-        self.files = [{"manifest": str(f["manifest"]),
-                       "trusted_artist_hex": _hex64(f["trusted_artist_hex"], "artist key"),
-                       "manifest_sha256": _hex64(f["manifest_sha256"], "manifest digest")} for f in files]
+        """Entries: {"manifest", "trusted_artist_hex", "manifest_sha256"[, "receipt"]}."""
+        out = []
+        for f in files:
+            entry = {"manifest": str(f["manifest"]),
+                     "trusted_artist_hex": _hex64(f["trusted_artist_hex"], "artist key"),
+                     "manifest_sha256": _hex64(f["manifest_sha256"], "manifest digest")}
+            if f.get("receipt"):
+                entry["receipt"] = str(f["receipt"])
+            out.append(entry)
+        self.files = out
 
     def start(self, timeout: float = 30) -> dict:
         self.stop()
@@ -254,3 +260,43 @@ def fetch_ciphertext(
             proc.wait()
             if proc.stdout:
                 proc.stdout.close()
+
+
+MAX_DOCUMENT_BYTES = {"manifest": 8 * 1024 * 1024, "receipt": 16 * 1024}
+
+
+def fetch_document(*, moq_binary: str | Path, url: str, cert_fingerprint_hex: str, file_id: str,
+                   document: str, allow_lan: bool = False, timeout: float = 60) -> dict:
+    """Fetch a host's public manifest/receipt JSON. UNTRUSTED: callers must
+    check the manifest digest against the Holochain pin and verify the
+    artist/host signatures before using it for anything."""
+    if document not in MAX_DOCUMENT_BYTES:
+        raise MoqFetchError("unknown document kind")
+    _hex64(file_id, "file ID")
+    _hex64(cert_fingerprint_hex, "certificate fingerprint")
+    try:
+        _bound_local_url(url, allow_lan=allow_lan)
+    except ValueError as exc:
+        raise MoqFetchError(str(exc)) from exc
+    with tempfile.TemporaryDirectory(prefix="hm-doc-") as tmp:
+        out = Path(tmp) / "document.json"
+        argv = [str(moq_binary), "fetch-document", "--url", url, "--cert-fingerprint-hex",
+                cert_fingerprint_hex, "--file-id", file_id, "--document", document, "--out", str(out)]
+        if allow_lan and not url.startswith("https://127.0.0.1:"):
+            argv.append("--allow-lan")
+        try:
+            done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise MoqFetchError(f"cannot fetch {document} from host") from exc
+        if done.returncode != 0 or not out.is_file():
+            raise MoqFetchError(f"host refused or failed to send the {document}")
+        data = out.read_bytes()
+        if len(data) > MAX_DOCUMENT_BYTES[document]:
+            raise MoqFetchError(f"oversized {document}")
+        try:
+            value = json.loads(data)
+        except ValueError as exc:
+            raise MoqFetchError(f"host sent invalid {document} JSON") from exc
+        if not isinstance(value, dict):
+            raise MoqFetchError(f"host sent invalid {document}")
+        return value

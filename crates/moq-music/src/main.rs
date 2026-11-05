@@ -105,6 +105,16 @@ enum Command {
         #[arg(long, default_value_t = false)] allow_lan: bool,
         #[arg(long, default_value_t = 30)] object_timeout_secs: u64,
     },
+    /// Fetch a public signed document (manifest or receipt) from a v1 host.
+    /// The output is UNTRUSTED until the caller checks it against Holochain.
+    FetchDocument {
+        #[arg(long)] url: Url,
+        #[arg(long)] cert_fingerprint_hex: String,
+        #[arg(long)] file_id: String,
+        #[arg(long)] document: String,
+        #[arg(long)] out: PathBuf,
+        #[arg(long, default_value_t = false)] allow_lan: bool,
+    },
 }
 
 const MAX_FETCH_OBJECTS: usize = 256;
@@ -161,6 +171,9 @@ async fn main() -> Result<()> {
             let advertised = advertised_host(bind, allow_lan, advertise_ip)?;
             host::serve(host::ServeArgs { served_list, store, cert_dir, ready_file, bind, advertised,
                 max_sessions, bytes_per_second }).await
+        }
+        Command::FetchDocument { url, cert_fingerprint_hex, file_id, document, out, allow_lan } => {
+            fetch_document(url, cert_fingerprint_hex, file_id, document, out, allow_lan).await
         }
         Command::Fetch { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, start_index, objects, allow_lan, object_timeout_secs } => {
             fetch(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex,
@@ -354,6 +367,31 @@ fn parse_objects(text: &str, total: usize) -> Result<Vec<usize>> {
     }
     ensure!(!out.is_empty() && out.len() <= MAX_FETCH_OBJECTS, "object list must have 1..=256 entries");
     Ok(out)
+}
+
+async fn fetch_document(url: Url, fingerprint_hex: String, file_id: String, document: String,
+                        out: PathBuf, allow_lan: bool) -> Result<()> {
+    validate_endpoint(&url, allow_lan)?;
+    ensure!(file_id.len() == 64 && file_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+        "invalid file ID");
+    let (kind, limit) = match document.as_str() {
+        "manifest" => (host::DocumentKind::Manifest, holochain_music_moq::MAX_MANIFEST_BYTES),
+        "receipt" => (host::DocumentKind::Receipt, host::MAX_RECEIPT_BYTES),
+        _ => return Err(anyhow!("document must be manifest or receipt")),
+    };
+    let fingerprint = hex::decode(fingerprint_hex).context("invalid TLS certificate pin hex")?;
+    let fingerprint: [u8; 32] = fingerprint.try_into().map_err(|_| anyhow!("TLS pin must be SHA-256"))?;
+    let mut receiver = MoqSubscribeNode::new_with_pinned_identity(url, HOST_NAMESPACE, TransportIdentity { fingerprint })?;
+    tokio::time::timeout(HANDSHAKE_TIMEOUT, receiver.connect()).await.context("MoQ/TLS connection timed out")??;
+    let mut sub = tokio::time::timeout(HANDSHAKE_TIMEOUT, receiver.subscribe(&host::document_track(&file_id, kind))).await
+        .context("document subscription timed out")??;
+    let payload = tokio::time::timeout(OBJECT_TIMEOUT, sub.recv()).await.context("document timed out")??
+        .ok_or_else(|| anyhow!("host did not send the document"))?;
+    ensure!(payload.len() <= limit, "document exceeds size limit");
+    let temp = out.with_extension("partial");
+    fs::write(&temp, &payload)?;
+    fs::rename(&temp, &out)?;
+    emit(json!({"kind": "document_received", "document": document, "bytes": payload.len()}))
 }
 
 fn emit(value: serde_json::Value) -> Result<()> {
