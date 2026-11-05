@@ -17,8 +17,8 @@ Previously S14/S15's `VerifiedWavSeeker` required the full encrypted CAS before 
 
 ## Verification: local authoring
 
-- New Python tests: `python -m unittest discover -s tests -p test_s16_inflight_seek.py -v` — **12 passed** in the authoring environment.
-- Full Python regression: **165 run, 159 passed, 6 expected skips, 0 failures**.
+- New Python tests: `python -m unittest discover -s tests -p test_s16_inflight_seek.py -v` — **13 passed** in the authoring environment.
+- Full Python regression: **166 run, 160 passed, 6 expected skips, 0 failures**.
 - The authoring environment cannot compile or launch native Holochain/QUIC. The real Sweettest remains **unverified until executed on Ubuntu or CI**.
 
 ## Ubuntu verification (after existing S15 run finishes)
