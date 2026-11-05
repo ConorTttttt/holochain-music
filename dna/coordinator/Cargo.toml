@@ -1,0 +1,13 @@
+[package]
+name = "music_storage"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hdk = { workspace = true }
+serde = { workspace = true }
+holochain_serialized_bytes = { workspace = true }
+music_storage_integrity = { path = "../integrity" }

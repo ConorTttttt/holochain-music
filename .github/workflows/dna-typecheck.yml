@@ -1,0 +1,30 @@
+name: Holochain DNA typecheck
+
+on:
+  push:
+    paths:
+      - 'dna/**'
+      - '.github/workflows/dna-typecheck.yml'
+  pull_request:
+    paths:
+      - 'dna/**'
+      - '.github/workflows/dna-typecheck.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  rust-wasm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Typecheck Holochain zomes for wasm
+        working-directory: dna
+        run: cargo check --target wasm32-unknown-unknown
+      - name: Rust integrity helper tests
+        working-directory: dna
+        run: cargo test -p music_storage_integrity --lib
