@@ -66,19 +66,19 @@ struct AuthoredRecord<T> {
     body: T,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct AlbumLookup {
     artist: AgentPubKey,
     album_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct TrackLookup {
     artist: AgentPubKey,
     track_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct SearchInput {
     query: String,
     limit: u8,
