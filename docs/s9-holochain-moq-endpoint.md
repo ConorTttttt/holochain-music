@@ -87,6 +87,43 @@ cd music-e2e
 cargo test --test s9_holochain_moq_sweettest -- --nocapture
 ```
 
+### If `ZomeFnNotExists(publish_moq_endpoint)` occurs
+
+That error means the storage coordinator **loaded by Sweettest** lacks the S9
+export, even when the Rust test binary itself compiles. Check the source and
+freshly built Wasm first, then pack to a **new filename** rather than assuming
+an existing `workdir/music_storage.dna` was replaced:
+
+```bash
+cd /mnt/holochain/holochain-music
+git branch --show-current
+grep -n 'fn publish_moq_endpoint' dna/coordinator/src/lib.rs
+
+nix develop ./music-e2e
+mkdir -p /mnt/holochain/tmp
+export TMPDIR=/mnt/holochain/tmp CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+cd dna
+cargo build --release --target wasm32-unknown-unknown
+strings target/wasm32-unknown-unknown/release/music_storage.wasm | grep -F publish_moq_endpoint
+
+# Unique output avoids silently using a pre-S9 bundle.
+export MUSIC_STORAGE_DNA="/mnt/holochain/tmp/music_storage_s9_$(date +%s).dna"
+hc dna pack workdir -o "$MUSIC_STORAGE_DNA"
+test -s "$MUSIC_STORAGE_DNA"
+echo "Testing with $MUSIC_STORAGE_DNA"
+
+cd ../music-e2e
+cargo test --test s9_holochain_moq_sweettest -- --nocapture
+```
+
+The S9 Sweettest explicitly honours `MUSIC_STORAGE_DNA`. The command
+above **does not delete or overwrite** prior `.dna` files, Cargo caches or
+local lockfiles. If the `strings` check returns nothing, do **not** rerun
+Sweettest: verify the checked-out S9 branch and fresh Wasm compilation first.
+If packing reports an error or the function is still unavailable after a
+fresh bundle, capture `hc dna pack --help`, the pack output and both Wasm
+and DNA file timestamps for diagnosis.
+
 **Expected only after a successful run**: one test named
 `bob_discovers_host_authored_moq_endpoint_and_receives_verified_quic` passes.
 The test starts two Sweettest Holochain conductors, a real Rust S4 node, and a
