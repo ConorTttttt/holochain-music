@@ -14,3 +14,8 @@ local-library/
 *.flac
 *.m4a
 *.wav
+# S4 ephemeral operator and local development secrets (do not commit)
+*.key
+node.ed25519
+private-node/
+*.pem
