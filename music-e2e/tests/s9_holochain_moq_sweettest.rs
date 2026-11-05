@@ -312,10 +312,9 @@ async fn bob_discovers_host_authored_moq_endpoint_and_receives_verified_quic() {
         cert_fingerprint_hex: s(&readiness, "cert_fingerprint_hex"),
     };
     // Alice may not advertise a QUIC certificate claiming to be Bob.
-    let forged = conductors[ALICE]
-        .call_fallible::<_, ActionHash>(
-            &storage_alice, "publish_moq_endpoint", &endpoint,
-        ).await;
+    let forged: Result<ActionHash, _> = conductors[ALICE]
+        .call_fallible(&storage_alice, "publish_moq_endpoint", &endpoint)
+        .await;
     assert!(forged.is_err(), "integrity zome accepted cross-agent MoQ endpoint forgery");
     conductors[BOB].call::<_, ActionHash>(
         &storage_bob, "publish_moq_endpoint", &endpoint,
