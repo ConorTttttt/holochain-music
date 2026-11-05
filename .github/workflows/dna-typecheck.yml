@@ -23,6 +23,8 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - name: Typecheck Holochain zomes for wasm
-        run: cargo check --manifest-path dna/Cargo.toml --target wasm32-unknown-unknown
+        working-directory: dna
+        run: cargo check --target wasm32-unknown-unknown
       - name: Rust integrity helper tests
-        run: cargo test --manifest-path dna/Cargo.toml -p music_storage_integrity --lib
+        working-directory: dna
+        run: cargo test -p music_storage_integrity --lib
