@@ -250,10 +250,10 @@ async fn repair_receive(
     let payload = next.ok_or_else(|| anyhow!("S15 repair publisher sent no ciphertext"))?;
     // Reject oversized or mismatched objects before local filesystem write.
     store_verified_chunk(&store, chunk, &payload)?;
-    // No second/extra object may be accepted in this one-object protocol.
-    let end = tokio::time::timeout(OBJECT_TIMEOUT, subscription.recv()).await
-        .context("S15 repair publisher did not cleanly finish one-object track")??;
-    ensure!(end.is_none(), "S15 publisher sent extra unrequested ciphertext objects");
+    // Consume exactly the requested object and then stop this subscription.
+    // As in the main S8 receiver, do not wait for an unreliable clean MoQ
+    // end-of-track event after the last verified object has arrived.
+    // Unrequested objects are neither read nor persisted.
     drop(subscription);
     drop(receiver);
     println!("{}", json!({"repair_verified": true, "repair_index": index,
