@@ -118,3 +118,13 @@ See the end of this file; entries are appended as work lands.
 - First task selected: integrate the existing components into an application —
   persistent conductor, catalogue discovery, in-app grant workflow and a
   multi-session MoQ host — because every remaining product gate depends on it.
+
+### 2026-11-05 — first integration slice (branch `feat/v1-app-integration`)
+
+Done and verified:
+- D1 fixed: storage DNA accepts literal RFC1918 MoQ endpoints (zome unit tests PASS).
+- D3/D8: `music_app_bridge` (long-running, one app interface). **PASS** against a real `hc sandbox` conductor; a second, separate conductor process discovered Alice's published track through a local `kitsune2-bootstrap-srv` (same machine, not two computers).
+- D2/D7/D9: `holochain-music-moq serve`/`fetch`/`fetch-document`: multi-file, multi-session, stable 0600 cert, subscriber-chosen start index / bounded object sets, signed manifest+receipt served over MoQ. 11 real-QUIC tests **PASS**.
+- D4/D5: DNA entries for listener keys / access requests / grant records; perpetual personal-use licence schema (4 tests **PASS**).
+
+Written but NOT yet tested (commit `wip`): `holochain_music/` application package — paths, binaries, key store + encrypted backup, conductor manager, bridge client, catalogue/trust resolution, download manager, player, artist/host service, app orchestrator, HTTP API. Still missing: CLI entry point, new UI, tests for all of these, three-conductor Sweettest of the new DNA, packaging, docs.
