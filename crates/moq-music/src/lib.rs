@@ -1,7 +1,7 @@
 //! S8 media transport contract. No DHT calls, secret content keys or plaintext.
 //! A *trusted, signed S1 manifest* pins the order, lengths and SHA-256 of every
 //! AES-GCM ciphertext chunk carried as one MoQ object. Real MoQ is in main.rs.
-use anyhow::{anyhow, bail, ensure, Context, Result};
+use anyhow::{anyhow, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
