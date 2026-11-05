@@ -84,4 +84,5 @@ jobs:
             cargo test --test s13_adaptive_moq_playback_sweettest -- --nocapture
             cargo test --test s14_verified_seek_repair_sweettest -- --nocapture
             cargo test --test s15_selective_moq_repair_sweettest -- --nocapture
+            cargo test --test s16_inflight_moq_seek_sweettest -- --nocapture
           '
