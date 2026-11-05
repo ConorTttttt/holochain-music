@@ -1,0 +1,33 @@
+name: Network storage-node CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-node-and-python-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and test Rust storage node
+        run: |
+          cargo test --manifest-path crates/storage-node/Cargo.toml
+          cargo build --manifest-path crates/storage-node/Cargo.toml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python S1 storage protocol
+        run: python -m pip install -e .
+      - name: Run original storage tests
+        run: |
+          python -m unittest discover -s tests -p test_encrypted_storage.py -v
+          python -m unittest discover -s tests -p test_storage_validation.py -v
+      - name: Test Python-to-Rust signed upload, receipt, download, restart
+        env:
+          HOLOCHAIN_STORAGE_NODE_BIN: crates/storage-node/target/debug/holochain-storage-node
+        run: python -m unittest discover -s tests -p test_network_service.py -v
