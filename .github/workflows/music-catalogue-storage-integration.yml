@@ -79,4 +79,5 @@ jobs:
             cargo test --test s7_live_verified_retrieval_sweettest -- --nocapture
             cargo test --test s9_holochain_moq_sweettest -- --nocapture
             cargo test --test s10_granted_moq_playback_sweettest -- --nocapture
+            cargo test --test s11_buffered_granted_moq_sweettest -- --nocapture
           '

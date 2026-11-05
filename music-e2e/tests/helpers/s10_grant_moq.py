@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from holochain_storage.package import canonical, manifest_digest
 from music_catalogue.content_grants import issue_content_grant
 from music_catalogue.granted_audio import play_granted_wav
+from music_catalogue.buffered_playback import play_granted_wav_realtime
 from music_catalogue.moq_conductor import receive_moq_from_live_conductor
 
 
@@ -86,13 +87,26 @@ def receive(args) -> dict:
     grant = json.loads((root / "grant.json").read_text())
     # Sink receives PCM blocks only after per-chunk S1 verification, grant
     # signature+recipient checks and AES-GCM authentication. No WAV file here.
-    playable = play_granted_wav(
+    common = dict(
         signed_manifest=manifest, ciphertext_store=root / "bob-moq-store",
         grant=grant, trusted_artist=artist_public,
         owner_agent=args.artist_agent, listener_agent=args.reader_agent,
         recipient_private=listener_private,
-        pcm_sink=lambda _pcm: None,
     )
+    if args.audio_mode == "paced-null":
+        # S11: real-time paced, bounded audio FIFO, null hardware device.
+        # This still uses all conductor-authenticated S10 grant/manifest pins.
+        playable = play_granted_wav_realtime(**common, backend="null")
+        if not playable["playback_complete"] or \
+                playable["output_pcm_sha256"] != fixture["sample_pcm_sha256"]:
+            raise ValueError("S11 timed PCM sink differs from original WAV")
+    elif args.audio_mode == "alsa":
+        # Explicit local hardware smoke test only: never used in headless CI.
+        playable = play_granted_wav_realtime(**common, backend="alsa",
+                                             device=args.audio_device)
+    else:
+        # Existing S10 default remains unchanged.
+        playable = play_granted_wav(**common, pcm_sink=lambda _pcm: None)
     if playable["pcm_sha256"] != fixture["sample_pcm_sha256"]:
         raise ValueError("S10 PCM output differs from the authentic WAV fixture")
     if playable["frames"] != fixture["pcm_frames"]:
@@ -106,6 +120,8 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--artist-agent", required=True)
     parser.add_argument("--reader-agent", required=True)
+    parser.add_argument("--audio-mode", choices=("hash", "paced-null", "alsa"), default="hash")
+    parser.add_argument("--audio-device", default="default")
     for name in ("bridge_binary", "moq_binary"):
         parser.add_argument("--" + name.replace("_", "-"), type=Path)
     parser.add_argument("--node-url")
