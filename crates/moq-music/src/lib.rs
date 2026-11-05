@@ -163,3 +163,19 @@ mod tests {
         assert!(!valid_hash("a"));
     }
 }
+
+/// Domain-separated S15 one-object retry track; subscriber explicitly asks
+/// for one manifest index on a fresh certificate-pinned MoQ session.
+pub fn repair_track(index: usize) -> String {
+    format!("ciphertext-repair-v1-{index}")
+}
+
+#[cfg(test)]
+mod s15_tests {
+    use super::*;
+    #[test]
+    fn repaired_track_name_is_deterministically_index_bound() {
+        assert_eq!(repair_track(3), "ciphertext-repair-v1-3");
+        assert_ne!(repair_track(3), repair_track(4));
+    }
+}
