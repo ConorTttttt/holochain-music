@@ -252,6 +252,18 @@ class BufferedPcmPlayer:
             if self._worker.is_alive():
                 raise PlaybackError("PCM playback worker did not stop")
 
+    def progress(self) -> dict:
+        """S18 read-only listener status; never exposes PCM or key material."""
+        with self._cv:
+            return {
+                "output_frames": self._played_bytes // self._format.frame_size if self._format else 0,
+                "queued_pcm_bytes": self._queued_bytes,
+                "buffer_capacity_bytes": self.max_blocks * MAX_FRAME_BYTES,
+                "paused": self._paused,
+                "stopped": self._stopped,
+                "finished_input": self._finished,
+            }
+
     def stopped_report(self) -> dict:
         """Report an intentional stop *without* claiming full PCM delivery.
 
