@@ -75,6 +75,7 @@ def play_granted_wav(
     *, signed_manifest: dict, ciphertext_store: str | Path,
     grant: dict, trusted_artist: bytes, owner_agent: str, listener_agent: str,
     recipient_private: X25519PrivateKey, pcm_sink: Callable[[bytes], None],
+    format_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     """Verify ALL ciphertext before feeding the first authenticated PCM frame.
 
@@ -105,6 +106,11 @@ def play_granted_wav(
             or data_len + _WAV_HEADER.size != body["total_plain_bytes"]
             or data_len % block_align != 0):
         raise PlaybackError("only canonical bounded RIFF/WAVE PCM16 audio is supported")
+    if format_callback is not None:
+        if not callable(format_callback):
+            raise PlaybackError("PCM format callback must be callable")
+        format_callback({"sample_rate": rate, "channels": channels,
+                         "bits_per_sample": bits})
     played = 0
     digest = hashlib.sha256()
     # No PCM data is emitted before metadata, ciphertext CAS and the signed
