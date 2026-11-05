@@ -1,0 +1,17 @@
+# Separate wasm32 zome workspace; independent of the Python S1 implementation.
+[workspace]
+resolver = "2"
+members = ["integrity", "coordinator"]
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+hdi = "=0.8.0"
+hdk = "=0.7.0"
+serde = "1"
+holochain_serialized_bytes = "0.0.57"
+
+[profile.release]
+opt-level = "z"
+lto = true
