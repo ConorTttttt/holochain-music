@@ -121,6 +121,8 @@ class RealS8MoqTests(unittest.TestCase):
                 proc.wait(timeout=5)
         if proc.stderr:
             proc.stderr.close()
+        if proc.stdout:
+            proc.stdout.close()
 
     def launch_publisher(self):
         ready_file = self.root / f"ready-{time.monotonic_ns()}.json"
