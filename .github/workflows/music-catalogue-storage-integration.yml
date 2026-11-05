@@ -51,6 +51,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build real S4 Rust storage node for S7
         run: cargo build --manifest-path crates/storage-node/Cargo.toml
+      - name: Test MoQ TLS pin and S17 explicit RFC1918 LAN endpoint rules
+        run: cargo test --manifest-path crates/moq-music/Cargo.toml
       - name: Build real MoQ/QUIC publisher/subscriber for S9
         run: cargo build --manifest-path crates/moq-music/Cargo.toml
       - uses: cachix/install-nix-action@v31
