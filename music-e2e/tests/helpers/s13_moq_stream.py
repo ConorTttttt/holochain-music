@@ -53,7 +53,8 @@ def main() -> None:
     if not report["first_pcm_before_last_chunk"] or not report["playback_complete"]:
         diagnostics = {k: report.get(k) for k in (
             "first_pcm_before_last_chunk", "first_pcm_after_verified_chunks",
-            "ciphertext_chunks", "last_chunk_minus_first_pcm_ms", "playback_complete"
+            "received_chunks", "verified_ciphertext_chunks",
+            "last_chunk_minus_first_pcm_ms", "playback_complete"
         )}
         raise ValueError(f"S13 PCM did not overlap authenticated MoQ transfer: {diagnostics}")
     if report.get("adaptive_buffer") is not True:
