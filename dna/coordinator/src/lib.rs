@@ -60,7 +60,7 @@ pub fn register_signing_key(entry: SigningKeyBinding) -> ExternResult<ActionHash
 #[hdk_extern]
 pub fn get_signing_keys(agent: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<SigningKeyBinding>>> {
     let expected = agent.to_string();
-    Ok(linked_records(agent, LinkTypes::AgentToKey)?
+    Ok(linked_records::<SigningKeyBinding>(agent, LinkTypes::AgentToKey)?
         .into_iter().filter(|r| r.author == expected && r.body.agent == expected).collect())
 }
 
@@ -77,7 +77,7 @@ pub fn publish_file_commitment(entry: FileCommitment) -> ExternResult<ActionHash
 #[hdk_extern]
 pub fn get_file_commitments(agent: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<FileCommitment>>> {
     let expected = agent.to_string();
-    Ok(linked_records(agent, LinkTypes::AgentToFile)?
+    Ok(linked_records::<FileCommitment>(agent, LinkTypes::AgentToFile)?
         .into_iter().filter(|r| r.author == expected && r.body.owner_agent == expected).collect())
 }
 
@@ -94,7 +94,7 @@ pub fn publish_replica_claim(entry: ReplicaClaim) -> ExternResult<ActionHash> {
 #[hdk_extern]
 pub fn get_replica_claims(lookup: FileLookup) -> ExternResult<Vec<AuthoredRecord<ReplicaClaim>>> {
     let base = typed_path(replica_path(&lookup.owner_agent, &lookup.file_id))?.path_entry_hash()?;
-    Ok(linked_records(base, LinkTypes::FileToReplica)?
+    Ok(linked_records::<ReplicaClaim>(base, LinkTypes::FileToReplica)?
         .into_iter().filter(|r| r.author == r.body.node_agent
             && r.body.owner_agent == lookup.owner_agent
             && r.body.file_id == lookup.file_id).collect())
