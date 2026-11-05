@@ -1,0 +1,28 @@
+[package]
+name = "holochain-music-moq"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Isolated native workspace: QUIC/MoQ dependencies should not inflate the
+# wasm zomes, Holochain Sweettest workspace or the S4 HTTP node's build.
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+# Same real IETF MoQT draft-14 transport, certificate-pinning code and QUIC
+# session layer already exercised by the holochain-moq project. Revision is
+# immutable so protocol changes cannot silently alter this S8 demo.
+holochain-moq-realtime = { git = "https://github.com/ConorTttttt/holochain-moq", rev = "ccd9a8e313bc588490a49adbd432964fdc6d0a3e" }
+holochain-moq-protocol = { git = "https://github.com/ConorTttttt/holochain-moq", rev = "ccd9a8e313bc588490a49adbd432964fdc6d0a3e" }
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = "2"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+url = "2"
