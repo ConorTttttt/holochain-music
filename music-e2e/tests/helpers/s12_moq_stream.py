@@ -50,7 +50,7 @@ def main() -> None:
         backend=args.audio_backend, device=args.audio_device, timeout=150,
     )
     if not report["first_pcm_before_last_chunk"] or not report["playback_complete"]:
-        raise ValueError("S12 PCM did not overlap authenticated MoQ transfer")
+        raise ValueError(f"S12 overlap assertion failed: verified={report.get('first_pcm_after_verified_chunks')}/{report.get('ciphertext_chunks')}, last-minus-first-ms={report.get('last_chunk_minus_first_pcm_ms')}, playback_complete={report.get('playback_complete')}")
     if report["manifest_sha256"] != fixture["manifest_sha256"]:
         raise ValueError("S12 Holochain signed manifest digest mismatch")
     if report["pcm_sha256"] != fixture["sample_pcm_sha256"] or \
