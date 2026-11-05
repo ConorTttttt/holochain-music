@@ -35,6 +35,10 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:0")] bind: SocketAddr,
         /// Test-only inter-object pacing to show playback/receive overlap.
         #[arg(long, default_value_t = 2)] chunk_delay_ms: u64,
+        /// Test-only repeatable network jitter: after every N objects.
+        #[arg(long, default_value_t = 0)] jitter_every: u64,
+        /// Test-only extra milliseconds after each jittered object.
+        #[arg(long, default_value_t = 0)] jitter_delay_ms: u64,
     },
     /// Receive ciphertext into a separate listener-side CAS without a key.
     Receive {
@@ -58,8 +62,8 @@ const TRACK: &str = "ciphertext-chunks-v1";
 #[tokio::main]
 async fn main() -> Result<()> {
     match Args::parse().command {
-        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms } => {
-            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms).await
+        Command::Publish { manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms } => {
+            publish(manifest, store, trusted_artist_hex, expected_manifest_sha256, cert_dir, ready_file, bind, chunk_delay_ms, jitter_every, jitter_delay_ms).await
         }
         Command::Receive { manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl } => {
             receive(manifest, store, trusted_artist_hex, expected_manifest_sha256, url, cert_fingerprint_hex, progress_jsonl).await
@@ -70,8 +74,12 @@ async fn main() -> Result<()> {
 async fn publish(
     manifest_path: PathBuf, store: PathBuf, artist: String, digest: String,
     cert_dir: PathBuf, ready_file: PathBuf, bind: SocketAddr, chunk_delay_ms: u64,
+    jitter_every: u64, jitter_delay_ms: u64,
 ) -> Result<()> {
     ensure!(chunk_delay_ms <= 1000, "invalid per-chunk delay (max 1000 ms)");
+    ensure!(jitter_delay_ms <= 2000, "invalid jitter delay (max 2000 ms)");
+    ensure!((jitter_every == 0) == (jitter_delay_ms == 0),
+        "jitter-every and jitter-delay-ms must both be zero or both nonzero");
     ensure!(bind.ip().is_loopback(), "publisher must bind to a loopback address (S8 local prototype)");
     let manifest = load_manifest(&manifest_path, &artist, &digest)?;
     ensure!(!manifest.body.chunks.is_empty(), "S8 stream requires at least one chunk");
@@ -111,7 +119,10 @@ async fn publish(
         publication.send(Bytes::from(data)).await.context("MoQ object send failed")?;
         // Keep this prototype's small ordered stream ahead of the QUIC reader
         // but below the existing MoQ receiver's 256-object / 32MiB queue.
-        tokio::time::sleep(Duration::from_millis(chunk_delay_ms)).await;
+        let periodic_jitter = if jitter_every > 0 && (chunk.index as u64 + 1) % jitter_every == 0 {
+            jitter_delay_ms
+        } else { 0 };
+        tokio::time::sleep(Duration::from_millis(chunk_delay_ms + periodic_jitter)).await;
     }
     tokio::time::sleep(Duration::from_millis(600)).await;
     drop(publication); // closes the track for this one-shot stream
