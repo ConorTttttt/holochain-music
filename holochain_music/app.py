@@ -5,8 +5,6 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import secrets
-import shutil
 import socket
 import threading
 import time
@@ -41,6 +39,7 @@ DEFAULTS = {
     "host_enabled": True,
     "host_bind": "127.0.0.1:0",
     "host_advertise_ip": None,
+    "host_max_rate": 8 * 1024 * 1024,
     "audio_backend": "alsa",
     "audio_device": "default",
 }
@@ -100,6 +99,8 @@ class MusicApp:
                     raise AppError("network URLs must be http(s) URLs")
             if key in ("allow_lan", "host_enabled", "run_local_bootstrap") and not isinstance(value, bool):
                 raise AppError(f"{key} must be true or false")
+            if key == "host_max_rate" and (type(value) is not int or not 64 * 1024 <= value <= 1024**3):
+                raise AppError("host rate must be between 64 KiB/s and 1 GiB/s")
             if key == "audio_backend" and value not in ("alsa", "null"):
                 raise AppError("audio backend must be alsa or null")
             self.settings[key] = value
@@ -131,12 +132,15 @@ class MusicApp:
 
     def _start_network(self) -> None:
         logs = self.paths.logs
-        if self.settings["run_local_bootstrap"] and self.settings["bootstrap_url"] == DEFAULTS["bootstrap_url"]:
-            host, port = DEFAULT_BOOTSTRAP.split(":")
+        url = self.settings["bootstrap_url"]
+        if self.settings["run_local_bootstrap"] and url.startswith("http://127.0.0.1:"):
+            # Single-machine use: run (or reuse) a loopback bootstrap+relay.
+            address = url[len("http://"):].rstrip("/")
+            host, port = address.split(":")
             with socket.socket() as s:
                 in_use = s.connect_ex((host, int(port))) == 0
             if not in_use:
-                self.bootstrap = BootstrapServer(DEFAULT_BOOTSTRAP, logs / "bootstrap.log")
+                self.bootstrap = BootstrapServer(address, logs / "bootstrap.log")
                 self.bootstrap.start()
         self.conductor = Conductor(self.paths.conductor, self.keys.conductor_passphrase(),
                                    bootstrap_url=self.settings["bootstrap_url"],
@@ -156,7 +160,6 @@ class MusicApp:
         moq = binaries.find("holochain-music-moq")
         self.catalogue = Catalogue(self.bridge, moq_binary=moq, allow_lan=self.settings["allow_lan"])
         self.artist = ArtistService(bridge=self.bridge, keys=self.keys, host_root=self.paths.host)
-        self.artist.ensure_listener_key()
         self.online = True
         self.status_message = "online"
         if self.settings["host_enabled"]:
@@ -176,7 +179,8 @@ class MusicApp:
                 self.save_settings(host_bind=bind)
             self.host = MoqHost(moq_binary=binaries.find("holochain-music-moq"), store=self.paths.host / "cas",
                                 cert_dir=self.paths.keys / "moq-host", state_dir=self.paths.host / "state",
-                                bind=bind, advertise_ip=self.settings["host_advertise_ip"])
+                                bind=bind, advertise_ip=self.settings["host_advertise_ip"],
+                                bytes_per_second=self.settings["host_max_rate"])
         self.host.set_files(files)
         ready = self.host.start()
         self.artist.publish_endpoints(ready["url"], ready["cert_fingerprint_hex"])
@@ -233,55 +237,55 @@ class MusicApp:
                           for h in trusted.hosts]}
 
     def sync_grants(self) -> int:
-        """Pull grant records addressed to me; keep only ones that verify."""
+        """Import grants delivered privately to my own chain; keep only ones
+        whose artist signature, listener binding and file binding verify."""
         self.require_online()
+        added = 0
         with self._sync_lock:
-            added = 0
-            for record in self.bridge.records("get_my_grants"):
-                b = record.body
+            for row in self.bridge.call("get_inbox_grants") or []:
+                b = row.get("body") if isinstance(row, dict) else None
                 try:
-                    file_id = file_key(b.get("file_id"))
+                    owner = b["owner_agent"]
+                    file_id = file_key(b["file_id"])
                     grant = json.loads(b["grant_json"])
                     meta = self.library.meta(file_id)
                     if meta is None:
-                        trusted = None
-                        for t in self.catalogue.artist_tracks(record.author):
-                            if t["file_id"] == file_id:
-                                trusted = self.catalogue.resolve(record.author, t["track_id"])
-                                break
-                        if trusted is None:
+                        track = next((t for t in self.catalogue.artist_tracks(owner) if t["file_id"] == file_id), None)
+                        if track is None:
                             continue
+                        trusted = self.catalogue.resolve(owner, track["track_id"])
                         self.library.add(manifest=trusted.manifest, meta=self._meta_from_trusted(trusted))
                         meta = self.library.meta(file_id)
-                    if meta["artist_agent"] != record.author:
+                    if meta["artist_agent"] != owner:
                         continue
                     kind = grant_kind(grant)
                     unwrap_content_grant(grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
-                                         owner_agent=record.author, listener_agent=self.agent,
+                                         owner_agent=owner, listener_agent=self.agent,
                                          recipient_private=self.keys.listener_x25519(),
                                          signed_manifest=self.library.manifest(file_id))
-                    before = (meta.get("grant_kind"), meta.get("grant_received_at"))
-                    self.library.set_grant(file_id, grant, kind)
-                    if (self.library.meta(file_id).get("grant_kind"), ) != (before[0],):
-                        added += 1
-                except (KeyError, ValueError, *USER_ERRORS):
+                    if self.library.grant(file_id) != grant:
+                        self.library.set_grant(file_id, grant, kind)  # never downgrades a licence
+                        added += self.library.grant(file_id) == grant
+                except (KeyError, TypeError, ValueError, *USER_ERRORS):
                     continue
-            return added
+        return added
 
     def request_access(self, track_key: str, kind: str, note: str = "") -> dict:
+        """Send a private request to the artist's cell (artist must be online)."""
         self.require_online()
+        if kind not in ("stream", "perpetual-personal"):
+            raise AppError("invalid access kind")
         artist, track_id = self._split_key(track_key)
-        trusted = self.catalogue.resolve(artist, track_id)
-        self.library.add(manifest=trusted.manifest, meta=self._meta_from_trusted(trusted))
         if artist == self.agent:
             raise AppError("this is your own track; it is already in your library")
-        self.bridge.call("request_access", entry={
-            "schema": "holochain-music/access-request/v1", "listener_agent": self.agent, "owner_agent": artist,
-            "file_id": trusted.manifest["body"]["file_id"], "manifest_sha256": trusted.digest,
+        trusted = self.catalogue.resolve(artist, track_id)
+        self.library.add(manifest=trusted.manifest, meta=self._meta_from_trusted(trusted))
+        file_id = trusted.manifest["body"]["file_id"]
+        self.bridge.call("send_access_request", owner=artist, request={
+            "file_id": file_id, "manifest_sha256": trusted.digest,
             "x25519_public_hex": self.keys.listener_public_hex(), "kind": kind, "note": note[:500]})
-        self.library.update_meta(trusted.manifest["body"]["file_id"], requested=kind,
-                                 requested_at=int(time.time()))
-        return {"requested": True}
+        self.library.update_meta(file_id, requested=kind, requested_at=int(time.time()))
+        return {"requested": True, "file_id": file_id}
 
     @staticmethod
     def _split_key(track_key: str) -> tuple[str, str]:

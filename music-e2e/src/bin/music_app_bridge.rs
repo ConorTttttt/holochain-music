@@ -90,6 +90,17 @@ struct AlbumLookup { artist: AgentPubKey, album_id: String }
 struct FileLookup { owner_agent: String, file_id: String }
 #[derive(Debug, Serialize)]
 struct SearchInput { query: String, limit: u8 }
+#[derive(Debug, Serialize)]
+struct SendAccessRequest { owner: AgentPubKey, request: Value }
+#[derive(Debug, Serialize)]
+struct SendGrant { listener: AgentPubKey, grant: Value }
+
+#[derive(Debug, Deserialize)]
+struct InboxRow {
+    action_hash: ActionHash,
+    received_at: holochain_client::Timestamp,
+    body: Value,
+}
 
 struct Bridge {
     app: AppWebsocket,
@@ -181,8 +192,11 @@ fn arg_u8(args: &Value, key: &str) -> Result<u8> {
     u8::try_from(n).map_err(|_| invalid(format!("{key} out of range")))
 }
 fn arg_entry(args: &Value) -> Result<Value> {
-    let entry = arg(args, "entry")?;
-    if !entry.is_object() { return Err(invalid("entry must be an object")); }
+    arg_entry_named(args, "entry")
+}
+fn arg_entry_named(args: &Value, key: &str) -> Result<Value> {
+    let entry = arg(args, key)?;
+    if !entry.is_object() { return Err(invalid(format!("{key} must be an object"))); }
     Ok(entry.clone())
 }
 
@@ -200,6 +214,15 @@ impl Bridge {
     async fn records<I: Serialize + std::fmt::Debug>(&self, catalogue: bool, func: &str, payload: &I) -> Result<Value> {
         let rows: Vec<AuthoredRecord> = self.call(catalogue, func, payload).await?;
         Ok(Value::Array(rows.into_iter().map(AuthoredRecord::out).collect()))
+    }
+
+    async fn inbox(&self, func: &str) -> Result<Value> {
+        let rows: Vec<InboxRow> = self.call(false, func, &()).await?;
+        Ok(Value::Array(rows.into_iter().map(|r| json!({
+            "action_hash": r.action_hash.to_string(),
+            "received_at_us": r.received_at.as_micros(),
+            "body": r.body,
+        })).collect()))
     }
 
     async fn create(&self, catalogue: bool, func: &str, entry: Value) -> Result<Value> {
@@ -242,17 +265,26 @@ impl Bridge {
                 owner_agent: arg_str(args, "owner_agent")?, file_id: arg_str(args, "file_id")?,
             }).await,
             "get_moq_endpoints" => self.records(false, "get_moq_endpoints", &arg_agent(args, "host")?).await,
-            "get_listener_keys" => self.records(false, "get_listener_keys", &arg_agent(args, "agent")?).await,
-            "get_my_access_requests" => self.records(false, "get_my_access_requests", &()).await,
-            "get_my_grants" => self.records(false, "get_my_grants", &()).await,
+            // Private inbox (own source chain only; never DHT-linked).
+            "get_inbox_access_requests" => self.inbox("get_inbox_access_requests").await,
+            "get_inbox_grants" => self.inbox("get_inbox_grants").await,
             // Storage writes.
             "register_signing_key" => self.create(false, "register_signing_key", arg_entry(args)?).await,
             "publish_file_commitment" => self.create(false, "publish_file_commitment", arg_entry(args)?).await,
             "publish_replica_claim" => self.create(false, "publish_replica_claim", arg_entry(args)?).await,
             "publish_moq_endpoint" => self.create(false, "publish_moq_endpoint", arg_entry(args)?).await,
-            "register_listener_key" => self.create(false, "register_listener_key", arg_entry(args)?).await,
-            "request_access" => self.create(false, "request_access", arg_entry(args)?).await,
-            "publish_grant" => self.create(false, "publish_grant", arg_entry(args)?).await,
+            "send_access_request" => {
+                let _: () = self.call(false, "send_access_request", &SendAccessRequest {
+                    owner: arg_agent(args, "owner")?, request: arg_entry_named(args, "request")?,
+                }).await?;
+                Ok(json!({"delivered": true}))
+            }
+            "send_grant" => {
+                let _: () = self.call(false, "send_grant", &SendGrant {
+                    listener: arg_agent(args, "listener")?, grant: arg_entry_named(args, "grant")?,
+                }).await?;
+                Ok(json!({"delivered": true}))
+            }
             _ => Err(invalid("unknown bridge operation")),
         }
     }

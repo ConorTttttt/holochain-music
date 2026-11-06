@@ -106,14 +106,6 @@ class ArtistService:
         self.bridge.call("register_signing_key", entry={"schema": KEY_SCHEMA, "agent": self.me,
                                                         "purpose": purpose, "signing_key_hex": public.hex()})
 
-    def ensure_listener_key(self) -> None:
-        public = self.keys.listener_public_hex()
-        rows = self.bridge.records("get_listener_keys", agent=self.me)
-        if any(r.body.get("x25519_public_hex") == public for r in rows):
-            return
-        self.bridge.call("register_listener_key", entry={"schema": "holochain-music/listener-key/v1",
-                                                         "agent": self.me, "x25519_public_hex": public})
-
     # ---- catalogue ----------------------------------------------------
     def save_profile(self, display_name: str, biography: str) -> dict:
         return self.bridge.call("publish_artist_profile", entry={
@@ -221,42 +213,56 @@ class ArtistService:
         p = self._issued_log()
         return _read_json(p, 4 * 1024 * 1024) if p.is_file() else []
 
+    def _inbox(self) -> list[dict]:
+        """Private requests on this artist's own chain. `listener_agent` was
+        set by this conductor from the remote call's verified provenance."""
+        rows = []
+        for row in self.bridge.call("get_inbox_access_requests") or []:
+            b = row.get("body") if isinstance(row, dict) else None
+            if (isinstance(b, dict) and b.get("schema") == "holochain-music/inbox-access-request/v1"
+                    and isinstance(b.get("listener_agent"), str)):
+                rows.append({**b, "request_hash": row.get("action_hash"),
+                             "received_at": int(row.get("received_at_us", 0)) // 1_000_000})
+        return rows
+
     def requests(self) -> list[dict]:
         mine = {t["file_id"]: t for t in self.my_tracks()}
         issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
         out = []
-        for r in self.bridge.records("get_my_access_requests"):
-            b = r.body
-            if r.author != b.get("listener_agent") or b.get("file_id") not in mine:
+        for b in self._inbox():
+            track = mine.get(b.get("file_id"))
+            if track is None or b.get("manifest_sha256") != track["manifest_sha256"]:
                 continue
-            out.append({"request_hash": r.action_hash, "listener_agent": r.author, "file_id": b["file_id"],
-                        "track_title": mine[b["file_id"]]["title"], "kind": b.get("kind"),
-                        "note": str(b.get("note", ""))[:500],
-                        "granted": (r.author, b["file_id"], b.get("kind")) in issued})
+            out.append({"request_hash": b["request_hash"], "listener_agent": b["listener_agent"],
+                        "file_id": b["file_id"], "track_title": track["title"], "kind": b.get("kind"),
+                        "note": str(b.get("note", ""))[:500], "received_at": b["received_at"],
+                        "granted": (b["listener_agent"], b["file_id"], b.get("kind")) in issued})
         return out
 
-    def grant(self, *, listener_agent: str, file_id: str, kind: str) -> dict:
+    def grant(self, *, request_hash: str, kind: str) -> dict:
+        """Approve one private request: wrap the content key to the X25519 key
+        the listener sent in that authenticated request and deliver privately."""
         if kind not in ("stream", "perpetual-personal"):
             raise ArtistError("unknown grant kind")
-        d = self.files / file_key(file_id)
+        request = next((r for r in self._inbox() if r["request_hash"] == request_hash), None)
+        if request is None:
+            raise ArtistError("unknown access request")
+        file_id = file_key(request["file_id"])
+        d = self.files / file_id
         if not (d / "track.json").is_file():
             raise ArtistError("you can only grant access to tracks you published")
-        # The recipient key must be one the listener *authored* on Holochain.
-        keys = {r.body.get("x25519_public_hex") for r in self.bridge.records("get_listener_keys", agent=listener_agent)
-                if r.author == listener_agent and r.body.get("agent") == listener_agent}
-        keys.discard(None)
-        if len(keys) != 1:
-            raise ArtistError("listener has no unique registered X25519 key")
-        recipient = bytes.fromhex(keys.pop())
-        X25519PublicKey.from_public_bytes(recipient)
         manifest = _read_json(d / "manifest.json")
+        if request["manifest_sha256"] != manifest_digest(manifest):
+            raise ArtistError("request refers to a different version of this track")
+        recipient = bytes.fromhex(request["x25519_public_hex"])
+        X25519PublicKey.from_public_bytes(recipient)
+        listener_agent = request["listener_agent"]
         common = dict(owner_signer=self.keys.artist_ed25519(), owner_agent=self.me, listener_agent=listener_agent,
                       recipient_public=recipient, signed_manifest=manifest,
                       content_key=self.keys.content_key(file_id))
         grant = issue_personal_licence(**common) if kind == "perpetual-personal" else \
             issue_content_grant(**common, lifetime_seconds=86400)
-        self.bridge.call("publish_grant", entry={
-            "schema": "holochain-music/grant-record/v1", "owner_agent": self.me, "listener_agent": listener_agent,
+        self.bridge.call("send_grant", listener=listener_agent, grant={
             "file_id": file_id, "manifest_sha256": manifest_digest(manifest), "kind": kind,
             "grant_json": canonical(grant).decode()})
         log = self.issued()

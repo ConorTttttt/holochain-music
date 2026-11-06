@@ -119,8 +119,7 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/tracks"): online(lambda d: {"tracks": app.artist.my_tracks()} if _keys(d, set()) is not None else None),
         ("POST", "/api/artist/requests"): online(lambda d: {"requests": app.artist.requests()} if _keys(d, set()) is not None else None),
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
-            listener_agent=_text(_keys(d, {"listener_agent", "file_id", "kind"})["listener_agent"], 80),
-            file_id=d["file_id"], kind=d["kind"])),
+            request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
         ("POST", "/api/settings"): settings,
     }
 

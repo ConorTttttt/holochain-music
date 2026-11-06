@@ -9,9 +9,8 @@ pub const KEY_SCHEMA: &str = "holochain-storage/key-binding/v1";
 pub const FILE_SCHEMA: &str = "holochain-storage/file-commitment/v1";
 pub const REPLICA_SCHEMA: &str = "holochain-storage/replica-claim/v1";
 pub const MOQ_SCHEMA: &str = "holochain-storage/moq-endpoint/v1";
-pub const LISTENER_KEY_SCHEMA: &str = "holochain-music/listener-key/v1";
-pub const ACCESS_REQUEST_SCHEMA: &str = "holochain-music/access-request/v1";
-pub const GRANT_RECORD_SCHEMA: &str = "holochain-music/grant-record/v1";
+pub const INBOX_REQUEST_SCHEMA: &str = "holochain-music/inbox-access-request/v1";
+pub const INBOX_GRANT_SCHEMA: &str = "holochain-music/inbox-grant/v1";
 /// Signed grant JSON envelopes are small (S10 grants are capped at 4 KiB).
 pub const MAX_GRANT_JSON_BYTES: usize = 8192;
 pub const GRANT_KINDS: [&str; 2] = ["stream", "perpetual-personal"];
@@ -63,26 +62,17 @@ pub struct MoqEndpoint {
     pub cert_fingerprint_hex: String,
 }
 
-/// Listener-authored X25519 *public* key used as the recipient of artist
-/// grants. The private key never leaves the listener's device.
+/// PRIVATE entry on the *artist's* source chain: an access request received
+/// through an authenticated remote call. `listener_agent` is the remote call's
+/// provenance as verified by the artist's conductor, never a caller field.
+/// Private entries are not published to the DHT; only the action (type,
+/// entry hash, time) appears in the author's agent activity.
 #[hdk_entry_helper]
 #[derive(Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ListenerKeyBinding {
-    pub schema: String,
-    pub agent: String,
-    pub x25519_public_hex: String,
-}
-
-/// Listener-authored request to the owner of one encrypted file. Purely a
-/// notification: it grants nothing and carries no secret.
-#[hdk_entry_helper]
-#[derive(Clone, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct AccessRequest {
+pub struct InboxAccessRequest {
     pub schema: String,
     pub listener_agent: String,
-    pub owner_agent: String,
     pub file_id: String,
     pub manifest_sha256: String,
     pub x25519_public_hex: String,
@@ -90,17 +80,15 @@ pub struct AccessRequest {
     pub note: String,
 }
 
-/// Owner-authored delivery of an *already signed* grant envelope. The grant
-/// wraps the content key to the listener's X25519 key, so only metadata
-/// (who was granted what) is public. Clients verify the inner Ed25519
-/// signature against the owner's S2 key binding; the DHT does not.
+/// PRIVATE entry on the *listener's* source chain: an artist-signed grant
+/// delivered by remote call. `owner_agent` is the call provenance. The grant's
+/// own Ed25519 signature is still verified by the client before use.
 #[hdk_entry_helper]
 #[derive(Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct GrantRecord {
+pub struct InboxGrant {
     pub schema: String,
     pub owner_agent: String,
-    pub listener_agent: String,
     pub file_id: String,
     pub manifest_sha256: String,
     pub kind: String,
@@ -149,9 +137,10 @@ pub enum EntryTypes {
     FileCommitment(FileCommitment),
     ReplicaClaim(ReplicaClaim),
     MoqEndpoint(MoqEndpoint),
-    ListenerKeyBinding(ListenerKeyBinding),
-    AccessRequest(AccessRequest),
-    GrantRecord(GrantRecord),
+    #[entry_type(visibility = "private")]
+    InboxAccessRequest(InboxAccessRequest),
+    #[entry_type(visibility = "private")]
+    InboxGrant(InboxGrant),
 }
 
 #[hdk_link_types]
@@ -161,12 +150,6 @@ pub enum LinkTypes {
     FileToReplica,
     Anchor,
     AgentToMoqEndpoint,
-    AgentToListenerKey,
-    /// Base: the owner agent the request is addressed to. Any listener may
-    /// create one (spam is bounded client-side), but only for its own entry.
-    OwnerToAccessRequest,
-    /// Base: the listener agent the grant is addressed to.
-    ListenerToGrant,
 }
 
 #[hdk_extern]
@@ -230,33 +213,24 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
                 } else { Ok(()) }
             })
         }
-        EntryTypes::ListenerKeyBinding(k) => {
-            check_author(author, &k.agent).and_then(|_| {
-                if k.schema != LISTENER_KEY_SCHEMA || !is_hex32(&k.x25519_public_hex) {
-                    Err("invalid listener X25519 key binding".into())
-                } else { Ok(()) }
-            })
+        // Private inbox entries: only the author (recipient) ever validates
+        // them, so these checks are format hygiene, not a trust boundary.
+        EntryTypes::InboxAccessRequest(r) => {
+            if r.schema != INBOX_REQUEST_SCHEMA || !valid_agent_text(&r.listener_agent)
+                || r.listener_agent == author.to_string()
+                || !is_hex32(&r.file_id) || !is_hex32(&r.manifest_sha256) || !is_hex32(&r.x25519_public_hex)
+                || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note) {
+                Err("invalid inbox access request".into())
+            } else { Ok(()) }
         }
-        EntryTypes::AccessRequest(r) => {
-            check_author(author, &r.listener_agent).and_then(|_| {
-                if r.schema != ACCESS_REQUEST_SCHEMA || !valid_agent_text(&r.owner_agent)
-                    || r.owner_agent == r.listener_agent
-                    || !is_hex32(&r.file_id) || !is_hex32(&r.manifest_sha256)
-                    || !is_hex32(&r.x25519_public_hex)
-                    || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note) {
-                    Err("invalid access request".into())
-                } else { Ok(()) }
-            })
-        }
-        EntryTypes::GrantRecord(g) => {
-            check_author(author, &g.owner_agent).and_then(|_| {
-                if g.schema != GRANT_RECORD_SCHEMA || !valid_agent_text(&g.listener_agent)
-                    || !is_hex32(&g.file_id) || !is_hex32(&g.manifest_sha256)
-                    || !GRANT_KINDS.contains(&g.kind.as_str())
-                    || g.grant_json.is_empty() || g.grant_json.len() > MAX_GRANT_JSON_BYTES {
-                    Err("invalid grant record".into())
-                } else { Ok(()) }
-            })
+        EntryTypes::InboxGrant(g) => {
+            if g.schema != INBOX_GRANT_SCHEMA || !valid_agent_text(&g.owner_agent)
+                || g.owner_agent == author.to_string()
+                || !is_hex32(&g.file_id) || !is_hex32(&g.manifest_sha256)
+                || !GRANT_KINDS.contains(&g.kind.as_str())
+                || g.grant_json.is_empty() || g.grant_json.len() > MAX_GRANT_JSON_BYTES {
+                Err("invalid inbox grant".into())
+            } else { Ok(()) }
         }
     };
     match result { Ok(()) => ValidateCallbackResult::Valid, Err(reason) => invalid(reason) }
@@ -292,10 +266,8 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
             Ok(validate_app_entry(action.author(), &app_entry)),
         FlatOp::CreateEntry(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => match link_type {
-            LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint
-                | LinkTypes::AgentToListenerKey => validate_agent_link(&action),
-            LinkTypes::FileToReplica | LinkTypes::OwnerToAccessRequest
-                | LinkTypes::ListenerToGrant => validate_owned_target(&action),
+            LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint => validate_agent_link(&action),
+            LinkTypes::FileToReplica => validate_owned_target(&action),
             LinkTypes::Anchor => Ok(ValidateCallbackResult::Valid),
         },
         FlatOp::Link(OpLink::DeleteLink { .. }) => Ok(invalid("index links are append-only")),

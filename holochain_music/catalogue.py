@@ -110,7 +110,8 @@ class Catalogue:
                 and record.body.get("schema") == ARTIST_SCHEMA:
             result = {"agent": agent, "display_name": str(record.body.get("display_name", ""))[:120],
                       "biography": str(record.body.get("biography", ""))[:2048]}
-        self._profiles[agent] = (time.monotonic(), result)
+        if result is not None:  # never cache absence: DHT data may still be arriving
+            self._profiles[agent] = (time.monotonic(), result)
         return result
 
     def artists(self) -> list[dict]:

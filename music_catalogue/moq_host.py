@@ -52,12 +52,16 @@ class MoqHost:
 
     def __init__(self, *, moq_binary: str | Path, store: str | Path, cert_dir: str | Path,
                  state_dir: str | Path, bind: str = "127.0.0.1:0",
-                 advertise_ip: str | None = None, max_sessions: int = 16):
+                 advertise_ip: str | None = None, max_sessions: int = 16,
+                 bytes_per_second: int = 8 * 1024 * 1024):
         self.binary = Path(moq_binary)
         if not self.binary.is_absolute() or not self.binary.is_file():
             raise MoqFetchError("MoQ binary must be an existing absolute path")
         self.store, self.cert_dir, self.state_dir = Path(store), Path(cert_dir), Path(state_dir)
         self.bind, self.advertise_ip, self.max_sessions = bind, advertise_ip, max_sessions
+        if type(bytes_per_second) is not int or not 64 * 1024 <= bytes_per_second <= 1024**3:
+            raise MoqFetchError("host rate limit must be between 64 KiB/s and 1 GiB/s")
+        self.bytes_per_second = bytes_per_second
         self.files: list[dict] = []
         self.proc: subprocess.Popen | None = None
         self.ready: dict | None = None
@@ -85,7 +89,7 @@ class MoqHost:
         ready.unlink(missing_ok=True)
         argv = [str(self.binary), "serve", "--served-list", str(served), "--store", str(self.store),
                 "--cert-dir", str(self.cert_dir), "--ready-file", str(ready), "--bind", self.bind,
-                "--max-sessions", str(self.max_sessions)]
+                "--max-sessions", str(self.max_sessions), "--bytes-per-second", str(self.bytes_per_second)]
         if self.advertise_ip:
             argv += ["--allow-lan", "--advertise-ip", self.advertise_ip]
         log = open(self.state_dir / "moq-host.log", "ab")

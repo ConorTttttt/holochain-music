@@ -4,12 +4,10 @@
 
 use hdk::prelude::*;
 use music_storage_integrity::{
-    AccessRequest, EntryTypes, FileCommitment, GrantRecord, LinkTypes, ListenerKeyBinding,
-    MoqEndpoint, ReplicaClaim, SigningKeyBinding,
+    EntryTypes, FileCommitment, InboxAccessRequest, InboxGrant, LinkTypes, MoqEndpoint,
+    ReplicaClaim, SigningKeyBinding, UnitEntryTypes,
 };
-
-/// Hard cap on rows returned from a link index anyone can write to.
-const MAX_INDEX_ROWS: usize = 200;
+use std::collections::HashSet;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AuthoredRecord<T> {
@@ -125,65 +123,157 @@ pub fn get_moq_endpoints(host: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<M
         .into_iter().filter(|r| r.author == expected && r.body.node_agent == expected).collect())
 }
 
-/// Listener publishes the X25519 public key artists should wrap grants to.
-#[hdk_extern]
-pub fn register_listener_key(entry: ListenerKeyBinding) -> ExternResult<ActionHash> {
-    let agent = agent_info()?.agent_initial_pubkey;
-    let hash = create_entry(EntryTypes::ListenerKeyBinding(entry))?;
-    create_link(agent, hash.clone(), LinkTypes::AgentToListenerKey, ())?;
-    Ok(hash)
-}
+// ---- private access-request / grant inbox (no DHT linkage) -------------
+//
+// Listener and artist exchange requests and grants by authenticated remote
+// zome call. The recipient stores each message as a PRIVATE entry on its own
+// chain; nothing linking a listener to a track is published to the DHT. Both
+// peers must be online at the same time; the sender gets an explicit error
+// otherwise and may retry.
+
+const INBOX_TAG: &str = "holochain-music-private-inbox";
+const MAX_INBOX: usize = 2000;
+const MAX_PER_SENDER: usize = 50;
 
 #[hdk_extern]
-pub fn get_listener_keys(agent: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<ListenerKeyBinding>>> {
-    let expected = agent.to_string();
-    Ok(linked_records::<ListenerKeyBinding>(agent, LinkTypes::AgentToListenerKey)?
-        .into_iter().filter(|r| r.author == expected && r.body.agent == expected).collect())
+pub fn init(_: ()) -> ExternResult<InitCallbackResult> {
+    let zome = zome_info()?.name;
+    let mut functions = HashSet::new();
+    functions.insert((zome.clone(), FunctionName::from("receive_access_request")));
+    functions.insert((zome, FunctionName::from("receive_grant")));
+    // Only these two inbox functions are remote-callable by any agent.
+    create_cap_grant(ZomeCallCapGrant {
+        tag: INBOX_TAG.into(),
+        access: CapAccess::Unrestricted,
+        functions: GrantedFunctions::Listed(functions),
+    })?;
+    Ok(InitCallbackResult::Pass)
 }
 
-/// Listener asks an artist for access. Carries only public data.
-#[hdk_extern]
-pub fn request_access(entry: AccessRequest) -> ExternResult<ActionHash> {
-    let owner = AgentPubKey::try_from(entry.owner_agent.as_str())
-        .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("invalid owner agent: {e}"))))?;
-    let hash = create_entry(EntryTypes::AccessRequest(entry))?;
-    create_link(owner, hash.clone(), LinkTypes::OwnerToAccessRequest, ())?;
-    Ok(hash)
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AccessRequestPayload {
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub x25519_public_hex: String,
+    pub kind: String,
+    pub note: String,
 }
 
-/// Requests addressed to the calling agent (artist). Newest first, bounded.
-#[hdk_extern]
-pub fn get_my_access_requests(_: ()) -> ExternResult<Vec<AuthoredRecord<AccessRequest>>> {
-    let me = agent_info()?.agent_initial_pubkey;
-    let expected = me.to_string();
-    let mut rows: Vec<_> = linked_records::<AccessRequest>(me, LinkTypes::OwnerToAccessRequest)?
-        .into_iter().filter(|r| r.author == r.body.listener_agent && r.body.owner_agent == expected)
-        .collect();
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GrantPayload {
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub kind: String,
+    pub grant_json: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SendAccessRequest {
+    pub owner: AgentPubKey,
+    pub request: AccessRequestPayload,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SendGrant {
+    pub listener: AgentPubKey,
+    pub grant: GrantPayload,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct InboxRow<T> {
+    pub action_hash: ActionHash,
+    pub received_at: Timestamp,
+    pub body: T,
+}
+
+fn guest(msg: impl Into<String>) -> WasmError {
+    wasm_error!(WasmErrorInner::Guest(msg.into()))
+}
+
+fn remote(agent: AgentPubKey, func: &str, payload: impl Serialize + std::fmt::Debug) -> ExternResult<()> {
+    match call_remote(agent, zome_info()?.name, func.into(), None, payload)? {
+        ZomeCallResponse::Ok(_) => Ok(()),
+        ZomeCallResponse::NetworkError(e) => Err(guest(format!("recipient unreachable (offline?): {e}"))),
+        ZomeCallResponse::Unauthorized(..) => Err(guest("recipient refused the delivery")),
+        other => Err(guest(format!("delivery failed: {other:?}"))),
+    }
+}
+
+fn inbox<T>(entry_type: UnitEntryTypes) -> ExternResult<Vec<InboxRow<T>>>
+where
+    T: TryFrom<SerializedBytes, Error = SerializedBytesError>,
+{
+    let filter = ChainQueryFilter::new().entry_type(entry_type.try_into()?).include_entries(true);
+    let mut rows = Vec::new();
+    for record in query(filter)? {
+        if let Ok(Some(body)) = record.entry().to_app_option::<T>() {
+            rows.push(InboxRow { action_hash: record.action_address().clone(),
+                                 received_at: record.action().timestamp(), body });
+        }
+    }
     rows.reverse();
-    rows.truncate(MAX_INDEX_ROWS);
     Ok(rows)
 }
 
-/// Artist delivers a signed grant to a listener through the DHT.
-#[hdk_extern]
-pub fn publish_grant(entry: GrantRecord) -> ExternResult<ActionHash> {
-    let listener = AgentPubKey::try_from(entry.listener_agent.as_str())
-        .map_err(|e| wasm_error!(WasmErrorInner::Guest(format!("invalid listener agent: {e}"))))?;
-    let hash = create_entry(EntryTypes::GrantRecord(entry))?;
-    create_link(listener, hash.clone(), LinkTypes::ListenerToGrant, ())?;
-    Ok(hash)
+fn sender_check(sender: &AgentPubKey, existing: impl Iterator<Item = String>) -> ExternResult<()> {
+    let me = agent_info()?.agent_initial_pubkey;
+    if sender == &me {
+        return Err(guest("cannot deliver to yourself"));
+    }
+    let all: Vec<String> = existing.collect();
+    let theirs = all.iter().filter(|a| a.as_str() == sender.to_string()).count();
+    if all.len() >= MAX_INBOX || theirs >= MAX_PER_SENDER {
+        return Err(guest("recipient inbox is full"));
+    }
+    Ok(())
 }
 
-/// Grant records addressed to the calling agent, newest first, bounded.
-/// Callers must still verify every inner grant signature and binding.
+/// Listener: deliver an access request privately to the artist's cell.
 #[hdk_extern]
-pub fn get_my_grants(_: ()) -> ExternResult<Vec<AuthoredRecord<GrantRecord>>> {
-    let me = agent_info()?.agent_initial_pubkey;
-    let expected = me.to_string();
-    let mut rows: Vec<_> = linked_records::<GrantRecord>(me, LinkTypes::ListenerToGrant)?
-        .into_iter().filter(|r| r.author == r.body.owner_agent && r.body.listener_agent == expected)
-        .collect();
-    rows.reverse();
-    rows.truncate(MAX_INDEX_ROWS);
-    Ok(rows)
+pub fn send_access_request(input: SendAccessRequest) -> ExternResult<()> {
+    remote(input.owner, "receive_access_request", input.request)
+}
+
+/// Artist cell (remote-callable): store the request as a private entry.
+#[hdk_extern]
+pub fn receive_access_request(payload: AccessRequestPayload) -> ExternResult<ActionHash> {
+    let sender = call_info()?.provenance;
+    let existing = inbox::<InboxAccessRequest>(UnitEntryTypes::InboxAccessRequest)?;
+    sender_check(&sender, existing.into_iter().map(|r| r.body.listener_agent))?;
+    create_entry(EntryTypes::InboxAccessRequest(InboxAccessRequest {
+        schema: music_storage_integrity::INBOX_REQUEST_SCHEMA.into(),
+        listener_agent: sender.to_string(),
+        file_id: payload.file_id, manifest_sha256: payload.manifest_sha256,
+        x25519_public_hex: payload.x25519_public_hex, kind: payload.kind, note: payload.note,
+    }))
+}
+
+#[hdk_extern]
+pub fn get_inbox_access_requests(_: ()) -> ExternResult<Vec<InboxRow<InboxAccessRequest>>> {
+    inbox(UnitEntryTypes::InboxAccessRequest)
+}
+
+/// Artist: deliver a signed grant privately to the listener's cell.
+#[hdk_extern]
+pub fn send_grant(input: SendGrant) -> ExternResult<()> {
+    remote(input.listener, "receive_grant", input.grant)
+}
+
+/// Listener cell (remote-callable): store the grant as a private entry.
+#[hdk_extern]
+pub fn receive_grant(payload: GrantPayload) -> ExternResult<ActionHash> {
+    let sender = call_info()?.provenance;
+    let existing = inbox::<InboxGrant>(UnitEntryTypes::InboxGrant)?;
+    sender_check(&sender, existing.into_iter().map(|r| r.body.owner_agent))?;
+    create_entry(EntryTypes::InboxGrant(InboxGrant {
+        schema: music_storage_integrity::INBOX_GRANT_SCHEMA.into(),
+        owner_agent: sender.to_string(),
+        file_id: payload.file_id, manifest_sha256: payload.manifest_sha256,
+        kind: payload.kind, grant_json: payload.grant_json,
+    }))
+}
+
+#[hdk_extern]
+pub fn get_inbox_grants(_: ()) -> ExternResult<Vec<InboxRow<InboxGrant>>> {
+    inbox(UnitEntryTypes::InboxGrant)
 }
