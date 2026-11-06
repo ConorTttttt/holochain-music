@@ -88,6 +88,8 @@ struct TrackLookup { artist: AgentPubKey, track_id: String }
 #[derive(Debug, Serialize)]
 struct AlbumLookup { artist: AgentPubKey, album_id: String }
 #[derive(Debug, Serialize)]
+struct ArtworkLookup { artist: AgentPubKey, sha256: String }
+#[derive(Debug, Serialize)]
 struct FileLookup { owner_agent: String, file_id: String }
 #[derive(Debug, Serialize)]
 struct SearchInput { query: String, limit: u8 }
@@ -242,6 +244,12 @@ impl Bridge {
             }
             "list_albums" => self.records(true, "list_albums", &arg_agent(args, "artist")?).await,
             "list_tracks" => self.records(true, "list_tracks", &arg_agent(args, "artist")?).await,
+            "get_artwork" => {
+                let row: Option<AuthoredRecord> = self.call(true, "get_artwork", &ArtworkLookup {
+                    artist: arg_agent(args, "artist")?, sha256: arg_str(args, "sha256")?,
+                }).await?;
+                Ok(row.map(AuthoredRecord::out).unwrap_or(Value::Null))
+            },
             "list_album_tracks" => self.records(true, "list_album_tracks", &AlbumLookup {
                 artist: arg_agent(args, "artist")?, album_id: arg_str(args, "album_id")?,
             }).await,
@@ -258,6 +266,7 @@ impl Bridge {
             // Catalogue writes (author is always this agent; zomes validate).
             "publish_artist_profile" => self.create(true, "publish_artist_profile", arg_entry(args)?).await,
             "publish_album" => self.create(true, "publish_album", arg_entry(args)?).await,
+            "publish_artwork" => self.create(true, "publish_artwork", arg_entry(args)?).await,
             "publish_track" => self.create(true, "publish_track", arg_entry(args)?).await,
             // Storage reads.
             "get_signing_keys" => self.records(false, "get_signing_keys", &arg_agent(args, "agent")?).await,
