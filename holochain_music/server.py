@@ -142,6 +142,7 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/catalogue/artwork"): online(artwork_get),
         ("POST", "/api/access/request"): access_request,
         ("POST", "/api/grants/sync"): noargs(lambda: {"new_grants": app.sync_grants()}),
+        ("POST", "/api/decisions/sync"): online(noargs(lambda: {"new_decisions": app.sync_decisions()})),
         ("POST", "/api/download"): lambda d: app.download(_keys(d, {"file_id"})["file_id"]),
         ("POST", "/api/play"): lambda d: p.play(_keys(d, {"file_id"}, {"start_frame"})["file_id"], d.get("start_frame", 0)),
         ("POST", "/api/pause"): noargs(p.pause),
@@ -167,6 +168,8 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
             request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
         ("POST", "/api/artist/reject"): online(lambda d: app.artist.reject(
+            request_hash=_text(_keys(d, {"request_hash"})["request_hash"], 80))),
+        ("POST", "/api/artist/reject/notify"): online(lambda d: app.artist.resend_decline(
             request_hash=_text(_keys(d, {"request_hash"})["request_hash"], 80))),
         ("POST", "/api/artist/requests/bulk"): online(lambda d: app.artist.decide_batch(
             request_hashes=_keys(d, {"request_hashes", "action"})["request_hashes"],
