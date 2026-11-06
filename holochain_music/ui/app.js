@@ -255,19 +255,40 @@ const views = {
     const title = el('input', { required: true, maxlength: '200' });
     const rights = el('select', {}, el('option', { value: 'original_owner', text: 'I own the rights to this recording' }),
       el('option', { value: 'licensed_by_rights_holder', text: 'I am licensed by the rights holder' }));
+    const genres = el('input', { maxlength: '220', placeholder: 'e.g. Electronic, Ambient, Downtempo' });
+    const artwork = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const trackNumber = el('input', { type: 'number', min: 1, max: 999, value: '1' });
+    const { albums } = state.online ? await api('/api/catalogue/artist', { agent: state.agent }) : { albums: [] };
+    const album = el('select', {}, el('option', { value: '', text: 'Release as a single' }),
+      ...albums.map(a => el('option', { value: a.album_id, text: a.title })));
     const name = el('input', { maxlength: '120', placeholder: 'Artist name shown to listeners' });
     const bio = el('textarea', { maxlength: '2048', rows: '3' });
     const profile = el('form', { class: 'stack', onsubmit: async e => { e.preventDefault();
       await act('/api/artist/profile', { display_name: name.value, biography: bio.value }, 'Artist profile published'); } },
       f('Artist name', name), f('Biography', bio), el('button', { class: 'btn', type: 'submit', text: 'Save profile' }));
     form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title), f('Rights declaration', rights),
-      el('p', { class: 'muted', text: 'The file is encrypted locally (AES-256-GCM). Only ciphertext is hosted; the content key never leaves this computer. Your declaration is not a copyright verification.' }),
+      f('Genres (comma-separated, max 6)', genres), f('Cover artwork (optional; JPEG, PNG or WebP)', artwork),
+      f('Album', album), f('Track number (if part of an album)', trackNumber),
+      el('p', { class: 'muted', text: 'Audio is encrypted locally. Covers are public and resized before publication. Your declaration is not a copyright verification.' }),
       el('button', { class: 'btn primary', type: 'submit', text: 'Encrypt & publish' }));
-    form.addEventListener('submit', async e => { e.preventDefault(); const b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Encrypting & publishing…';
-      const r = await act('/api/artist/publish', { path: path.value, title: title.value, rights_basis: rights.value }, 'Track published and hosted');
-      b.disabled = false; b.textContent = 'Encrypt & publish'; if (r) show('mytracks'); });
+    form.addEventListener('submit', async e => {
+      e.preventDefault(); const b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Publishing…';
+      try {
+        const tags = genresFromInput(genres.value);
+        const cover = await uploadCover(artwork.files[0]);
+        const r = await api('/api/artist/publish', {
+          path: path.value, title: title.value, rights_basis: rights.value,
+          genres: tags, artwork_sha256: cover, album_id: album.value || null,
+          track_number: Number(trackNumber.value),
+        });
+        if (r) { toast('Track published with its metadata', 'info'); await refreshLibrary(); show('mytracks'); }
+      } catch (err) { toast(err.message); }
+      finally { b.disabled = false; b.textContent = 'Encrypt & publish'; }
+    });
     return [el('h1', { text: 'Artist studio' }), el('h2', { text: '1. Your profile' }), el('div', { class: 'card' }, profile),
-      el('h2', { text: '2. Publish a track' }), el('div', { class: 'card' }, form)];
+      el('h2', { text: '2. Publish a track' }), el('div', { class: 'card' }, form),
+      el('button', { class: 'btn', type: 'button', text: 'Create an album from existing songs',
+        onclick: () => show('albums') })];
   },
   async mytracks() {
     const { tracks } = await api('/api/artist/tracks', {});
