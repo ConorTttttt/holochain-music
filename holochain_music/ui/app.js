@@ -74,8 +74,8 @@ function coverThumb(agent, sha, alt = '', large = false) {
       return URL.createObjectURL(new Blob([bytes], { type: mime_type }));
     }).catch(e => { coverCache.delete(key); throw e; }));
   }
-  coverCache.get(key).then(url => { if (img.isConnected) img.src = url; }).catch(() => {
-    if (img.isConnected) holder.replaceChildren(el('span', { text: '♫', 'aria-hidden': true }));
+  coverCache.get(key).then(url => { img.src = url; }).catch(() => {
+    holder.replaceChildren(el('span', { text: '♫', 'aria-hidden': true }));
   });
   return holder;
 }
@@ -162,9 +162,12 @@ function trackRow(t, fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const active = state.player && state.player.track_key === fileId;
   return el('div', { class: `row${active ? ' active' : ''}` },
-    el('div', { class: 'title' }, el('strong', { text: t.title || 'Untitled' }),
-      el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
-        onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist'))),
+    el('div', { class: 'title release-title' },
+      coverThumb(t.artist_agent, t.artwork_sha256, '', false),
+      el('div', {}, el('strong', { text: t.title || 'Untitled' }),
+        el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
+          onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist')),
+        el('div', { class: 'genre-tags' }, ...genreBadges(t.genres)))),
     el('div', { class: 'album' }, accessBadge(item)),
     el('div', { class: 'dur muted', text: fmt(t.duration_ms) }),
     trackActions(fileId, catalogueRow));
@@ -199,7 +202,10 @@ const views = {
     const out = [el('h1', { text: profile ? profile.display_name : 'Artist' }),
       el('p', { class: 'sub', text: profile ? profile.biography : '' }), el('p', { class: 'mono muted', text: agent })];
     for (const album of albums) {
-      out.push(el('h2', { text: `${album.title}${album.release_date ? ' · ' + album.release_date : ''}` }));
+      out.push(el('div', { class: 'album-heading' },
+        coverThumb(agent, album.artwork_sha256, album.title + ' cover', true),
+        el('div', {}, el('h2', { text: `${album.title}${album.release_date ? ' · ' + album.release_date : ''}` }),
+          el('div', { class: 'genre-tags' }, ...genreBadges(album.genres)))));
       out.push(list(tracks.filter(t => t.album_id === album.album_id).sort((a, b) => a.track_number - b.track_number)
         .map(t => trackRow(t, t.file_id, t)), 'No tracks on this album yet.'));
     }
