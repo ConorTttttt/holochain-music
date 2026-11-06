@@ -79,6 +79,14 @@ class Download:
             self._thread = threading.Thread(target=self._run, name="hm-download", daemon=True)
             self._thread.start()
 
+    def replace_hosts(self, hosts) -> None:
+        """Use freshly resolved Holochain host endpoints (e.g. after a host moved)."""
+        if not hosts:
+            raise TrackUnavailable("no authenticated host for this track")
+        with self._cv:
+            self.trusted.hosts = list(hosts)
+            self.host_index = 0
+
     def stop(self) -> None:
         self._stop.set()
         self._restart.set()
@@ -98,7 +106,9 @@ class Download:
             with self._cv:
                 self.metrics["restarts_for_seek"] += 1
             self._restart.set()
-        if self.state in ("idle", "unavailable", "paused"):
+        # An `unavailable` download is NOT silently retried here: the caller
+        # must re-resolve hosts and call start() explicitly (user retry).
+        if self.state in ("idle", "paused"):
             self.start()
 
     def wait_for(self, chunk: dict, *, cancel: threading.Event | None = None,

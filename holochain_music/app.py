@@ -326,6 +326,12 @@ class MusicApp:
                          allow_lan=self.settings["allow_lan"], present=self.library.present_chunks(trusted.manifest),
                          on_complete=lambda: self.library.verify_complete(file_id))
             self.downloads[file_id] = d
+        elif d.state == "unavailable":
+            # User retry after an outage: hosts may have moved; re-resolve them.
+            self.require_online()
+            meta = self.library.meta(file_id)
+            artist, track_id = self._split_key(meta["track_key"])
+            d.replace_hosts(self.catalogue.resolve(artist, track_id).hosts)
         if start:
             d.start()
         return d
