@@ -11,6 +11,7 @@ pub const REPLICA_SCHEMA: &str = "holochain-storage/replica-claim/v1";
 pub const MOQ_SCHEMA: &str = "holochain-storage/moq-endpoint/v1";
 pub const INBOX_REQUEST_SCHEMA: &str = "holochain-music/inbox-access-request/v1";
 pub const INBOX_GRANT_SCHEMA: &str = "holochain-music/inbox-grant/v1";
+pub const INBOX_DECISION_SCHEMA: &str = "holochain-music/inbox-decision/v1";
 /// Signed grant JSON envelopes are small (S10 grants are capped at 4 KiB).
 pub const MAX_GRANT_JSON_BYTES: usize = 8192;
 pub const GRANT_KINDS: [&str; 2] = ["stream", "perpetual-personal"];
@@ -80,6 +81,9 @@ pub struct InboxAccessRequest {
     pub x25519_public_hex: String,
     pub kind: String,
     pub note: String,
+    /// Listener-generated correlation ID. Optional for pre-upgrade requests.
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 /// PRIVATE entry on the *listener's* source chain: an artist-signed grant
@@ -95,6 +99,22 @@ pub struct InboxGrant {
     pub manifest_sha256: String,
     pub kind: String,
     pub grant_json: String,
+}
+
+/// PRIVATE listener-source-chain status. Provenance is established by the
+/// receiver's conductor and checked against the locally requested artist.
+/// A decline is never a licence or a revocation of an existing grant.
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InboxDecision {
+    pub schema: String,
+    pub owner_agent: String,
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub kind: String,
+    pub request_id: Option<String>,
+    pub decision: String,
 }
 
 fn valid_port(port: &str) -> bool {
@@ -124,6 +144,10 @@ pub fn valid_moq_url(url: &str) -> bool {
     valid_port(port) && (host == "127.0.0.1" || rfc1918(host))
 }
 
+fn is_hex16(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn valid_note(note: &str) -> bool {
     note.len() <= 500 && !note.chars().any(|c| c == '\0' || (c.is_control() && c != '\n'))
 }
@@ -143,6 +167,8 @@ pub enum EntryTypes {
     InboxAccessRequest(InboxAccessRequest),
     #[entry_type(visibility = "private")]
     InboxGrant(InboxGrant),
+    #[entry_type(visibility = "private")]
+    InboxDecision(InboxDecision),
 }
 
 #[hdk_link_types]
@@ -222,8 +248,19 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
                 || r.nonce.len() != 32 || !r.nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 || r.listener_agent == author.to_string()
                 || !is_hex32(&r.file_id) || !is_hex32(&r.manifest_sha256) || !is_hex32(&r.x25519_public_hex)
-                || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note) {
+                || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note)
+                || !r.request_id.as_ref().map_or(true, |id| is_hex16(id)) {
                 Err("invalid inbox access request".into())
+            } else { Ok(()) }
+        }
+        EntryTypes::InboxDecision(d) => {
+            if d.schema != INBOX_DECISION_SCHEMA || !valid_agent_text(&d.owner_agent)
+                || d.owner_agent == author.to_string()
+                || !is_hex32(&d.file_id) || !is_hex32(&d.manifest_sha256)
+                || !GRANT_KINDS.contains(&d.kind.as_str())
+                || !d.request_id.as_ref().map_or(true, |id| is_hex16(id))
+                || d.decision != "declined" {
+                Err("invalid inbox decision".into())
             } else { Ok(()) }
         }
         EntryTypes::InboxGrant(g) => {
