@@ -353,7 +353,7 @@ class MusicApp:
             if grant is not None:
                 expiry = grant.get("body", {}).get("expires_at")
                 if existing.get("grant_kind") == "perpetual-personal" or (
-                        isinstance(expiry, int) and expiry > time.time()):
+                        kind == "stream" and isinstance(expiry, int) and expiry > time.time()):
                     raise AppError("you already have access to this track")
             if existing is not None and existing.get("requested") == kind:
                 if existing.get("request_status") == "declined":
