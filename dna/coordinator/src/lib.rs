@@ -4,7 +4,7 @@
 
 use hdk::prelude::*;
 use music_storage_integrity::{
-    EntryTypes, FileCommitment, InboxAccessRequest, InboxGrant, LinkTypes, MoqEndpoint,
+    EntryTypes, FileCommitment, InboxAccessRequest, InboxGrant, InboxDecision, LinkTypes, MoqEndpoint,
     ReplicaClaim, SigningKeyBinding, UnitEntryTypes,
 };
 use std::collections::HashSet;
