@@ -118,7 +118,8 @@ class Library:
             if current.get("grant_kind") == "perpetual-personal" and kind != "perpetual-personal":
                 return
             _atomic_json(d / "grant.json", grant)
-            self.update_meta(file_id, grant_kind=kind, grant_received_at=int(time.time()))
+            self.update_meta(file_id, grant_kind=kind, grant_received_at=int(time.time()),
+                             request_status="approved", request_queued=False)
 
     def update_meta(self, file_id: str, **fields) -> None:
         with self._lock:
