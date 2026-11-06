@@ -78,3 +78,14 @@ and downloaded music keep working offline.
 | Track **Unavailable** | No host answered after 6 attempts; press Play to retry. Downloaded chunks are kept. |
 | No sound | Check `aplay -l` and that `alsa-utils` is installed; the null backend is silent by design. |
 | Data directory path too long | Set `HOLOCHAIN_MUSIC_HOME` to a shorter directory. |
+
+## Managing artist access requests
+
+Open **Artist studio → Access requests**. You can accept or decline requests individually,
+filter by track folder, request type, status and listener, and use **Accept all pending**,
+**Accept all filtered / Accept all in this folder**, or **Decline all filtered**.
+Bulk decisions require confirmation and apply to the matching *pending* requests shown
+in the selected snapshot. Permanent personal-use licences cannot be revoked after
+they are granted. Declines are stored privately on the artist's computer; listeners
+are not yet automatically notified. For precise scopes and limitations, see
+[Artist access request management](artist-access-request-management.md).
