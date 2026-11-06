@@ -104,6 +104,14 @@ holochain-music config set allow_lan true
 holochain-music start --audio alsa
 ```
 
+For Test 2, start both apps with network diagnostics so a slow discovery can
+be analysed afterwards:
+
+```bash
+RUST_LOG="warn,kitsune2_core=debug,kitsune2_transport_iroh=debug,holochain_p2p=debug" holochain-music start --audio alsa
+# logs: ~/.local/share/holochain-music/logs/conductor.log  (attach both machines' logs if discovery > 60 s)
+```
+
 Steps:
 
 1. A: publish `/tmp/hm-test-tone.wav` (create it on A as in Test 1). Check

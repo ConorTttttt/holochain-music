@@ -73,7 +73,7 @@ and downloaded music keep working offline.
 | "Session token missing" | Open the exact link printed in the terminal. |
 | "already running" | Another copy is open for the same data directory. |
 | Status **Offline: …** | See `~/.local/share/holochain-music/logs/` (conductor, bridge, bootstrap logs). |
-| Catalogue empty | Wait a few minutes after first start; check both computers use the same bootstrap/relay URL. |
+| Catalogue empty | Usually seconds; occasionally minutes after a peer connection drops (see release readiness). Check both computers use the same bootstrap/relay URL. To capture diagnostics start with `RUST_LOG="warn,kitsune2_core=debug,holochain_p2p=debug" holochain-music start` and keep `logs/conductor.log`. |
 | "recipient unreachable" | The artist (or listener) is offline; retry later. |
 | Track **Unavailable** | No host answered after 6 attempts; press Play to retry. Downloaded chunks are kept. |
 | No sound | Check `aplay -l` and that `alsa-utils` is installed; the null backend is silent by design. |

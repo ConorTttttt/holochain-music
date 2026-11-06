@@ -41,17 +41,26 @@ def _set_yaml_scalar(text: str, key: str, value: str) -> str:
 
 
 _BACKOFF_BLOCK = re.compile(r"^    coreBootstrap:\n      backoffMaxMs: \d+\n", re.MULTILINE)
+_RESIGN_BLOCK = re.compile(r"^    coreSpace:\n      reSignFreqMs: \d+\n      reSignExpireTimeMs: \d+\n", re.MULTILINE)
+# Agent infos live 20 min (fixed in kitsune2). A transport flap marks a peer
+# "unresponsive" until it publishes NEWER agent info, which by default only
+# happens in the last 5 min of that life. Re-signing every ~15-30 s clears
+# such marks within about a minute (diagnosed in docs/v1-release-readiness.md).
+RESIGN_FREQ_MS = 15_000
+RESIGN_EXPIRE_MS = 19 * 60_000 + 30_000
 
 
 def _set_bootstrap_backoff(text: str, max_ms: int) -> str:
     """kitsune2 polls the bootstrap server with a doubling interval capped at
     5 minutes by default and never resets it, so a peer that registered just
     after an early poll can stay invisible for up to ~5 minutes. Cap it."""
-    text = _BACKOFF_BLOCK.sub("", text)
+    text = _RESIGN_BLOCK.sub("", _BACKOFF_BLOCK.sub("", text))
     if "\n  advanced:\n" not in text:
         raise ConductorError("conductor config lacks network.advanced")
     return text.replace("\n  advanced:\n",
-                        f"\n  advanced:\n    coreBootstrap:\n      backoffMaxMs: {max_ms}\n", 1)
+                        f"\n  advanced:\n    coreBootstrap:\n      backoffMaxMs: {max_ms}\n"
+                        f"    coreSpace:\n      reSignFreqMs: {RESIGN_FREQ_MS}\n"
+                        f"      reSignExpireTimeMs: {RESIGN_EXPIRE_MS}\n", 1)
 
 
 class Conductor:
