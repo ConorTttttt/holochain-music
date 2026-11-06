@@ -292,9 +292,154 @@ const views = {
   },
   async mytracks() {
     const { tracks } = await api('/api/artist/tracks', {});
-    return [el('h1', { text: 'Your releases' }), el('p', { class: 'sub', text: 'Hosted by this computer over pinned MoQ/QUIC while the app is running.' }),
-      list(tracks.map(t => el('div', { class: 'row' }, el('div', { class: 'title' }, el('strong', { text: t.title }), el('span', { class: 'mono', text: t.file_id })),
-        el('div', { text: new Date(t.published_at * 1000).toLocaleDateString() }), el('div', { class: 'muted', text: fmt(t.duration_ms) }), el('div'))), 'You have not published anything yet.')];
+    return [el('h1', { text: 'Your releases' }),
+      el('p', { class: 'sub', text: 'Update a song’s genres and artwork, or move it into an album without changing its encrypted audio or existing listener licences.' }),
+      el('div', { class: 'actions request-bulk' },
+        el('button', { class: 'btn primary', type: 'button', text: 'Manage albums',
+          onclick: () => show('albums') })),
+      list(tracks.map(t => {
+        const row = trackRow({ ...t, artist_agent: state.agent, artist_name: 'You' }, t.file_id, null);
+        row.querySelector('.actions').append(el('button', { class: 'btn', type: 'button',
+          text: 'Edit song', onclick: () => show('editTrack', t.file_id) }));
+        return row;
+      }), 'No songs published yet. Publish a track first.')];
+  },
+  async albums() {
+    const [{ albums }, { tracks }] = await Promise.all([
+      api('/api/catalogue/artist', { agent: state.agent }), api('/api/artist/tracks', {}),
+    ]);
+    return [el('h1', { text: 'Albums' }),
+      el('p', { class: 'sub', text: 'Combine songs you have already published into albums. Choose the order, cover, genres and release date. Editing never re-encrypts audio or changes listener grants.' }),
+      el('div', { class: 'actions request-bulk' },
+        el('button', { class: 'btn primary', type: 'button', text: '+ Create album',
+          onclick: () => show('albumEditor') })),
+      albums.length ? el('div', { class: 'album-grid' }, ...albums.map(a =>
+        el('div', { class: 'card album-card' },
+          coverThumb(state.agent, a.artwork_sha256, a.title + ' cover', true),
+          el('div', {}, el('strong', { text: a.title }),
+            el('p', { class: 'muted', text: (a.release_date || 'No release date') +
+              ' · ' + tracks.filter(t => t.album_id === a.album_id).length + ' songs' }),
+            el('div', { class: 'genre-tags' }, ...genreBadges(a.genres)),
+            el('button', { class: 'btn', type: 'button', text: 'Edit album and songs',
+              onclick: () => show('albumEditor', a.album_id) }))))) :
+        el('p', { class: 'empty', text: 'No albums yet. Create one from the songs you published.' })];
+  },
+  async albumEditor(albumId) {
+    const [{ albums }, { tracks }] = await Promise.all([
+      api('/api/catalogue/artist', { agent: state.agent }), api('/api/artist/tracks', {}),
+    ]);
+    const current = albumId ? albums.find(a => a.album_id === albumId) : null;
+    if (albumId && !current) throw new Error('Album is not available from your catalogue.');
+    const title = el('input', { required: true, maxlength: '200', value: current ? current.title : '',
+      placeholder: 'Album title' });
+    const date = el('input', { type: 'date', value: current ? current.release_date || '' : '' });
+    const genres = el('input', { maxlength: '220', value: (current && current.genres || []).join(', '),
+      placeholder: 'e.g. Rock, Alternative, Indie' });
+    const coverFile = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const entries = [...tracks].sort((a, b) => a.title.localeCompare(b.title)).map((t, index) => {
+      const assigned = !!albumId && t.album_id === albumId;
+      const checked = el('input', { type: 'checkbox', checked: assigned });
+      const order = el('input', { type: 'number', min: 1, max: 999,
+        value: String(assigned ? t.track_number || index + 1 : index + 1), 'aria-label': 'Order for ' + t.title });
+      return { track: t, checked, order, row: el('div', { class: 'album-track-choice' },
+        el('label', {}, checked, ' ', t.title),
+        artistField('Position', order),
+        el('span', { class: 'muted', text: t.album_id && !assigned ? 'Currently in another album' : '' })) };
+    });
+    const progress = el('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
+    const save = el('button', { class: 'btn primary', type: 'submit',
+      text: current ? 'Save album and track list' : 'Create album with selected songs' });
+    const form = el('form', { class: 'stack album-form' },
+      artistField('Album title', title),
+      artistField('Release date (optional)', date),
+      artistField('Genres (comma-separated, max 6)', genres),
+      current ? coverThumb(state.agent, current.artwork_sha256, current.title + ' cover', true) : null,
+      artistField('Album artwork (optional; compressed and made public)', coverFile),
+      el('h2', { text: 'Choose and order songs' }),
+      el('p', { class: 'muted', text: 'Tick songs to include. Numbers set their order on the album. Unticking an existing album song returns it to singles.' }),
+      ...entries.map(e => e.row), progress, save);
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault(); save.disabled = true;
+      let changed = 0;
+      try {
+        const tags = genresFromInput(genres.value);
+        const imageDigest = coverFile.files[0] ? await uploadCover(coverFile.files[0])
+          : current && current.artwork_sha256 || null;
+        const selected = entries.filter(e => e.checked.checked).sort((a, b) =>
+          Number(a.order.value) - Number(b.order.value));
+        if (selected.some(e => !Number.isInteger(Number(e.order.value))
+          || Number(e.order.value) < 1 || Number(e.order.value) > 999)) {
+          throw new Error('Each selected track needs a valid position (1–999).');
+        }
+        progress.textContent = 'Saving album metadata…';
+        const result = current ? await api('/api/artist/album/update', {
+          album_id: albumId, title: title.value, release_date: date.value || null,
+          genres: tags, artwork_sha256: imageDigest,
+        }) : await api('/api/artist/album', {
+          title: title.value, release_date: date.value || null,
+          genres: tags, artwork_sha256: imageDigest,
+        });
+        const id = result.album_id;
+        const desired = new Map(selected.map((e, i) => [e.track.file_id, i + 1]));
+        const changes = entries.filter(e => desired.has(e.track.file_id)
+          ? e.track.album_id !== id || e.track.track_number !== desired.get(e.track.file_id)
+          : e.track.album_id === id);
+        for (const e of changes) {
+          progress.textContent = `Updating song ${changed + 1} of ${changes.length}…`;
+          await api('/api/artist/track/update', {
+            file_id: e.track.file_id,
+            album_id: desired.has(e.track.file_id) ? id : null,
+            track_number: desired.get(e.track.file_id) || 1,
+            genres: e.track.genres || [], artwork_sha256: e.track.artwork_sha256 || null,
+          });
+          changed++;
+        }
+        toast(`Album saved; ${changed} songs updated`, 'info');
+        await refreshLibrary(); show('albums');
+      } catch (err) {
+        progress.textContent = `${changed} songs updated before interruption. Check the album and retry as needed.`;
+        toast(err.message);
+      } finally { save.disabled = false; }
+    });
+    return [el('h1', { text: current ? 'Edit album' : 'Create album' }),
+      el('button', { class: 'btn', type: 'button', text: '← Back to albums', onclick: () => show('albums') }),
+      el('div', { class: 'card' }, form)];
+  },
+  async editTrack(fileId) {
+    const [{ tracks }, { albums }] = await Promise.all([
+      api('/api/artist/tracks', {}), api('/api/catalogue/artist', { agent: state.agent }),
+    ]);
+    const track = tracks.find(t => t.file_id === fileId);
+    if (!track) throw new Error('Track not found among your releases.');
+    const tags = el('input', { maxlength: '220', value: (track.genres || []).join(', '),
+      placeholder: 'e.g. Jazz, Soul, R&B' });
+    const album = el('select', {}, el('option', { value: '', text: 'Single / no album' }),
+      ...albums.map(a => el('option', { value: a.album_id, text: a.title })));
+    album.value = track.album_id || '';
+    const position = el('input', { type: 'number', min: 1, max: 999, value: String(track.track_number || 1) });
+    const coverFile = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const save = el('button', { class: 'btn primary', type: 'submit', text: 'Save song metadata' });
+    const form = el('form', { class: 'stack album-form' },
+      artistField('Genres (comma-separated, max 6)', tags),
+      artistField('Album', album), artistField('Track position', position),
+      coverThumb(state.agent, track.artwork_sha256, track.title + ' artwork', true),
+      artistField('Replace artwork (optional)', coverFile),
+      el('p', { class: 'muted', text: 'These changes republish public metadata only. Your encrypted recording, purchases and grants stay unchanged.' }), save);
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault(); save.disabled = true;
+      try {
+        const artwork = coverFile.files[0] ? await uploadCover(coverFile.files[0]) : track.artwork_sha256 || null;
+        await api('/api/artist/track/update', {
+          file_id: fileId, album_id: album.value || null, track_number: Number(position.value),
+          genres: genresFromInput(tags.value), artwork_sha256: artwork,
+        });
+        toast('Song metadata updated', 'info'); await refreshLibrary(); show('mytracks');
+      } catch (err) { toast(err.message); }
+      finally { save.disabled = false; }
+    });
+    return [el('h1', { text: 'Edit ' + track.title }),
+      el('button', { class: 'btn', type: 'button', text: '← Back to releases', onclick: () => show('mytracks') }),
+      el('div', { class: 'card' }, form)];
   },
   async requests() {
     const { requests } = await api('/api/artist/requests', {});
