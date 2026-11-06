@@ -11,6 +11,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from holochain_music.metadata import genres_list, HEX64
+
 from holochain_storage.package import (
     StorageError, _assert_manifest, _verify_signed, manifest_digest,
 )
@@ -35,7 +37,7 @@ def validate_track(track: Mapping[str, Any], *, author: str) -> None:
 
     Do NOT use caller-reported JSON `author` values as independent authentication.
     """
-    if not isinstance(track, dict) or set(track) != _KEYS:
+    if not isinstance(track, dict) or not _KEYS <= set(track) <= _KEYS | {"genres", "artwork_sha256"}:
         raise CatalogueError("invalid track fields")
     if not isinstance(author, str) or not author or track["artist_agent"] != author:
         raise CatalogueError("track publisher does not match authenticated author")
@@ -53,6 +55,13 @@ def validate_track(track: Mapping[str, Any], *, author: str) -> None:
             raise CatalogueError(f"invalid {key}")
     if track["audio_format"] not in _FORMATS or track["rights_basis"] not in _RIGHTS:
         raise CatalogueError("invalid audio format or rights declaration")
+    try:
+        genres_list(track.get("genres", []))
+    except ValueError as exc:
+        raise CatalogueError(str(exc)) from exc
+    art = track.get("artwork_sha256")
+    if art is not None and (not isinstance(art, str) or not HEX64.fullmatch(art)):
+        raise CatalogueError("invalid artwork digest")
     for name in ("file_id", "manifest_sha256"):
         value = track[name]
         if not isinstance(value, str) or not _SHA256.fullmatch(value):
