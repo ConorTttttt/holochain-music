@@ -72,6 +72,8 @@ pub struct MoqEndpoint {
 #[serde(deny_unknown_fields)]
 pub struct InboxAccessRequest {
     pub schema: String,
+    /// 16 random bytes (hex) chosen by the recipient; hides the entry hash.
+    pub nonce: String,
     pub listener_agent: String,
     pub file_id: String,
     pub manifest_sha256: String,
@@ -217,6 +219,7 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
         // them, so these checks are format hygiene, not a trust boundary.
         EntryTypes::InboxAccessRequest(r) => {
             if r.schema != INBOX_REQUEST_SCHEMA || !valid_agent_text(&r.listener_agent)
+                || r.nonce.len() != 32 || !r.nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 || r.listener_agent == author.to_string()
                 || !is_hex32(&r.file_id) || !is_hex32(&r.manifest_sha256) || !is_hex32(&r.x25519_public_hex)
                 || !GRANT_KINDS.contains(&r.kind.as_str()) || !valid_note(&r.note) {

@@ -102,6 +102,25 @@ def cmd_bootstrap(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    from .app import AppError, MusicApp
+    app = MusicApp()
+    if args.action == "set":
+        if not args.key or args.value is None:
+            sys.exit("usage: holochain-music config set KEY VALUE")
+        try:
+            value = json.loads(args.value)  # true/false/null/numbers
+        except ValueError:
+            value = args.value  # plain strings such as URLs
+        try:
+            app.save_settings(**{args.key: value})
+        except AppError as exc:
+            sys.exit(f"error: {exc}")
+        print("Saved. Restart Holochain Music to apply.")
+    print(json.dumps({k: v for k, v in app.settings.items() if k != "pins"}, indent=2, sort_keys=True))
+    return 0
+
+
 def cmd_export(args) -> int:
     from .app import MusicApp
     app = MusicApp()
@@ -128,6 +147,11 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("file")
     b.set_defaults(func=cmd_backup)
     sub.add_parser("status", help="show local library status").set_defaults(func=cmd_status)
+    c = sub.add_parser("config", help="show or change settings (restart to apply)")
+    c.add_argument("action", choices=("show", "set"))
+    c.add_argument("key", nargs="?")
+    c.add_argument("value", nargs="?")
+    c.set_defaults(func=cmd_config)
     bs = sub.add_parser("bootstrap-server", help="run a bootstrap+relay for a private LAN")
     bs.add_argument("--listen", required=True, help="e.g. 192.168.1.50:47011")
     bs.set_defaults(func=cmd_bootstrap)

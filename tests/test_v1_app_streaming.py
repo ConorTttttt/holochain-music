@@ -38,7 +38,8 @@ class StreamingTests(unittest.TestCase):
             port = sock.getsockname()[1]
         # A fixed port, as the app persists, so the published URL survives restarts.
         self.host = MoqHost(moq_binary=self.binary, store=self.track.store, cert_dir=self.root / "cert",
-                            state_dir=self.root / "state", bind=f"127.0.0.1:{port}")
+                            state_dir=self.root / "state", bind=f"127.0.0.1:{port}",
+                            bytes_per_second=64 * 1024)  # slow enough to interrupt mid-transfer
         self.host.set_files([{"manifest": self.root / "manifest.json",
                               "trusted_artist_hex": self.track.artist_key.hex(),
                               "manifest_sha256": self.track.digest}])
@@ -131,8 +132,7 @@ class StreamingTests(unittest.TestCase):
             deadline = time.monotonic() + 90
             while d.progress()["state"] not in ("unavailable", "complete") and time.monotonic() < deadline:
                 time.sleep(0.1)
-        if d.progress()["state"] == "complete":
-            self.skipTest("transfer finished before the host was stopped")
+        self.assertNotEqual(d.progress()["state"], "complete", "outage must happen mid-transfer")
         kept = d.progress()["available_chunks"]
         self.assertGreater(kept, 0)
         self.host.start()

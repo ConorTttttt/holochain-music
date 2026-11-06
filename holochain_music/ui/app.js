@@ -59,6 +59,7 @@ function accessBadge(item) {
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
   if (item.playable) return el('span', { class: 'badge ok', text: `Streaming access until ${new Date(item.grant_expires_at * 1000).toLocaleString()}` });
   if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
+  if (item.requested && item.request_queued) return el('span', { class: 'badge warn', text: 'Request waiting for the artist to come online' });
   if (item.requested) return el('span', { class: 'badge warn', text: 'Access requested' });
   return el('span', { class: 'badge', text: 'No access' });
 }
@@ -76,10 +77,13 @@ function trackActions(fileId, catalogueRow) {
     if (item.offline_ready) box.append(el('button', { class: 'btn', type: 'button', text: 'Export WAV', onclick: () => exportWav(item) }));
     box.append(el('button', { class: 'btn', type: 'button', text: '+ Playlist', onclick: () => addToPlaylist(fileId) }));
   } else if (catalogueRow && catalogueRow.artist_agent !== state.agent) {
-    box.append(el('button', { class: 'btn', type: 'button', text: 'Request streaming',
-      onclick: () => act('/api/access/request', { track_key: catalogueRow.key, kind: 'stream' }, 'Private request sent to the artist') }));
-    box.append(el('button', { class: 'btn primary', type: 'button', text: 'Request licence',
-      onclick: () => act('/api/access/request', { track_key: catalogueRow.key, kind: 'perpetual-personal' }, 'Private request sent to the artist') }));
+    const request = async kind => {
+      const r = await act('/api/access/request', { track_key: catalogueRow.key, kind });
+      if (r) toast(r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' : 'Private request sent to the artist', 'info');
+      render();
+    };
+    box.append(el('button', { class: 'btn', type: 'button', text: 'Request streaming', onclick: () => request('stream') }));
+    box.append(el('button', { class: 'btn primary', type: 'button', text: 'Request licence', onclick: () => request('perpetual-personal') }));
   }
   return box;
 }
@@ -203,8 +207,8 @@ const views = {
         el('div', {}, el('span', { class: 'badge', text: r.kind === 'stream' ? 'Wants streaming' : 'Wants licence' })),
         el('div', { class: 'muted', text: r.note || '' }),
         r.granted ? el('span', { class: 'badge ok', text: 'Granted' }) : el('div', { class: 'actions' },
-          el('button', { class: 'btn', type: 'button', text: 'Grant 24 h streaming', onclick: () => act('/api/artist/grant', { request_hash: r.request_hash, kind: 'stream' }, 'Streaming grant delivered').then(render) }),
-          el('button', { class: 'btn primary', type: 'button', text: 'Grant licence', onclick: () => act('/api/artist/grant', { request_hash: r.request_hash, kind: 'perpetual-personal' }, 'Licence delivered').then(render) })))),
+          el('button', { class: 'btn', type: 'button', text: 'Grant 24 h streaming', onclick: () => approve(r, 'stream') }),
+          el('button', { class: 'btn primary', type: 'button', text: 'Grant licence', onclick: () => approve(r, 'perpetual-personal') })))),
       'No requests yet.')];
   },
   async settings() {
@@ -229,6 +233,11 @@ const views = {
   },
 };
 
+async function approve(request, kind) {
+  const r = await act('/api/artist/grant', { request_hash: request.request_hash, kind });
+  if (r) toast(r.queued ? 'Signed. The listener is offline; it will be delivered automatically when they are back.' : 'Delivered privately to the listener', 'info');
+  render();
+}
 async function exportWav(item) {
   const path = prompt('Save a playable WAV copy (personal use under your licence). Full path inside your home folder, ending in .wav:', '');
   if (path) await act('/api/export', { file_id: item.file_id, path }, 'Exported');

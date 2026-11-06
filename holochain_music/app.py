@@ -15,7 +15,7 @@ from holochain_storage.package import (
 from music_catalogue.content_grants import (
     ContentGrantError, grant_kind, issue_personal_licence, unwrap_content_grant,
 )
-from music_catalogue.contract import CatalogueError
+from music_catalogue.contract import CatalogueError, validate_track
 from music_catalogue.granted_audio import PlaybackError
 from music_catalogue.moq_host import MoqHost
 
@@ -27,6 +27,7 @@ from .conductor import APP_ID, BootstrapServer, Conductor, ConductorError
 from .keys import KeyStore
 from .library import Library, LibraryError, _atomic_json, file_key
 from .paths import AppPaths
+from .outbox import Outbox
 from .player import Player, SessionSpec
 from .streaming import Download
 
@@ -35,6 +36,7 @@ DEFAULTS = {
     "bootstrap_url": f"http://{DEFAULT_BOOTSTRAP}",
     "relay_url": f"http://{DEFAULT_BOOTSTRAP}",
     "run_local_bootstrap": True,
+    "bootstrap_poll_max_ms": 30_000,
     "allow_lan": False,
     "host_enabled": True,
     "host_bind": "127.0.0.1:0",
@@ -69,6 +71,7 @@ class MusicApp:
         self.artist: ArtistService | None = None
         self.host: MoqHost | None = None
         self.downloads: dict[str, Download] = {}
+        self.outbox: Outbox | None = None
         self.queue: list[str] = []
         self.status_message = "starting"
         self.online = False
@@ -97,10 +100,26 @@ class MusicApp:
             if key in ("bootstrap_url", "relay_url"):
                 if not isinstance(value, str) or not value.startswith(("http://", "https://")) or len(value) > 200:
                     raise AppError("network URLs must be http(s) URLs")
+            if key == "host_advertise_ip" and value is not None:
+                import ipaddress
+                try:
+                    ip = ipaddress.IPv4Address(value)
+                except ValueError as exc:
+                    raise AppError("host_advertise_ip must be an IPv4 address") from exc
+                rfc1918 = [ipaddress.IPv4Network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")]
+                if not any(ip in n for n in rfc1918):  # same rule as the DNA and MoQ validators
+                    raise AppError("host_advertise_ip must be a private-LAN (RFC1918) address")
+            if key == "host_bind" and (not isinstance(value, str) or value.count(":") != 1
+                                       or not value.rsplit(":", 1)[1].isdecimal()):
+                raise AppError("host_bind must look like 0.0.0.0:47100 or 127.0.0.1:47100")
+            if key == "audio_device" and (not isinstance(value, str) or not value or len(value) > 128):
+                raise AppError("invalid ALSA device name")
             if key in ("allow_lan", "host_enabled", "run_local_bootstrap") and not isinstance(value, bool):
                 raise AppError(f"{key} must be true or false")
             if key == "host_max_rate" and (type(value) is not int or not 64 * 1024 <= value <= 1024**3):
                 raise AppError("host rate must be between 64 KiB/s and 1 GiB/s")
+            if key == "bootstrap_poll_max_ms" and (type(value) is not int or not 5_000 <= value <= 300_000):
+                raise AppError("bootstrap poll interval must be 5000–300000 ms")
             if key == "audio_backend" and value not in ("alsa", "null"):
                 raise AppError("audio backend must be alsa or null")
             self.settings[key] = value
@@ -144,7 +163,8 @@ class MusicApp:
                 self.bootstrap.start()
         self.conductor = Conductor(self.paths.conductor, self.keys.conductor_passphrase(),
                                    bootstrap_url=self.settings["bootstrap_url"],
-                                   relay_url=self.settings["relay_url"], log_path=logs / "conductor.log")
+                                   relay_url=self.settings["relay_url"], log_path=logs / "conductor.log",
+                                   bootstrap_poll_max_ms=self.settings["bootstrap_poll_max_ms"])
         self.status_message = "installing Holochain app (first run)" if not self.conductor.installed() else "starting Holochain"
         self.conductor.install(binaries.find_happ())
         port = self.conductor.start()
@@ -159,7 +179,10 @@ class MusicApp:
             raise BridgeError("conductor agent changed unexpectedly; refusing to continue")
         moq = binaries.find("holochain-music-moq")
         self.catalogue = Catalogue(self.bridge, moq_binary=moq, allow_lan=self.settings["allow_lan"])
-        self.artist = ArtistService(bridge=self.bridge, keys=self.keys, host_root=self.paths.host)
+        self.outbox = Outbox(self.paths.data / "outbox.json", self.bridge.call)
+        self.outbox.start()
+        self.artist = ArtistService(bridge=self.bridge, keys=self.keys, host_root=self.paths.host,
+                                    deliver=self.outbox.deliver)
         self.online = True
         self.status_message = "online"
         if self.settings["host_enabled"]:
@@ -190,7 +213,7 @@ class MusicApp:
         self.player.shutdown()
         for d in list(self.downloads.values()):
             d.stop()
-        for part in (self.host, self.bridge, self.conductor, self.bootstrap):
+        for part in (self.outbox, self.host, self.bridge, self.conductor, self.bootstrap):
             if part is not None:
                 try:
                     part.stop()
@@ -249,7 +272,7 @@ class MusicApp:
                     file_id = file_key(b["file_id"])
                     grant = json.loads(b["grant_json"])
                     meta = self.library.meta(file_id)
-                    if meta is None:
+                    if meta is None or not self.library.has_manifest(file_id):
                         track = next((t for t in self.catalogue.artist_tracks(owner) if t["file_id"] == file_id), None)
                         if track is None:
                             continue
@@ -278,14 +301,27 @@ class MusicApp:
         artist, track_id = self._split_key(track_key)
         if artist == self.agent:
             raise AppError("this is your own track; it is already in your library")
-        trusted = self.catalogue.resolve(artist, track_id)
-        self.library.add(manifest=trusted.manifest, meta=self._meta_from_trusted(trusted))
-        file_id = trusted.manifest["body"]["file_id"]
-        self.bridge.call("send_access_request", owner=artist, request={
-            "file_id": file_id, "manifest_sha256": trusted.digest,
+        # Only the DHT track record is needed to ask: the artist's host may be
+        # offline. Hosts, manifest and signatures are verified when the grant
+        # arrives (sync_grants) and again before any playback.
+        record = self.bridge.record("get_track", artist=artist, track_id=track_id)
+        if record is None or record.author != artist:
+            raise AppError("track not found in the catalogue")
+        validate_track(record.body, author=artist)
+        file_id, digest = record.body["file_id"], record.body["manifest_sha256"]
+        if self.library.meta(file_id) is None:
+            profile = self.catalogue.profile(artist)
+            self.library.add_pending(file_id, {
+                "track_key": track_key, "track_id": track_id, "title": record.body["title"],
+                "artist_agent": artist, "artist_name": profile["display_name"] if profile else "Unknown artist",
+                "album_id": record.body["album_id"], "duration_ms": record.body["duration_ms"],
+                "manifest_sha256": digest, "listener_agent": self.agent})
+        outcome = self.outbox.deliver("send_access_request", owner=artist, request={
+            "file_id": file_id, "manifest_sha256": digest,
             "x25519_public_hex": self.keys.listener_public_hex(), "kind": kind, "note": note[:500]})
-        self.library.update_meta(file_id, requested=kind, requested_at=int(time.time()))
-        return {"requested": True, "file_id": file_id}
+        self.library.update_meta(file_id, requested=kind, requested_at=int(time.time()),
+                                 request_queued=bool(outcome.get("queued")))
+        return {"requested": True, "file_id": file_id, **outcome}
 
     @staticmethod
     def _split_key(track_key: str) -> tuple[str, str]:
@@ -308,7 +344,7 @@ class MusicApp:
                 playable = False
             out.append({k: m.get(k) for k in ("file_id", "track_key", "title", "artist_name", "artist_agent",
                                               "album_title", "album_id", "duration_ms", "track_number",
-                                              "grant_kind", "requested", "complete")}
+                                              "grant_kind", "requested", "request_queued", "complete")}
                        | {"playable": playable, "grant_expires_at": expires,
                           "offline_ready": bool(m.get("complete")) and m.get("grant_kind") == "perpetual-personal",
                           "download": d.progress() if d else None})

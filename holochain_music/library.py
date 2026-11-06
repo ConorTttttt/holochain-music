@@ -94,11 +94,25 @@ class Library:
             _atomic_json(d / "meta.json", {**existing, **meta, "file_id": file_id,
                                            "added_at": existing.get("added_at", int(time.time()))})
 
+    def add_pending(self, file_id: str, meta: dict) -> None:
+        """Record a requested track before its manifest is fetched from a host
+        (the artist and host may be offline). Never playable without a grant."""
+        with self._lock:
+            d = self._dir(file_id)
+            d.mkdir(exist_ok=True)
+            d.chmod(0o700)
+            existing = self.meta(file_id) or {}
+            _atomic_json(d / "meta.json", {**meta, **existing, "file_id": file_key(file_id),
+                                           "added_at": existing.get("added_at", int(time.time()))})
+
+    def has_manifest(self, file_id: str) -> bool:
+        return (self._dir(file_id) / "manifest.json").is_file()
+
     def set_grant(self, file_id: str, grant: dict, kind: str) -> None:
         with self._lock:
             d = self._dir(file_id)
-            if not (d / "meta.json").is_file():
-                raise LibraryError("add the track before its grant")
+            if not (d / "meta.json").is_file() or not (d / "manifest.json").is_file():
+                raise LibraryError("add the verified track before its grant")
             current = self.meta(file_id) or {}
             # Never downgrade a perpetual licence to a streaming grant.
             if current.get("grant_kind") == "perpetual-personal" and kind != "perpetual-personal":

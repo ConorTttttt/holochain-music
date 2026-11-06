@@ -40,13 +40,30 @@ def _set_yaml_scalar(text: str, key: str, value: str) -> str:
     return pattern.sub(lambda m: f"{m.group(1)}{key}: {value}", text, count=1)
 
 
+_BACKOFF_BLOCK = re.compile(r"^    coreBootstrap:\n      backoffMaxMs: \d+\n", re.MULTILINE)
+
+
+def _set_bootstrap_backoff(text: str, max_ms: int) -> str:
+    """kitsune2 polls the bootstrap server with a doubling interval capped at
+    5 minutes by default and never resets it, so a peer that registered just
+    after an early poll can stay invisible for up to ~5 minutes. Cap it."""
+    text = _BACKOFF_BLOCK.sub("", text)
+    if "\n  advanced:\n" not in text:
+        raise ConductorError("conductor config lacks network.advanced")
+    return text.replace("\n  advanced:\n",
+                        f"\n  advanced:\n    coreBootstrap:\n      backoffMaxMs: {max_ms}\n", 1)
+
+
 class Conductor:
     def __init__(self, root: Path, passphrase: bytes, *, bootstrap_url: str, relay_url: str,
-                 log_path: Path):
+                 log_path: Path, bootstrap_poll_max_ms: int = 30_000):
         self.root = Path(root)
         self.dir = self.root / "conductor"
         self.passphrase = passphrase
         self.bootstrap_url, self.relay_url = bootstrap_url, relay_url
+        if type(bootstrap_poll_max_ms) is not int or not 5_000 <= bootstrap_poll_max_ms <= 300_000:
+            raise ConductorError("bootstrap poll interval must be 5–300 s")
+        self.bootstrap_poll_max_ms = bootstrap_poll_max_ms
         self.log_path = Path(log_path)
         self.proc: subprocess.Popen | None = None
         self.admin_port: int | None = None
@@ -85,6 +102,7 @@ class Conductor:
         text = _set_yaml_scalar(text, "allowed_origins", ADMIN_ORIGIN)
         text = _set_yaml_scalar(text, "bootstrap_url", self.bootstrap_url)
         text = _set_yaml_scalar(text, "relay_url", self.relay_url)
+        text = _set_bootstrap_backoff(text, self.bootstrap_poll_max_ms)
         self.config_path.write_text(text)
 
     def start(self, timeout: float = 90) -> int:

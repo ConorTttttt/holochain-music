@@ -76,8 +76,10 @@ def normalise_wav(source: Path, destination: Path) -> dict:
 
 
 class ArtistService:
-    def __init__(self, *, bridge: Bridge, keys: KeyStore, host_root: Path):
+    def __init__(self, *, bridge: Bridge, keys: KeyStore, host_root: Path, deliver=None):
         self.bridge, self.keys = bridge, keys
+        # Delivery may be queued by the app's outbox when the listener is offline.
+        self.deliver = deliver or (lambda op, **kw: (bridge.call(op, **kw), {"delivered": True})[1])
         self.root = Path(host_root)
         self.cas = self.root / "cas"
         self.files = self.root / "files"
@@ -262,10 +264,10 @@ class ArtistService:
                       content_key=self.keys.content_key(file_id))
         grant = issue_personal_licence(**common) if kind == "perpetual-personal" else \
             issue_content_grant(**common, lifetime_seconds=86400)
-        self.bridge.call("send_grant", listener=listener_agent, grant={
+        outcome = self.deliver("send_grant", listener=listener_agent, grant={
             "file_id": file_id, "manifest_sha256": manifest_digest(manifest), "kind": kind,
             "grant_json": canonical(grant).decode()})
         log = self.issued()
         log.append({"listener_agent": listener_agent, "file_id": file_id, "kind": kind, "issued_at": int(time.time())})
         _atomic_json(self._issued_log(), log[-5000:])
-        return {"granted": True, "kind": kind}
+        return {"granted": True, "kind": kind, **outcome}

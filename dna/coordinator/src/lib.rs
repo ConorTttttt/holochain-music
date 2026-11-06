@@ -132,8 +132,14 @@ pub fn get_moq_endpoints(host: AgentPubKey) -> ExternResult<Vec<AuthoredRecord<M
 // otherwise and may retry.
 
 const INBOX_TAG: &str = "holochain-music-private-inbox";
-const MAX_INBOX: usize = 2000;
-const MAX_PER_SENDER: usize = 50;
+const REFUSED: &str = "HM-REFUSED:";
+const BUSY: &str = "HM-BUSY:";
+// Time-windowed limits instead of a lifetime cap: a lifetime cap lets a few
+// throwaway agents fill an inbox once and block everyone forever.
+const SENDER_WINDOW_US: i64 = 24 * 60 * 60 * 1_000_000;
+const MAX_PER_SENDER_PER_DAY: usize = 20;
+const GLOBAL_WINDOW_US: i64 = 60 * 60 * 1_000_000;
+const MAX_ALL_SENDERS_PER_HOUR: usize = 500;
 
 #[hdk_extern]
 pub fn init(_: ()) -> ExternResult<InitCallbackResult> {
@@ -193,6 +199,17 @@ fn guest(msg: impl Into<String>) -> WasmError {
 fn remote(agent: AgentPubKey, func: &str, payload: impl Serialize + std::fmt::Debug) -> ExternResult<()> {
     match call_remote(agent, zome_info()?.name, func.into(), None, payload)? {
         ZomeCallResponse::Ok(_) => Ok(()),
+        // A refusal raised by the recipient's zome also arrives as a
+        // NetworkError, so classify by our explicit markers before assuming
+        // the recipient is offline (offline deliveries are retried; refusals
+        // must not be).
+        ZomeCallResponse::NetworkError(e) if e.contains(BUSY) =>
+            Err(guest("recipient is busy; retry later")),
+        ZomeCallResponse::NetworkError(e) if e.contains(REFUSED) || e.contains("invalid inbox") => {
+            let reason = e.split(REFUSED).nth(1).unwrap_or("invalid message")
+                .split(['"', '\\', ')']).next().unwrap_or("").trim().to_string();
+            Err(guest(format!("recipient refused: {}", if reason.is_empty() { "invalid message" } else { &reason })))
+        }
         ZomeCallResponse::NetworkError(e) => Err(guest(format!("recipient unreachable (offline?): {e}"))),
         ZomeCallResponse::Unauthorized(..) => Err(guest("recipient refused the delivery")),
         other => Err(guest(format!("delivery failed: {other:?}"))),
@@ -215,15 +232,24 @@ where
     Ok(rows)
 }
 
-fn sender_check(sender: &AgentPubKey, existing: impl Iterator<Item = String>) -> ExternResult<()> {
+fn sender_check(sender: &AgentPubKey, existing: impl Iterator<Item = (String, Timestamp)>) -> ExternResult<()> {
     let me = agent_info()?.agent_initial_pubkey;
     if sender == &me {
-        return Err(guest("cannot deliver to yourself"));
+        return Err(guest(format!("{REFUSED} cannot deliver to yourself")));
     }
-    let all: Vec<String> = existing.collect();
-    let theirs = all.iter().filter(|a| a.as_str() == sender.to_string()).count();
-    if all.len() >= MAX_INBOX || theirs >= MAX_PER_SENDER {
-        return Err(guest("recipient inbox is full"));
+    let now = sys_time()?.as_micros();
+    let sender = sender.to_string();
+    let (mut theirs, mut recent) = (0usize, 0usize);
+    for (from, at) in existing {
+        let age = now - at.as_micros();
+        if age < GLOBAL_WINDOW_US { recent += 1; }
+        if from == sender && age < SENDER_WINDOW_US { theirs += 1; }
+    }
+    if theirs >= MAX_PER_SENDER_PER_DAY {
+        return Err(guest(format!("{REFUSED} rate limited: too many deliveries from you today")));
+    }
+    if recent >= MAX_ALL_SENDERS_PER_HOUR {
+        return Err(guest(format!("{BUSY} recipient is busy; retry later")));
     }
     Ok(())
 }
@@ -239,9 +265,13 @@ pub fn send_access_request(input: SendAccessRequest) -> ExternResult<()> {
 pub fn receive_access_request(payload: AccessRequestPayload) -> ExternResult<ActionHash> {
     let sender = call_info()?.provenance;
     let existing = inbox::<InboxAccessRequest>(UnitEntryTypes::InboxAccessRequest)?;
-    sender_check(&sender, existing.into_iter().map(|r| r.body.listener_agent))?;
+    sender_check(&sender, existing.into_iter().map(|r| (r.body.listener_agent, r.received_at)))?;
+    // Recipient-chosen randomness makes the private entry's public hash
+    // unguessable even to someone who knows every other field.
+    let nonce: String = random_bytes(16)?.iter().map(|b| format!("{b:02x}")).collect();
     create_entry(EntryTypes::InboxAccessRequest(InboxAccessRequest {
         schema: music_storage_integrity::INBOX_REQUEST_SCHEMA.into(),
+        nonce,
         listener_agent: sender.to_string(),
         file_id: payload.file_id, manifest_sha256: payload.manifest_sha256,
         x25519_public_hex: payload.x25519_public_hex, kind: payload.kind, note: payload.note,
@@ -264,7 +294,7 @@ pub fn send_grant(input: SendGrant) -> ExternResult<()> {
 pub fn receive_grant(payload: GrantPayload) -> ExternResult<ActionHash> {
     let sender = call_info()?.provenance;
     let existing = inbox::<InboxGrant>(UnitEntryTypes::InboxGrant)?;
-    sender_check(&sender, existing.into_iter().map(|r| r.body.owner_agent))?;
+    sender_check(&sender, existing.into_iter().map(|r| (r.body.owner_agent, r.received_at)))?;
     create_entry(EntryTypes::InboxGrant(InboxGrant {
         schema: music_storage_integrity::INBOX_GRANT_SCHEMA.into(),
         owner_agent: sender.to_string(),
