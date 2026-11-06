@@ -31,12 +31,13 @@ from holochain_storage.package import (
     StorageError, canonical, create_package, manifest_digest, public_key_bytes,
     replicate_package, sha256,
 )
-from music_catalogue.content_grants import issue_content_grant, issue_personal_licence
+from music_catalogue.content_grants import ContentGrantError, issue_content_grant, issue_personal_licence
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 
-from .bridge import Bridge
-from .keys import KeyStore
-from .library import _atomic_json, _read_json, file_key
+from .bridge import Bridge, BridgeError
+from .keys import KeyStore, KeyStoreError
+from .library import LibraryError, _atomic_json, _read_json, file_key
+from .outbox import OutboxError
 
 RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000)
 KEY_SCHEMA = "holochain-storage/key-binding/v1"
@@ -300,7 +301,8 @@ class ArtistService:
                     result = (self.grant(request_hash=h, kind=row["kind"]) if action == "approve"
                               else self.reject(request_hash=h))
                 outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued"))})
-            except (ArtistError, ValueError, KeyError, TypeError) as exc:
+            except (ArtistError, BridgeError, KeyStoreError, LibraryError, OutboxError,
+                    ContentGrantError, StorageError, ValueError, KeyError, TypeError) as exc:
                 outcomes.append({"request_hash": h, "ok": False, "error": str(exc)[:160]})
         return {"action": action, "processed": len(outcomes),
                 "succeeded": sum(o["ok"] for o in outcomes), "results": outcomes}
