@@ -48,8 +48,12 @@ project owner's sign-off before release.
   - The grant itself is still verified with the artist's Ed25519 key, so a
     forged delivery cannot authorise playback.
   - Only `receive_access_request` and `receive_grant` are remote-callable (an
-    unrestricted capability grant). Inboxes are bounded (2000 total, 50 per
-    sender).
+    unrestricted capability grant). Inboxes are rate-limited: 20 per sender per
+    24 h and 500 from all senders per hour. Refusals are explicit and are never
+    retried as if the recipient were offline.
+  - Undeliverable messages (recipient offline or busy) wait in a local outbox
+    and are retried every 30 s for up to 7 days while the app runs.
+  - Full review for approval: [private-grant-security-review.md](private-grant-security-review.md).
 
 ### Metadata that remains visible (unavoidable with this design)
 
@@ -57,8 +61,8 @@ project owner's sign-off before release.
   is published in the author's agent activity. Observers learn "artist X
   received N access requests at these times" and "listener Y received N grants".
   They do not learn which track or which counterparty. Entry hashes are not
-  feasibly linkable: requests contain the listener's unpublished X25519 key, and
-  grants contain random salts and nonces.
+  feasibly linkable: the recipient adds a random 16-byte nonce to every request
+  entry, and grants contain random salts and nonces.
 - `call_remote` goes over the encrypted kitsune2/iroh transport, directly or via
   the relay. The relay and network observers can see that two peers exchanged
   traffic, and when.

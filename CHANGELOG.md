@@ -19,6 +19,11 @@ Builds on milestones S1–S18 (draft PRs #5–#22).
   explicit `unavailable` state; playback metrics.
 - Passphrase-encrypted backups; WAV export under a licence.
 - Reproducible `.deb` build and a black-box installed-package smoke test.
+- Store-and-retry outbox for private requests and grants; requests can be sent
+  while the artist and host are offline.
+- `holochain-music config show|set`.
+- Bootstrap poll interval capped at 30 s by default (kitsune2's default
+  doubles to 5 minutes and never resets).
 
 ### Changed
 - Storage DNA accepts literal RFC1918 MoQ endpoints. Before this, LAN hosts
@@ -31,6 +36,9 @@ Builds on milestones S1–S18 (draft PRs #5–#22).
   introduced earlier on this branch and never released.
 
 ### Security
+- Private inbox: windowed rate limits instead of a lifetime cap (which allowed
+  permanent denial of service); recipient-chosen nonce in request entries;
+  remote refusals distinguished from an offline recipient.
 - Conductor admin WebSocket restricted to the bridge Origin. Before this, any
   web page could open it.
 - MoQ TLS key written 0600 in a 0700 directory.
