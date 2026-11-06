@@ -1,0 +1,204 @@
+name: Windows port
+
+# What this proves: the code, Rust binaries and installer build and pass
+# automated tests on a Windows Server 2022 runner, including real Holochain
+# 0.7.0 conductors and real MoQ/QUIC on ONE machine.
+# What it does NOT prove: physical speaker playback (runners have no audio
+# device) or two-computer networking. Those need docs/windows-lan-test-plan.md.
+
+on:
+  pull_request:
+  push:
+    branches: [feat/v1-windows-port]
+
+permissions:
+  contents: read
+
+env:
+  HOLOCHAIN_TAG: holochain-0.7.0
+
+jobs:
+  happ:
+    name: hApp bundle (Linux, pinned hc 0.7.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Pinned hc 0.7.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$HOLOCHAIN_TAG" -R holochain/holochain -p hc-x86_64-unknown-linux-gnu -D "$RUNNER_TEMP"
+          echo "f1eca56b97bc2261324e00e0e86a274f7dc8363f73264e697fd0c0216b2aac23  $RUNNER_TEMP/hc-x86_64-unknown-linux-gnu" | sha256sum -c -
+          install -m 0755 "$RUNNER_TEMP/hc-x86_64-unknown-linux-gnu" /usr/local/bin/hc
+      - name: Build zomes and pack
+        run: |
+          (cd music-dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
+          (cd dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
+          cp music-dna/workdir/music_catalogue.dna dna/workdir/music_storage.dna integration/workdir/
+          hc app pack integration/workdir
+      - uses: actions/upload-artifact@v4
+        with:
+          name: happ
+          path: integration/workdir/holochain_music.happ
+
+  windows-native:
+    name: Windows - Rust, Python, crypto, audio backend, conductor e2e
+    needs: happ
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          name: happ
+          path: integration/workdir
+      - name: Rust tests (MoQ host, certificate pinning) on Windows
+        run: cargo test --locked --manifest-path crates/moq-music/Cargo.toml
+      - name: Build Windows binaries (MSVC)
+        run: |
+          cargo build --locked --release --manifest-path crates/moq-music/Cargo.toml
+          cargo build --locked --release --manifest-path music-e2e/Cargo.toml --bin music_app_bridge
+          cargo build --locked --manifest-path crates/storage-node/Cargo.toml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -e . "sounddevice==0.5.6"
+      - name: Pinned Holochain 0.7.0 Windows binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p upstream
+          for t in holochain hc kitsune2-bootstrap-srv; do
+            gh release download "$HOLOCHAIN_TAG" -R holochain/holochain -p "$t-x86_64-pc-windows-msvc.exe" -D upstream
+          done
+          (cd upstream && grep -E 'msvc\.exe$' ../packaging/windows/inputs.sha256 | sha256sum -c -)
+          for t in holochain hc kitsune2-bootstrap-srv; do cp "upstream/$t-x86_64-pc-windows-msvc.exe" "upstream/$t.exe"; done
+      - name: Python suite on Windows (unit, crypto/grant security, WASAPI backend logic, real QUIC)
+        env:
+          HOLOCHAIN_MOQ_BIN: ${{ github.workspace }}\crates\moq-music\target\release\holochain-music-moq.exe
+          HOLOCHAIN_STORAGE_NODE_BIN: ${{ github.workspace }}\crates\storage-node\target\debug\holochain-storage-node.exe
+        run: python -m unittest discover -s tests -v
+      - name: Two real conductors + MoQ on one Windows runner (publish, grant, stream, seek, offline, export)
+        env:
+          HOLOCHAIN_MUSIC_E2E: '1'
+          HOLOCHAIN_MUSIC_E2E_DIR: ${{ runner.temp }}
+          HOLOCHAIN_BIN: ${{ github.workspace }}\upstream\holochain.exe
+          HC_BIN: ${{ github.workspace }}\upstream\hc.exe
+          KITSUNE2_BOOTSTRAP_BIN: ${{ github.workspace }}\upstream\kitsune2-bootstrap-srv.exe
+          HOLOCHAIN_MUSIC_BRIDGE_BIN: ${{ github.workspace }}\music-e2e\target\release\music_app_bridge.exe
+          HOLOCHAIN_MOQ_BIN: ${{ github.workspace }}\crates\moq-music\target\release\holochain-music-moq.exe
+          HOLOCHAIN_MUSIC_HAPP: ${{ github.workspace }}\integration\workdir\holochain_music.happ
+        run: |
+          python -m unittest discover -s tests -p test_v1_e2e_flow.py -v
+          python -m unittest discover -s tests -p test_v1_e2e_grant_security.py -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binaries
+          path: |
+            crates/moq-music/target/release/holochain-music-moq.exe
+            music-e2e/target/release/music_app_bridge.exe
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-e2e-logs
+          path: ${{ runner.temp }}/hm*/**/logs/*.log
+          if-no-files-found: ignore
+
+  installer:
+    name: Windows installer (NSIS, pinned inputs)
+    needs: [happ, windows-native]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y nsis mingw-w64
+      - uses: actions/download-artifact@v4
+        with:
+          name: happ
+          path: integration/workdir
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-binaries
+          path: winbin
+      - name: Pinned third-party inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          mkdir -p in/upstream in/wheels
+          for t in holochain hc kitsune2-bootstrap-srv; do
+            gh release download "$HOLOCHAIN_TAG" -R holochain/holochain -p "$t-x86_64-pc-windows-msvc.exe" -D in/upstream
+          done
+          curl -sSfL -o in/python-3.14.10-embed-amd64.zip https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip
+          python3 -m pip download --dest in/wheels --only-binary=:all: --platform win_amd64 \
+            --python-version 3.14 --implementation cp "cryptography==47.0.0" "cffi==2.1.1" "pycparser==3.12" "sounddevice==0.5.6"
+          # (build-windows.sh verifies every one of these against packaging/windows/inputs.sha256)
+      - name: Build installer
+        env:
+          HM_WIN_UPSTREAM: in/upstream
+          HM_WIN_PYTHON: in/python-3.14.10-embed-amd64.zip
+          HM_WIN_WHEELS: in/wheels
+          HM_WIN_MOQ: winbin/crates/moq-music/target/release/holochain-music-moq.exe
+          HM_WIN_BRIDGE: winbin/music-e2e/target/release/music_app_bridge.exe
+        run: |
+          export HM_WIN_UPSTREAM=$PWD/$HM_WIN_UPSTREAM HM_WIN_PYTHON=$PWD/$HM_WIN_PYTHON HM_WIN_WHEELS=$PWD/$HM_WIN_WHEELS
+          export HM_WIN_MOQ=$PWD/$HM_WIN_MOQ HM_WIN_BRIDGE=$PWD/$HM_WIN_BRIDGE
+          packaging/windows/build-windows.sh dist
+      - name: Packaging tests against the built installer
+        run: |
+          python3 -m pip install cryptography
+          HM_WIN_INSTALLER_CONTENTS=$(ls dist/*.contents.sha256) python3 -m unittest discover -s tests -p test_windows_packaging.py -v
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-unsigned
+          path: dist/HolochainMusic-*-windows-x64*
+          retention-days: 7
+
+  installer-smoke:
+    name: Install, launch and uninstall on Windows (silent audio)
+    needs: installer
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer-unsigned
+          path: dist
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Silent install
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist\HolochainMusic-*-windows-x64.exe | Select-Object -First 1
+          Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait
+          $hm = 'C:\Program Files\Holochain Music\holochain-music.exe'
+          if (-not (Test-Path $hm)) { throw 'not installed' }
+          & $hm --version
+          & $hm status
+          $rules = Get-NetFirewallRule -DisplayName 'Holochain Music*'
+          if ($rules.Count -ne 3) { throw "expected 3 firewall rules, got $($rules.Count)" }
+          foreach ($r in $rules) { if ($r.Profile -ne 'Private') { throw "rule $($r.DisplayName) not Private-only" } }
+          if (-not (Test-Path "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Holochain Music\Holochain Music.lnk")) { throw 'no Start menu entry' }
+      - name: Installed app black-box smoke test (two instances, real conductors + MoQ, null audio)
+        run: python packaging/smoke-test.py "C:\Program Files\Holochain Music\holochain-music.exe"
+      - name: Silent uninstall keeps user data
+        shell: pwsh
+        run: |
+          $data = "$env:LOCALAPPDATA\HolochainMusic\data\keys"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          Set-Content "$data\marker" 'keep me'
+          # _?= runs the uninstaller in place, so -Wait really waits for it.
+          Start-Process -FilePath 'C:\Program Files\Holochain Music\Uninstall.exe' -ArgumentList '/S', '_?=C:\Program Files\Holochain Music' -Wait
+          if (Test-Path 'C:\Program Files\Holochain Music\holochain-music.exe') { throw 'program not removed' }
+          if ((Get-NetFirewallRule -DisplayName 'Holochain Music*' -ErrorAction SilentlyContinue).Count -ne 0) { throw 'firewall rules left' }
+          if (-not (Test-Path "$data\marker")) { throw 'user data was deleted' }
