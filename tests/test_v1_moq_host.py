@@ -22,6 +22,8 @@ from music_catalogue.moq_host import (
     MoqFetchCancelled, MoqFetchError, MoqHost, fetch_ciphertext, fetch_document,
 )
 
+from v1_fixtures import assert_private
+
 
 class Fixture:
     def __init__(self, root: Path, size: int = 40_000, chunk: int = 2048):
@@ -165,7 +167,7 @@ class RealMoqHostTests(unittest.TestCase):
         first = self.host.fingerprint
         self.host.start()
         self.assertEqual(self.host.fingerprint, first)
-        self.assertEqual((self.root / "cert" / "host.key").stat().st_mode & 0o777, 0o600)
+        assert_private(self, self.root / "cert" / "host.key", 0o600)
         self.fetch(self.root / "after-restart")
 
     def test_host_offline_then_resume_from_first_missing_object(self):

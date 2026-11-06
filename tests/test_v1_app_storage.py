@@ -15,7 +15,7 @@ from holochain_music.keys import KeyStore, KeyStoreError, export_backup, import_
 from holochain_music.library import Library, LibraryError
 from holochain_music.paths import AppPaths, PathError
 
-from v1_fixtures import Track, write_tone
+from v1_fixtures import Track, assert_private, write_tone
 
 
 class Temp(unittest.TestCase):
@@ -32,8 +32,9 @@ class PathTests(Temp):
         paths.ensure()
         self.assertEqual(paths.data, (self.root / "h" / "data").resolve())
         for d in (paths.keys, paths.conductor, paths.library):
-            self.assertEqual(d.stat().st_mode & 0o777, 0o700)
+            assert_private(self, d, 0o700)
 
+    @unittest.skipIf(os.name == "nt", "Unix-socket path limit; Windows lair uses a named pipe")
     def test_too_long_for_keystore_socket_is_refused(self):
         deep = self.root / ("x" * 90)
         with self.assertRaises(PathError):
@@ -46,17 +47,18 @@ class KeyStoreTests(Temp):
         a = ks.listener_public_hex()
         self.assertEqual(KeyStore(self.root / "keys").listener_public_hex(), a)
         for name in ("listener.x25519",):
-            self.assertEqual((self.root / "keys" / name).stat().st_mode & 0o777, 0o600)
+            assert_private(self, self.root / "keys" / name, 0o600)
         self.assertEqual(len(ks.conductor_passphrase()), 43)
 
     def test_refuses_group_readable_symlinked_or_truncated_keys(self):
         ks = KeyStore(self.root / "keys")
         ks.artist_ed25519()
         path = self.root / "keys" / "artist.ed25519"
-        path.chmod(0o644)
-        with self.assertRaises(KeyStoreError):
-            ks.artist_ed25519()
-        path.chmod(0o600)
+        if os.name != "nt":  # Windows DACL refusal: test_windows_port.WindowsOnlyTests
+            path.chmod(0o644)
+            with self.assertRaises(KeyStoreError):
+                ks.artist_ed25519()
+            path.chmod(0o600)
         path.write_bytes(b"short")
         with self.assertRaises(KeyStoreError):
             ks.artist_ed25519()
@@ -95,7 +97,7 @@ class BackupTests(Temp):
         ks, keys, lib = self.make_sources()
         out = export_backup(sources={"keys": keys, "library": lib}, destination=self.root / "b.hmbackup",
                             passphrase="correct horse battery")
-        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        assert_private(self, out, 0o600)
         self.assertNotIn((keys / "listener.x25519").read_bytes(), out.read_bytes())
         restored = import_backup(source=out, passphrase="correct horse battery",
                                  targets={"keys": self.root / "r" / "keys", "library": self.root / "r" / "library"})
@@ -188,7 +190,7 @@ class WavImportTests(Temp):
         data = (self.root / "out.wav").read_bytes()
         self.assertEqual(data[36:40], b"data")
         self.assertEqual(len(data), 44 + frames * 4)
-        self.assertEqual((self.root / "out.wav").stat().st_mode & 0o777, 0o600)
+        assert_private(self, self.root / "out.wav", 0o600)
         import wave
         with wave.open(str(self.root / "w24.wav"), "wb") as w:
             w.setnchannels(1)

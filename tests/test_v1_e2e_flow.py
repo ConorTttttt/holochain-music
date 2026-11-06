@@ -234,7 +234,7 @@ class EndToEndFlow(unittest.TestCase):
             self.assertFalse(app.conductor and app.conductor.running())
             self.assertFalse(app.host and app.host.running())
         env = {**os.environ, "HOLOCHAIN_MUSIC_HOME": str(listener_home),
-               "PYTHONPATH": f"{REPO}:{REPO / 'tests'}"}
+               "PYTHONPATH": f"{REPO}{os.pathsep}{REPO / 'tests'}"}
         out = self.base / "exported.wav"
         done = subprocess.run([sys.executable, "-c", OFFLINE_SCRIPT, file_id, str(out)], env=env,
                               capture_output=True, text=True, timeout=120)

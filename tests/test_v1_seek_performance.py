@@ -206,6 +206,7 @@ class SeekPerformance(unittest.TestCase):
 
 
 class FastAbort(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "ALSA/aplay backend is Linux-only (WASAPI abort: test_windows_port)")
     def test_output_process_ignoring_sigterm_is_killed_immediately(self):
         stubborn = Path(tempfile.mkdtemp()) / "stubborn-aplay"
         stubborn.write_text("#!/usr/bin/env python3\nimport signal, sys, time\n"

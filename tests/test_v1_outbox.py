@@ -8,6 +8,8 @@ import unittest
 from holochain_music.bridge import BridgeError
 from holochain_music.outbox import EXPIRY_SECONDS, MAX_ITEMS, Outbox, OutboxError
 
+from v1_fixtures import assert_private
+
 
 class FakeSend:
     def __init__(self):
@@ -90,7 +92,7 @@ class OutboxTests(unittest.TestCase):
     def test_file_is_private(self):
         self.send.mode = "offline"
         self.box.deliver("send_access_request", **self.args)
-        self.assertEqual(self.box.path.stat().st_mode & 0o777, 0o600)
+        assert_private(self, self.box.path, 0o600)
 
 
 if __name__ == "__main__":

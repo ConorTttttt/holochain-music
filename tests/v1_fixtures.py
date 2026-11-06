@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 from pathlib import Path
 import struct
 import wave
@@ -66,3 +67,13 @@ class Track:
         return issue_content_grant(owner_signer=self.artist, owner_agent=self.owner, listener_agent=self.reader,
                                    recipient_public=self.listener_pub, signed_manifest=self.manifest,
                                    content_key=self.content_key, lifetime_seconds=lifetime)
+
+
+def assert_private(tc, path, mode: int) -> None:
+    """POSIX: exact permission bits. Windows: a DACL that grants no other
+    ordinary account access (holochain_storage.portable.is_private)."""
+    if os.name == "nt":
+        from holochain_storage import portable
+        tc.assertTrue(portable.is_private(Path(path)), f"{path} is readable by other accounts")
+    else:
+        tc.assertEqual(Path(path).stat().st_mode & 0o777, mode, str(path))
