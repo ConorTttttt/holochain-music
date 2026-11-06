@@ -89,3 +89,21 @@ in the selected snapshot. Permanent personal-use licences cannot be revoked afte
 they are granted. Declines are stored privately on the artist's computer; listeners
 are not yet automatically notified. For precise scopes and limitations, see
 [Artist access request management](artist-access-request-management.md).
+
+## Albums, artwork and genres
+
+Open **Artist studio → Albums & artwork → Create album** to gather your
+published songs into an album, choose their order, set a release date and up
+to six genres, and upload a cover image. You can also edit an existing album,
+add/remove songs or change its artwork. **Your releases → Edit song** manages
+each song's genres, cover, album assignment and track number. The publication
+form offers the same tags and artwork for new songs.
+
+Album and song metadata changes publish new Holochain records but never replace
+the encrypted audio, its signed manifest or existing listener licences.
+Artwork is deliberately public and capped at a small, verified 32 KB image;
+the browser resizes your JPEG/PNG/WebP to a square WebP first.
+
+See [Albums, artwork and genres](albums-artwork-genres.md) for details,
+including the requirement to upgrade the music DNA before these changes can
+be used in an existing installed application.
