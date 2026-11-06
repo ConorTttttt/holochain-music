@@ -318,9 +318,16 @@ class MusicApp:
                             or b.get("owner_agent") != meta.get("artist_agent")
                             or b.get("manifest_sha256") != meta.get("manifest_sha256")
                             or b.get("kind") != meta.get("requested")
-                            or b.get("request_id") != meta.get("request_id")
-                            or self.library.grant(file_id) is not None):
+                            or b.get("request_id") != meta.get("request_id")):
                         continue
+                    grant = self.library.grant(file_id)
+                    if grant is not None:
+                        expiry = grant.get("body", {}).get("expires_at")
+                        # An expired stream is not valid access: its renewal can
+                        # be declined. Active grants/licences remain untouched.
+                        if meta.get("grant_kind") == "perpetual-personal" or (
+                                isinstance(expiry, int) and expiry > time.time()):
+                            continue
                     if meta.get("request_status") == "declined":
                         continue
                     self.library.update_meta(file_id, request_status="declined",
