@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "holochain-music"
-version = "1.0.0rc1"
+version = "1.0.0rc3"
 description = "Artist-first decentralised music player on Holochain with encrypted MoQ/QUIC streaming"
 requires-python = ">=3.10"
 # Tested with cryptography 46 (Ubuntu 26.04 system) and 47 (venv); 41 is an untested floor.

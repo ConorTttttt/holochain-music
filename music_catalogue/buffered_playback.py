@@ -196,6 +196,7 @@ class BufferedPcmPlayer:
         self._device = None
         self._finished = self._paused = self._stopped = self._started = False
         self._error: BaseException | None = None
+        self._cleanup_error: BaseException | None = None
         self._digest = hashlib.sha256()
         self._played_bytes = self._queued_bytes = self._max_seen = self._underruns = 0
         self._callbacks = 0
@@ -217,11 +218,20 @@ class BufferedPcmPlayer:
                 output = open_output(self.backend, audio, device=self.device)
             self._device, self._format = output, audio
             self._worker = threading.Thread(target=self._run, name="holochain-music-s11-pcm", daemon=True)
-            self._worker.start()
+            try:
+                self._worker.start()
+            except BaseException:
+                self._worker = None
+                self._stopped = True
+                try:
+                    output.abort()
+                except BaseException as exc:
+                    self._cleanup_error = exc
+                raise
 
     def _error_or_stop(self):
         if self._error is not None:
-            raise PlaybackError("PCM playback device failed") from self._error
+            raise PlaybackError(f"PCM playback device failed: {self._error}") from self._error
         if self._stopped:
             raise PlaybackStopped("PCM playback stopped")
 
@@ -251,6 +261,9 @@ class BufferedPcmPlayer:
             if self._worker is None:
                 raise PlaybackError("PCM playback not started")
             self._paused = True
+            pause = getattr(self._device, "set_paused", None)
+            if pause is not None:
+                pause(True)
             self._cv.notify_all()
 
     def resume(self) -> None:
@@ -259,6 +272,9 @@ class BufferedPcmPlayer:
             if self._worker is None:
                 raise PlaybackError("PCM playback not started")
             self._paused = False
+            pause = getattr(self._device, "set_paused", None)
+            if pause is not None:
+                pause(False)
             self._cv.notify_all()
 
     def stop(self) -> None:
@@ -269,21 +285,41 @@ class BufferedPcmPlayer:
             self._paused = False
             self._interrupt.set()
             self._cv.notify_all()
+        # The PortAudio writer/drainer may be blocked on its own bounded ring.
+        # Wake it BEFORE joining. Linux retains its existing worker-owned
+        # aplay teardown (no concurrent close of a Python buffered pipe).
+        interrupt = getattr(self._device, "interrupt", None)
+        if interrupt is not None:
+            interrupt()
         if self._worker and self._worker is not threading.current_thread():
             self._worker.join(timeout=5)
             if self._worker.is_alive():
                 raise PlaybackError("PCM playback worker did not stop")
+        if self._cleanup_error is not None or (self._worker is None and self._device is not None):
+            # A native teardown may finish after our timeout. Retry the owned
+            # output before allowing a replacement instead of latching failure.
+            try:
+                self._device.abort()
+            except BaseException as exc:
+                self._cleanup_error = exc
+                raise PlaybackError(f"PCM output teardown failed: {exc}") from exc
+            self._cleanup_error = None
 
     def progress(self) -> dict:
         """S18 read-only listener status; never exposes PCM or key material."""
         with self._cv:
+            diagnostics = self._device.diagnostics() if hasattr(self._device, "diagnostics") else None
+            frames = self._played_bytes // self._format.frame_size if self._format else 0
+            if diagnostics is not None:
+                frames = diagnostics["delivered_frames"]
             return {
-                "output_frames": self._played_bytes // self._format.frame_size if self._format else 0,
+                "output_frames": frames,
                 "queued_pcm_bytes": self._queued_bytes,
                 "buffer_capacity_bytes": self.max_blocks * MAX_FRAME_BYTES,
                 "paused": self._paused,
                 "stopped": self._stopped,
                 "finished_input": self._finished,
+                "audio_output": self._device.diagnostics() if hasattr(self._device, "diagnostics") else None,
             }
 
     def stopped_report(self) -> dict:
@@ -306,6 +342,7 @@ class BufferedPcmPlayer:
                 "buffer_capacity_bytes": self.max_blocks * MAX_FRAME_BYTES,
                 "buffer_underruns": self._underruns,
                 "audio_blocks_output": self._callbacks,
+                "audio_output": self._device.diagnostics() if hasattr(self._device, "diagnostics") else None,
             }
 
     def finish(self, *, timeout: float = 60.0) -> dict:
@@ -332,6 +369,7 @@ class BufferedPcmPlayer:
                 "buffer_capacity_bytes": self.max_blocks * MAX_FRAME_BYTES,
                 "buffer_underruns": self._underruns,
                 "audio_blocks_output": self._callbacks,
+                "audio_output": self._device.diagnostics() if hasattr(self._device, "diagnostics") else None,
             }
 
     def _run(self) -> None:
@@ -368,13 +406,16 @@ class BufferedPcmPlayer:
                     self._callbacks += 1
                 # `aplay` may apply its own backpressure, while software pacing
                 # also caps how far our small FIFO can run ahead of wall clock.
-                if self.pace and self._played_bytes > self.burst_bytes and \
+                if self.pace and self.backend != "wasapi" and self._played_bytes > self.burst_bytes and \
                         self._interrupt.wait(len(block) / fmt.byte_rate):
                     return
         except BaseException as exc:
             with self._cv:
-                self._error = exc
+                if not self._stopped:
+                    self._error = exc
                 self._stopped = True
+                self._queue.clear()
+                self._queued_bytes = 0
                 self._cv.notify_all()
         finally:
             try:
@@ -383,8 +424,16 @@ class BufferedPcmPlayer:
                 else:
                     output.abort()
             except BaseException as exc:
+                # A drain/stop error can still leave a correctly closed device.
+                # Distinguish it from teardown that has not released ownership.
+                cleanup_error = None
+                try:
+                    output.abort()
+                except BaseException as teardown_exc:
+                    cleanup_error = teardown_exc
                 with self._cv:
                     self._error = exc
+                    self._cleanup_error = cleanup_error
                     self._stopped = True
                     self._cv.notify_all()
 

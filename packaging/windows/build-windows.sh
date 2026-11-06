@@ -25,7 +25,7 @@ repo=$(cd "$here/../.." && pwd)
 out=${1:-$repo/dist}
 pyver=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+)\"', open('$repo/holochain_music/__init__.py').read()).group(1))")
 version=$(echo "$pyver" | sed 's/rc/-rc/')          # 1.0.0rc1 -> 1.0.0-rc1
-artefact="HolochainMusic-$(echo "$version" | sed 's/-rc[0-9]*$/-rc/')-windows-x64.exe"   # name agreed for private testing
+artefact="HolochainMusic-${version}-windows-x64.exe"
 # Reproducibility: PE timestamps (ld/strip) and NSIS file times follow this.
 : "${SOURCE_DATE_EPOCH:=$(git -C "$repo" log -1 --format=%ct)}"
 export SOURCE_DATE_EPOCH
@@ -41,6 +41,12 @@ pinned() {  # pinned FILE -> exits unless FILE's sha256 is listed for its basena
   [ "$got" = "$want" ] || { echo "error: $name sha256 $got != pinned $want" >&2; exit 3; }
   echo "verified $name"
 }
+
+# Never overwrite an earlier private candidate, including its contents manifest.
+if [ -e "$out/$artefact" ] || [ -e "$out/${artefact%.exe}.contents.sha256" ]; then
+  echo "error: release candidate already exists in $out" >&2
+  exit 5
+fi
 
 stage=$(mktemp -d "${TMPDIR:-/tmp}/hm-win.XXXXXX")
 trap 'rm -rf "$stage"' EXIT
@@ -101,7 +107,7 @@ fi
 
 # --- documents and licences -------------------------------------------------
 install -m 0644 "$here/PRIVATE-TEST-NOTICE.txt" "$root/PRIVATE-TEST-NOTICE.txt"
-for doc in README.md CHANGELOG.md docs/windows-installation.md docs/windows-lan-test-plan.md \
+for doc in README.md CHANGELOG.md docs/windows-installation.md docs/windows-lan-test-plan.md docs/windows-wasapi-rc2.md docs/windows-wasapi-rc3.md \
            docs/security-model.md docs/licensing-audit.md docs/user-guide.md; do
   [ -f "$repo/$doc" ] && install -m 0644 "$repo/$doc" "$root/docs/$(basename "$doc")"
 done

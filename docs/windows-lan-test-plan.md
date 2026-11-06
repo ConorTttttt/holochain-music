@@ -1,8 +1,13 @@
-# Windows ↔ Ubuntu LAN test plan (v1.0.0-rc1, Windows port)
+# Windows ↔ Ubuntu LAN test plan (Windows rc2, existing Ubuntu rc1)
 
 These tests need two physical computers and a person listening. CI cannot
 replace them. Record the evidence blocks in `v1-release-readiness.md` (§9).
-Nothing here has been run yet.
+The first hardware test confirmed Windows discovery of Ubuntu tracks, licence
+request/approval/grant receipt, and audible Realtek speaker playback. WASAPI
+seeking then failed and could prevent later playback; null audio seeking and
+track switching passed. The unrelated catalogue Websocket timeout does not
+establish an audio cause. Windows rc2 must repeat the speaker tests in
+`windows-wasapi-rc2.md`; the reverse direction remains to be tested.
 
 | | Computer A | Computer B |
 |---|---|---|
@@ -21,10 +26,10 @@ trusted private network, with the Windows network profile set to **Private**.
 **Windows** (PowerShell):
 
 ```powershell
-Get-FileHash .\HolochainMusic-1.0.0-rc-windows-x64.exe   # == value given by the builder
-.\HolochainMusic-1.0.0-rc-windows-x64.exe                # install (see windows-installation.md)
+Get-FileHash .\HolochainMusic-1.0.0-rc3-windows-x64.exe   # == value given by the builder
+.\HolochainMusic-1.0.0-rc3-windows-x64.exe                # install (see windows-installation.md)
 $hm = "C:\Program Files\Holochain Music\holochain-music.exe"
-& $hm --version                                          # 1.0.0rc1
+& $hm --version                                          # 1.0.0rc3
 Get-NetConnectionProfile | Select Name, NetworkCategory  # must be Private
 Get-NetFirewallRule -DisplayName "Holochain Music*" | Select DisplayName, Enabled, Profile
 & $hm audio-devices                                      # at least one WASAPI output
@@ -195,3 +200,6 @@ Part 3 — date: ____  Windows build: ____  installer sha256: ____
 no console Y/N  reopen Y/N  clean quit Y/N  job kill Y/N  ACL user+SYSTEM only Y/N
 upgrade keeps identity Y/N  uninstall keeps data Y/N  firewall rules removed Y/N  reinstall restores Y/N
 ```
+
+For rc3 offline audio-quality comparison and physical Realtek retesting, follow
+`windows-wasapi-rc3.md`; crackling resolution remains unverified.

@@ -1,8 +1,12 @@
 # Holochain Music on Windows 11 (x64) — installation and use
 
-> **Unsigned private test build.** `HolochainMusic-1.0.0-rc-windows-x64.exe`
+> **Unsigned private test build.** `HolochainMusic-1.0.0-rc3-windows-x64.exe`
 > is for private hardware testing. It is not code-signed, and its licensing
 > review is incomplete (see `licensing-audit.md`). Do not redistribute it.
+
+See `windows-wasapi-rc3.md` for the seeking/recovery fix, diagnostics and
+required physical-speaker retest. Quit the running app before installing;
+install over the existing program and keep the existing user data/settings.
 
 ## 1. Requirements
 
@@ -19,7 +23,7 @@
 2. Check the hash in PowerShell:
 
    ```powershell
-   Get-FileHash .\HolochainMusic-1.0.0-rc-windows-x64.exe -Algorithm SHA256
+   Get-FileHash .\HolochainMusic-1.0.0-rc3-windows-x64.exe -Algorithm SHA256
    ```
 
    Do not continue if it differs.
@@ -40,7 +44,7 @@ The installer adds:
 | Firewall | Inbound **allow** rules for `holochain.exe`, `holochain-music-moq.exe`, `kitsune2-bootstrap-srv.exe` on the **Private** profile only |
 | Uninstall entry | *Settings → Apps → Installed apps* |
 
-Silent install (for scripted test machines): `HolochainMusic-1.0.0-rc-windows-x64.exe /S`.
+Silent install (for scripted test machines): `HolochainMusic-1.0.0-rc3-windows-x64.exe /S`.
 
 ## 3. Start, open and quit
 
@@ -170,6 +174,15 @@ the track's rate, the app falls back to the MME host API. If a *named* device
 is missing, playback fails with an error rather than switching to another
 device. Volume is the in-app slider. It is applied after the authenticated
 PCM check, so Windows' own volume mixer also applies.
+
+Native device details and errors are recorded in
+`%LOCALAPPDATA%\HolochainMusic\data\logs\audio.log` (1 MB, two backups).
+After a playback error, try Play again. If a native teardown is still running,
+the app reports that the device is still owned and refuses a replacement; retry
+after teardown completes. If native close itself fails, quit/restart the app.
+Report the error text and the audio log; do not send identity keys or library
+grants. `--audio null` remains a useful control, but speaker retesting must
+use `--audio wasapi`.
 
 ## 8. Offline playback
 

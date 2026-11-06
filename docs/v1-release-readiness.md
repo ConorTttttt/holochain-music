@@ -1,5 +1,10 @@
 # Holochain Music v1.0.0-rc1 — release-blocker report
 
+Private Windows rc3 audio-quality candidate: see `windows-wasapi-rc3.md` and
+`windows-wasapi-rc3-validation.md`. Automated PCM continuity and scheduling
+measurements do not establish that the physical Realtek crackling is resolved.
+Human Windows speaker retest remains required; Ubuntu rc1 is preserved.
+
 **This is a release candidate, not a production release. Do not tag v1.0.0.**
 
 Every **PASS** names something actually executed on the development host
@@ -264,3 +269,22 @@ Nothing has run on Windows yet.**
 - Windows Defender real-time scanning of the CAS while streaming (latency).
 - Sharing violations on `os.replace` (retried for up to 1 s) and on Rust-side renames of CAS objects being read.
 - Kitsune2 transport traffic through the Windows firewall on a network mis-classified as Public.
+
+
+## 10. Windows WASAPI rc2 follow-up (2026-11-06)
+
+The user's first physical Windows 11 ↔ Ubuntu LAN test supersedes the
+pre-hardware-test status in §9 for the Ubuntu-to-Windows direction:
+Windows discovered Ubuntu tracks, requested and received approved licences,
+and played audibly through Realtek speakers. WASAPI seeking failed and could
+prevent subsequent startup. Null output seeking and track changes worked.
+The unrelated catalogue Websocket timeout does not establish an audio cause.
+
+Private Windows `1.0.0rc2` fixes the inspected stream ownership, COM lifetime,
+stop/abort/close ordering and recovery defects. See `windows-wasapi-rc2.md`,
+`windows-wasapi-rc2-validation.md` and `windows-rc-checksums.md` for evidence,
+limitations, installer checksum and required retest. Linux regression tests
+and Windows cross-build checks pass. Windows CI and rc2 physical-speaker
+validation have not run; repeated seeks, track changes and recovery through
+speakers remain the acceptance gate. The Ubuntu release artefact, identities
+and libraries are preserved. No push, merge or publication was performed.

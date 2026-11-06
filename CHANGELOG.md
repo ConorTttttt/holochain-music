@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.0rc3 — private Windows audio quality candidate
+
+- Use WASAPI device backpressure instead of a second software pacing clock.
+- Add a fixed 400 ms PCM ring, 150 ms prebuffer and 100 ms shared latency request.
+- Keep rc2 cancellation, MTA ownership and device recovery; remove locks and hashing from callbacks.
+- Measure queue starvation, native underruns, callback timing and actual WASAPI formats/buffering.
+- Show audio interruptions in the player. Physical Windows speaker verification remains pending.
+
+## 1.0.0-rc2 (private Windows WASAPI recovery candidate)
+
+- Own every PortAudio stream on one COM-initialized thread through creation,
+  start, abort/stop and close; keep the shared MTA alive for cached device
+  objects between streams, and wake blocked PCM writers/drainers on seek.
+- Retain ownership on teardown failure, allow retries after delayed teardown,
+  and close failed startups before retrying playback. Keep canceled package
+  verification workers tracked and unable to open an output.
+- Preserve authenticated chunk/grant verification, bounded queues and Linux
+  aplay teardown; stop network services even when audio shutdown fails.
+- Record native errors and device/format/lifecycle diagnostics in rotating
+  per-user `data/logs/audio.log`; no keys, grants or PCM are logged.
+- Add instrumented lifecycle regressions and conditional real WASAPI CI smoke.
+- Give each private installer its complete RC identifier and refuse overwrite.
+- Hardware status: awaiting repeated seek/track/recovery tests through Windows
+  speakers. The earlier build played audibly but failed on WASAPI seeking.
+
 ## Windows port (unreleased, branch `feat/v1-windows-port`)
 
 ### Added

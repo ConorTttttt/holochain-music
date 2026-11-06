@@ -63,6 +63,16 @@ def cmd_start(args) -> int:
             return 0
         print(exc, file=sys.stderr)
         return 1
+    # A GUI launch has no console. Keep native device diagnostics in a bounded
+    # per-user file; this logger never receives grants, keys, or PCM.
+    import logging
+    from logging.handlers import RotatingFileHandler
+    audio_log = logging.getLogger("music_catalogue.audio_output")
+    handler = RotatingFileHandler(app.paths.logs / "audio.log", maxBytes=1_000_000,
+                                  backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(threadName)s] %(message)s"))
+    audio_log.addHandler(handler)
+    audio_log.setLevel(logging.INFO)
     print("Status:", app.status_message, flush=True)
     server, url = serve(app, port=args.port)
     _atomic_json(app.paths.session_file, {"url": url, "pid": os.getpid(), "version": __version__})
@@ -86,7 +96,11 @@ def cmd_start(args) -> int:
         app.paths.session_file.unlink(missing_ok=True)
         server.shutdown()
         server.server_close()
-        app.stop()
+        try:
+            app.stop()
+        finally:
+            audio_log.removeHandler(handler)
+            handler.close()
     return 0
 
 

@@ -216,18 +216,21 @@ class MusicApp:
         return ready
 
     def stop(self) -> None:
-        self.player.shutdown()
-        for d in list(self.downloads.values()):
-            d.stop()
-        for part in (self.outbox, self.host, self.bridge, self.conductor, self.bootstrap):
-            if part is not None:
-                try:
-                    part.stop()
-                except Exception:
-                    pass
-        if self._lock_fd is not None:
-            os.close(self._lock_fd)
-            self._lock_fd = None
+        try:
+            self.player.shutdown()
+        finally:
+            # A device teardown error must not leave network child processes,
+            # download workers, or the instance lock behind during shutdown.
+            for part in (*self.downloads.values(), self.outbox, self.host,
+                         self.bridge, self.conductor, self.bootstrap):
+                if part is not None:
+                    try:
+                        part.stop()
+                    except Exception:
+                        pass
+            if self._lock_fd is not None:
+                os.close(self._lock_fd)
+                self._lock_fd = None
 
     def require_online(self):
         if not self.online or self.catalogue is None:

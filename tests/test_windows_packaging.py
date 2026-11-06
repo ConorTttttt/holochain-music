@@ -86,6 +86,29 @@ class StaticPackagingTests(unittest.TestCase):
         self.assertIn("CAL-1.0", third)
         self.assertIn("licensing review incomplete", third)
 
+    def test_build_preserves_candidate_identifier_and_refuses_overwrite(self):
+        from holochain_music import __version__
+        version = __version__.replace('rc', '-rc')
+        name = f'HolochainMusic-{version}-windows-x64'
+        script = (WIN / 'build-windows.sh').read_text()
+        self.assertIn('artefact="HolochainMusic-${version}-windows-x64.exe"', script)
+        for suffix in ('.exe', '.contents.sha256'):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                saved = Path(tmp) / (name + suffix)
+                saved.write_bytes(b'previous private candidate')
+                env = {**os.environ, 'SOURCE_DATE_EPOCH': '1'}
+                for var in ('HM_WIN_UPSTREAM', 'HM_WIN_PYTHON', 'HM_WIN_WHEELS', 'HM_WIN_MOQ', 'HM_WIN_BRIDGE'):
+                    env[var] = '/unused'
+                if sys.platform == 'win32':
+                    # The POSIX build runs on Linux in CI; Windows has no sh
+                    # guarantee. Keep the static identifier check everywhere.
+                    continue
+                run = subprocess.run(['sh', str(WIN / 'build-windows.sh'), tmp],
+                                     env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(run.returncode, 5, run.stderr)
+                self.assertIn('release candidate already exists', run.stderr)
+                self.assertEqual(saved.read_bytes(), b'previous private candidate')
+
     def test_icon_is_a_valid_multi_size_ico(self):
         out = Path(tempfile.mkdtemp()) / "x.ico"
         subprocess.run([sys.executable, str(WIN / "make_icon.py"), str(out)], check=True)

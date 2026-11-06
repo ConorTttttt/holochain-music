@@ -306,6 +306,10 @@ function renderPlayer() {
     buffering: 'Buffering…', paused: 'Paused', stopped: 'Stopped', finished: 'Finished', error: 'Error' };
   const badge = $('state-badge'); badge.textContent = pendingSeek && p.state !== 'error' ? 'Seeking…' : (labels[p.state] || p.state);
   badge.className = `badge ${p.state === 'error' ? 'bad' : p.state === 'buffering' ? 'warn' : ['playing', 'paused'].includes(p.state) ? 'ok' : ''}`;
+  if (p.audio_output && p.audio_output.underruns > 0 && ['playing', 'paused', 'buffering'].includes(p.state)) {
+    badge.textContent = `Audio interruptions · ${p.audio_output.underruns}`;
+    badge.className = 'badge warn';
+  }
   if (p.state === 'error' && p.error && renderPlayer.lastError !== p.error) toast(p.error);
   renderPlayer.lastError = p.error;
   const playing = ['playing', 'buffering', 'seeking'].includes(p.state);

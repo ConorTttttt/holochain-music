@@ -1,4 +1,4 @@
-HOLOCHAIN MUSIC 1.0.0-rc1 FOR WINDOWS - UNSIGNED PRIVATE TEST BUILD
+HOLOCHAIN MUSIC 1.0.0-rc3 FOR WINDOWS - UNSIGNED PRIVATE TEST BUILD
 
 This installer is a development build for private hardware testing only.
 It is NOT a release and must NOT be redistributed or published.

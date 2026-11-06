@@ -40,10 +40,11 @@ WINDOWS = sys.platform == "win32"
 class FakeStream:
     instances: list = []
 
-    def __init__(self, sd, *, samplerate, channels, dtype, device, latency, callback, extra_settings):
+    def __init__(self, sd, *, samplerate, channels, dtype, device, latency, callback, extra_settings, blocksize=0):
         if sd.fail_hostapis and sd.current_hostapi in sd.fail_hostapis:
             raise RuntimeError("PortAudioError: Invalid sample rate")
         assert dtype == "int16"
+        assert blocksize == 0
         self.sd, self.rate, self.channels, self.device = sd, samplerate, channels, device
         self.callback, self.extra = callback, extra_settings
         self.period = 256
@@ -68,17 +69,17 @@ class FakeStream:
             self.sd.played.extend(buf)
             time.sleep(self.period / self.rate / self.sd.speed)
 
-    def stop(self):
+    def stop(self, ignore_errors=True):
         self.stopped = True
         self._run.clear()
         self.active = False
 
-    def abort(self):
+    def abort(self, ignore_errors=True):
         self.aborted = True
         self._run.clear()
         self.active = False
 
-    def close(self):
+    def close(self, ignore_errors=True):
         self._run.clear()
         self.closed = True
         self.active = False
@@ -160,7 +161,7 @@ class PortAudioOutputTests(unittest.TestCase):
         self.assertEqual(sd.wasapi_args, {"exclusive": False, "auto_convert": True})
         sd_old = FakeSd(wasapi_auto_convert=False)  # sounddevice < 0.5
         PortAudioOutput(FMT, sd=sd_old).abort()
-        self.assertEqual(sd_old.wasapi_args, {"exclusive": False})
+        self.assertIsNone(sd_old.wasapi_args)  # unsupported conversion uses explicit MME fallback
 
     def test_falls_back_to_mme_only_when_wasapi_cannot_open(self):
         sd = FakeSd(fail_hostapis={"Windows WASAPI"})
@@ -175,7 +176,7 @@ class PortAudioOutputTests(unittest.TestCase):
             PortAudioOutput(FMT, sd=FakeSd(), device="Bluetooth")
 
     def test_delivers_exactly_the_written_pcm_in_order_and_bounded(self):
-        sd = FakeSd(speed=40.0)
+        sd = FakeSd(speed=4.0)
         out = PortAudioOutput(FMT, sd=sd, buffer_us=100_000)
         data = pcm(1.0)
         limit = out._limit

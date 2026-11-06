@@ -63,8 +63,22 @@ class VolumeOutput:
             scaled.byteswap()
         self.inner.write(scaled.tobytes())
 
+    def diagnostics(self):
+        method = getattr(self.inner, "diagnostics", None)
+        return method() if method else None
+
+    def set_paused(self, paused):
+        method = getattr(self.inner, "set_paused", None)
+        if method:
+            method(paused)
+
     def close(self) -> None:
         self.inner.close()
+
+    def interrupt(self) -> None:
+        interrupt = getattr(self.inner, "interrupt", None)
+        if interrupt is not None:
+            interrupt()
 
     def abort(self) -> None:
         self.inner.abort()
@@ -101,6 +115,7 @@ class Player:
         self._generation = 0
         self._cancel: threading.Event | None = None
         self._thread: threading.Thread | None = None
+        self._retired: set[threading.Thread] = set()  # canceled verification, never an output owner
         self._pcm: BufferedPcmPlayer | None = None
         self._spec: SessionSpec | None = None
         self._reader = None          # opened, verified reader for self._key
@@ -142,6 +157,7 @@ class Player:
                     "sample_rate": self._rate, "audio_backend": self.backend, "volume": self.volume,
                     "source": self._source, "error": self._error, "download": download,
                     "output_active": self._output_active,
+                    "audio_output": self._pcm.progress()["audio_output"] if self._pcm else None,
                     "time_to_first_audio_ms": self._first_audio_ms,
                     "last_seek_ms": self._seek_metrics[-1].get("latency_ms") if self._seek_metrics else None}
 
@@ -162,14 +178,30 @@ class Player:
                 self._cancel.set()
             pcm, thread = self._pcm, self._thread
             self._generation += 1
-            self._pcm = self._thread = None
-        if pcm is not None:
-            try:
+            self._retired = {t for t in self._retired if t.is_alive()}
+        # Retain ownership until teardown succeeds. Never open a replacement
+        # on top of a timed-out worker or an unclosed native stream.
+        try:
+            if pcm is not None:
                 pcm.stop()
-            except PlaybackError:
-                pass
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=2)
+            if thread is not None and thread is not threading.current_thread():
+                thread.join(timeout=2)
+                if thread.is_alive():
+                    if pcm is not None:
+                        raise PlaybackError("previous playback worker did not stop; retry after it exits")
+                    # Package verification can be slow and owns no output.
+                    # Its generation check prevents it from opening a device.
+                    # Keep it tracked for shutdown instead of losing the handle.
+                    with self._lock:
+                        self._retired.add(thread)
+        except PlaybackError as exc:
+            with self._lock:
+                self._set_state("error")
+                self._output_active = self._buffering = False
+                self._error = str(exc)[:200]
+            raise
+        with self._lock:
+            self._pcm = self._thread = None
 
     def _launch(self, spec: SessionSpec, start_frame: int, reader=None, metric: dict | None = None) -> None:
         """Caller holds _commands and has stopped the previous worker."""
@@ -258,7 +290,16 @@ class Player:
             return self.status()
 
     def shutdown(self) -> None:
-        self._stop_worker()
+        with self._commands:
+            self._stop_worker()
+            with self._lock:
+                retired = tuple(self._retired)
+            for thread in retired:
+                thread.join(timeout=2)
+                if thread.is_alive():
+                    raise PlaybackError("previous verification worker did not stop")
+                with self._lock:
+                    self._retired.discard(thread)
 
     # ---- worker ------------------------------------------------------
     def _current(self, generation, cancel) -> bool:
@@ -317,7 +358,7 @@ class Player:
                 elif self.backend == "alsa":
                     inner = AlsaOutput(audio, device=self.device, buffer_us=DEVICE_BUFFER_US)
                 else:
-                    inner = open_output(self.backend, audio, device=self.device, buffer_us=DEVICE_BUFFER_US)
+                    inner = open_output(self.backend, audio, device=self.device, buffer_us=400_000)
                 out = VolumeOutput(inner, lambda: self.volume)
                 write = out.write
 
@@ -369,6 +410,7 @@ class Player:
             with self._lock:
                 if self._current(generation, cancel):
                     self._position, self._pcm = reader.frames, None
+                    self._output_active = False
                     self._set_state("finished")
                     self._result = {"pcm_sha256": digest.hexdigest(), "frames": reader.frames - start_frame}
                     finished = True
@@ -379,15 +421,19 @@ class Player:
                 if self._current(generation, cancel):
                     self._set_state("stopped")
         except BaseException as exc:
+            cleanup_failed = False
             if pcm is not None:
                 try:
                     pcm.stop()
                 except BaseException:
-                    pass
+                    cleanup_failed = True
             with self._lock:
                 if self._current(generation, cancel):
-                    self._pcm = None
+                    self._pcm = pcm if cleanup_failed else None
                     self._set_state("error")
-                    self._buffering = False
+                    self._buffering = self._output_active = False
                     # Messages come from our own verifiers; no keys/PCM inside.
                     self._error = str(exc)[:200] or type(exc).__name__
+        finally:
+            with self._lock:
+                self._retired.discard(threading.current_thread())
