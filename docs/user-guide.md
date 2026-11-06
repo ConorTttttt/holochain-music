@@ -86,8 +86,7 @@ filter by track folder, request type, status and listener, and use **Accept all 
 **Accept all filtered / Accept all in this folder**, or **Decline all filtered**.
 Bulk decisions require confirmation and apply to the matching *pending* requests shown
 in the selected snapshot. Permanent personal-use licences cannot be revoked after
-they are granted. Declines are stored privately on the artist's computer; listeners
-are not yet automatically notified. For precise scopes and limitations, see
+they are granted. Declines are stored privately on the artist's computer and sent to the listener's private Holochain inbox (queued while the listener is offline). Repeated pending requests are combined. A 24-hour stream can be renewed after expiry. For precise scopes and limitations, see
 [Artist access request management](artist-access-request-management.md).
 
 ## Albums, artwork and genres
