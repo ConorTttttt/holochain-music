@@ -257,6 +257,7 @@ class MusicApp:
                 "title": t["title"], "artist_agent": trusted.artist_agent,
                 "artist_name": profile["display_name"] if profile else "Unknown artist",
                 "album_id": t["album_id"], "album_title": album, "duration_ms": t["duration_ms"],
+                "genres": t.get("genres", []), "artwork_sha256": t.get("artwork_sha256"),
                 "track_number": t["track_number"], "manifest_sha256": trusted.digest,
                 "artist_key_hex": trusted.artist_key.hex(), "listener_agent": self.agent,
                 "hosts": [{"node_agent": h.node_agent, "url": h.url, "fingerprint": h.fingerprint}
@@ -318,6 +319,7 @@ class MusicApp:
                 "track_key": track_key, "track_id": track_id, "title": record.body["title"],
                 "artist_agent": artist, "artist_name": profile["display_name"] if profile else "Unknown artist",
                 "album_id": record.body["album_id"], "duration_ms": record.body["duration_ms"],
+                "genres": record.body.get("genres", []), "artwork_sha256": record.body.get("artwork_sha256"),
                 "manifest_sha256": digest, "listener_agent": self.agent})
         outcome = self.outbox.deliver("send_access_request", owner=artist, request={
             "file_id": file_id, "manifest_sha256": digest,
@@ -347,6 +349,7 @@ class MusicApp:
                 playable = False
             out.append({k: m.get(k) for k in ("file_id", "track_key", "title", "artist_name", "artist_agent",
                                               "album_title", "album_id", "duration_ms", "track_number",
+                                              "genres", "artwork_sha256",
                                               "grant_kind", "requested", "request_queued", "complete")}
                        | {"playable": playable, "grant_expires_at": expires,
                           "offline_ready": bool(m.get("complete")) and m.get("grant_kind") == "perpetual-personal",
@@ -449,6 +452,21 @@ class MusicApp:
                                bytes.fromhex(meta["artist_key_hex"]))
 
     # ---- artist conveniences -------------------------------------------
+    def update_artist_track(self, *, file_id: str, album_id: str | None, track_number: int,
+                            genres: list[str], artwork_sha256: str | None) -> dict:
+        self.require_online()
+        result = self.artist.update_track(file_id=file_id, album_id=album_id, track_number=track_number,
+                                          genres=genres, artwork_sha256=artwork_sha256)
+        album_title = None
+        if album_id:
+            album = next((a for a in self.catalogue.albums(self.agent) if a["album_id"] == album_id), None)
+            album_title = album["title"] if album else None
+        if self.library.meta(file_id) is not None:
+            self.library.update_meta(file_id, album_id=album_id, album_title=album_title,
+                                     track_number=track_number, genres=result["genres"],
+                                     artwork_sha256=artwork_sha256)
+        return result
+
     def publish_track(self, **kwargs) -> dict:
         self.require_online()
         result = self.artist.publish_track(**kwargs)
@@ -471,7 +489,9 @@ class MusicApp:
         self.library.add(manifest=manifest, meta={
             "track_key": f"{self.agent}:{track_id}", "track_id": track_id, "title": track["title"],
             "artist_agent": self.agent, "artist_name": profile["display_name"] if profile else "You",
-            "album_id": None, "album_title": None, "duration_ms": track["duration_ms"], "track_number": 1,
+            "album_id": track.get("album_id"), "album_title": None,
+            "genres": track.get("genres", []), "artwork_sha256": track.get("artwork_sha256"),
+            "duration_ms": track["duration_ms"], "track_number": track.get("track_number", 1),
             "manifest_sha256": manifest_digest(manifest), "artist_key_hex": artist_key.hex(),
             "listener_agent": self.agent, "hosts": []})
         self.library.set_grant(file_id, licence, "perpetual-personal")
