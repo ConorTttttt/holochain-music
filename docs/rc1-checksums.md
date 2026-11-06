@@ -1,10 +1,11 @@
 # v1.0.0-rc1 checksums (release candidate — not a release)
 
-Built 2026-11-06T09:29Z from commit `50b2387` with `packaging/build-deb.sh --skip-build`.
+Built 2026-11-06T12:37Z from commit `958b23d` with `packaging/build-deb.sh --skip-build`.
+This build **supersedes** the earlier rc1 build `1e24f783…0f24`; it adds the seek fix (`852d0b7`).
 A second assembly from the same inputs produced the identical SHA-256.
 
 ```
-1e24f78399d0da61d0a89b294f6fc67f688b1b710231ac2ae687c043c7a20f24  holochain-music_1.0.0~rc1_amd64.deb
+5462eacfba8af0300fd3cf50db24df6b092235c99e842b856badb87a204467eb  holochain-music_1.0.0~rc1_amd64.deb
 ```
 
 ## Bundled executables and hApp
@@ -23,14 +24,12 @@ fb99eff96b0bc32a235b8891d69c6869d881d205b5176b8e8dfbbb74f6d3b54f  usr/lib/holoch
 
 ```
 ok  both instances online
-ok  artist published 6ec158a6ee39
-ok  listener discovered track (71s)
+ok  artist published f2275e029398
+ok  listener discovered track (18s)
 ok  playback refused without a grant
 ok  private licence received
-ok  streamed to the end (first audio 319 ms)
+ok  streamed to the end (first audio 326 ms)
 ok  download complete, offline ready
 ok  offline playback with no network services started
-PASS in 94s
+PASS in 41s
 ```
-
-Discovery took 71 s in this run. In the 8-trial measurement with the same settings, none exceeded 36 s (report §4), so occasional delays over a minute remain possible. Confirm on LAN hardware (Test 2).
