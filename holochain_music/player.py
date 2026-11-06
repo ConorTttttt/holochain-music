@@ -18,7 +18,7 @@ PCM goes only to the S11 bounded player; the browser never receives it.
 Seeking: a track is opened (and its full package verified) once; seeks reuse
 the opened reader and only re-read, re-hash and AES-GCM-decrypt the chunks
 they play. The output is restarted so no stale audio is heard; `aplay` is
-killed, not drained. State is `seeking` until PCM for the new position has
+killed (Linux) or the WASAPI stream aborted (Windows), not drained. State is `seeking` until PCM for the new position has
 actually been written, and every status carries a sequence number so a
 client can discard responses older than one it already applied.
 """
@@ -34,6 +34,7 @@ from typing import Callable
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
+from music_catalogue.audio_output import open_output, valid_backend
 from music_catalogue.buffered_playback import (
     AlsaOutput, AudioFormat, BufferedPcmPlayer, NullOutput, PlaybackStopped,
 )
@@ -80,7 +81,7 @@ class SessionSpec:
         self.recipient, self.store, self.download, self.source = recipient, store, download, source
 
 
-DEVICE_BUFFER_US = 200_000   # ALSA buffer: bounds queued (unheard) audio
+DEVICE_BUFFER_US = 200_000   # ALSA/WASAPI ring: bounds queued (unheard) audio
 START_BURST_SECONDS = 0.25   # written unpaced so playback starts at once
 MAX_SEEK_METRICS = 200
 
@@ -90,7 +91,7 @@ class Player:
                  resolve: Callable[[str], SessionSpec],
                  on_finished: Callable[[str], None] | None = None,
                  on_started: Callable[[str], None] | None = None):
-        if backend not in ("null", "alsa"):
+        if not valid_backend(backend):
             raise PlaybackError("invalid audio backend")
         self.backend, self.device = backend, device
         self._resolve = resolve
@@ -310,8 +311,13 @@ class Player:
             first = {"done": False}
 
             def factory(audio: AudioFormat):
-                inner = AlsaOutput(audio, device=self.device, buffer_us=DEVICE_BUFFER_US) \
-                    if self.backend == "alsa" else NullOutput(audio)
+                # Module-level names kept as the test seam (tests patch NullOutput).
+                if self.backend == "null":
+                    inner = NullOutput(audio)
+                elif self.backend == "alsa":
+                    inner = AlsaOutput(audio, device=self.device, buffer_us=DEVICE_BUFFER_US)
+                else:
+                    inner = open_output(self.backend, audio, device=self.device, buffer_us=DEVICE_BUFFER_US)
                 out = VolumeOutput(inner, lambda: self.volume)
                 write = out.write
 

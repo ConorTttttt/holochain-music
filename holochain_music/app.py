@@ -1,7 +1,6 @@
 """Holochain Music application core: one object the UI and CLI talk to."""
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -9,12 +8,14 @@ import socket
 import threading
 import time
 
+from holochain_storage import portable
 from holochain_storage.package import (
     StorageError, decrypt_package, manifest_digest, public_key_bytes, replicate_package,
 )
 from music_catalogue.content_grants import (
     ContentGrantError, grant_kind, issue_personal_licence, unwrap_content_grant,
 )
+from music_catalogue.audio_output import available_backends, default_backend
 from music_catalogue.contract import CatalogueError, validate_track
 from music_catalogue.granted_audio import PlaybackError
 from music_catalogue.moq_host import MoqHost
@@ -42,7 +43,7 @@ DEFAULTS = {
     "host_bind": "127.0.0.1:0",
     "host_advertise_ip": None,
     "host_max_rate": 8 * 1024 * 1024,
-    "audio_backend": "alsa",
+    "audio_backend": default_backend(),  # "alsa" on Linux, "wasapi" on Windows
     "audio_device": "default",
 }
 USER_ERRORS = (PlaybackError, StorageError, CatalogueError, ResolveError, ArtistError, LibraryError,
@@ -77,6 +78,7 @@ class MusicApp:
         self.online = False
         self._lock_fd = None
         self._sync_lock = threading.Lock()
+        self.shutdown_requested = threading.Event()
         self.player = Player(backend=self.settings["audio_backend"], device=self.settings["audio_device"],
                              resolve=self._session_for, on_finished=self._advance,
                              on_started=self._record_play)
@@ -87,10 +89,12 @@ class MusicApp:
         stored = {}
         if path.is_file():
             try:
-                stored = json.loads(path.read_text())
+                stored = json.loads(path.read_text(encoding="utf-8"))
             except ValueError:
                 stored = {}
         settings = {**DEFAULTS, **{k: v for k, v in stored.items() if k in DEFAULTS or k == "pins"}}
+        if settings["audio_backend"] not in available_backends():  # e.g. settings copied across OSes
+            settings["audio_backend"] = default_backend()
         return settings
 
     def save_settings(self, **changes) -> dict:
@@ -113,28 +117,27 @@ class MusicApp:
                                        or not value.rsplit(":", 1)[1].isdecimal()):
                 raise AppError("host_bind must look like 0.0.0.0:47100 or 127.0.0.1:47100")
             if key == "audio_device" and (not isinstance(value, str) or not value or len(value) > 128):
-                raise AppError("invalid ALSA device name")
+                raise AppError("invalid audio device name")
             if key in ("allow_lan", "host_enabled", "run_local_bootstrap") and not isinstance(value, bool):
                 raise AppError(f"{key} must be true or false")
             if key == "host_max_rate" and (type(value) is not int or not 64 * 1024 <= value <= 1024**3):
                 raise AppError("host rate must be between 64 KiB/s and 1 GiB/s")
             if key == "bootstrap_poll_max_ms" and (type(value) is not int or not 5_000 <= value <= 300_000):
                 raise AppError("bootstrap poll interval must be 5000–300000 ms")
-            if key == "audio_backend" and value not in ("alsa", "null"):
-                raise AppError("audio backend must be alsa or null")
+            if key == "audio_backend" and value not in available_backends():
+                raise AppError("audio backend must be one of: " + ", ".join(available_backends()))
             self.settings[key] = value
         _atomic_json(self.paths.settings_file, self.settings)
         return self.settings
 
     # ---- lifecycle ----------------------------------------------------
     def lock(self) -> None:
-        fd = os.open(self.paths.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
+        if self._lock_fd is not None:
+            return
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            os.close(fd)
+            self._lock_fd = portable.lock_file(self.paths.lock_file)
+        except portable.AlreadyLocked as exc:
             raise AlreadyRunning("Holochain Music is already running for this user/data directory") from exc
-        self._lock_fd = fd
 
     def start(self, *, offline: bool = False) -> None:
         """Start network services. Offline mode needs none of them."""
@@ -459,14 +462,14 @@ class MusicApp:
 
     def _self_licence(self, file_id: str, track_id: str) -> None:
         """Artists can always play their own tracks offline."""
-        manifest = json.loads((self.paths.host / "files" / file_id / "manifest.json").read_text())
+        manifest = json.loads((self.paths.host / "files" / file_id / "manifest.json").read_text(encoding="utf-8"))
         artist_key = public_key_bytes(self.keys.artist_ed25519())
         replicate_package(manifest, self.paths.host / "cas", self.library.cas, artist_key, self.keys.host_ed25519())
         licence = issue_personal_licence(owner_signer=self.keys.artist_ed25519(), owner_agent=self.agent,
                                          listener_agent=self.agent,
                                          recipient_public=bytes.fromhex(self.keys.listener_public_hex()),
                                          signed_manifest=manifest, content_key=self.keys.content_key(file_id))
-        track = json.loads((self.paths.host / "files" / file_id / "track.json").read_text())
+        track = json.loads((self.paths.host / "files" / file_id / "track.json").read_text(encoding="utf-8"))
         profile = self.catalogue.profile(self.agent) if self.catalogue else None
         self.library.add(manifest=manifest, meta={
             "track_key": f"{self.agent}:{track_id}", "track_id": track_id, "title": track["title"],

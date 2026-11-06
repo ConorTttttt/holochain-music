@@ -8,7 +8,11 @@ version = "1.0.0rc1"
 description = "Artist-first decentralised music player on Holochain with encrypted MoQ/QUIC streaming"
 requires-python = ">=3.10"
 # Tested with cryptography 46 (Ubuntu 26.04 system) and 47 (venv); 41 is an untested floor.
-dependencies = ["cryptography>=41,<48"]
+dependencies = [
+    "cryptography>=41,<48",
+    # Windows audio: PortAudio (WASAPI) via sounddevice; Linux keeps ALSA/aplay.
+    "sounddevice>=0.5,<0.6; sys_platform == 'win32'",
+]
 
 [project.scripts]
 holochain-music = "holochain_music.cli:main"

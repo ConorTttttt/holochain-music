@@ -15,6 +15,8 @@ import threading
 import time
 from pathlib import Path
 
+from holochain_storage import portable
+
 from . import binaries
 
 APP_ID = "holochain-music"
@@ -94,12 +96,12 @@ class Conductor:
                 "network", "--bootstrap", self.bootstrap_url, "quic", self.relay_url]
         with open(self.log_path, "ab") as log:
             done = subprocess.run(argv, input=self.passphrase, stdout=log, stderr=log,
-                                  cwd=self.root, timeout=timeout)
+                                  cwd=self.root, timeout=timeout, **portable.popen_kwargs())
         if done.returncode != 0 or not self.installed():
             raise ConductorError("first-run conductor/hApp installation failed (see conductor log)")
 
     def _write_config(self, admin_port: int) -> None:
-        text = self.config_path.read_text()
+        text = self.config_path.read_text(encoding="utf-8")
         text = re.sub(r"(admin_interfaces:\s*\n- driver:\s*\n\s+type: websocket\s*\n\s+port:) \d+",
                       rf"\1 {admin_port}", text, count=1)
         if f"port: {admin_port}" not in text:
@@ -112,7 +114,7 @@ class Conductor:
         text = _set_yaml_scalar(text, "bootstrap_url", self.bootstrap_url)
         text = _set_yaml_scalar(text, "relay_url", self.relay_url)
         text = _set_bootstrap_backoff(text, self.bootstrap_poll_max_ms)
-        self.config_path.write_text(text)
+        self.config_path.write_text(text, encoding="utf-8")
 
     def start(self, timeout: float = 90) -> int:
         if self.proc is not None and self.proc.poll() is None:
@@ -126,9 +128,10 @@ class Conductor:
         try:
             self.proc = subprocess.Popen([str(holochain), "--piped", "-c", str(self.config_path)],
                                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=log, cwd=self.dir)
+                                         stderr=log, cwd=self.dir, **portable.popen_kwargs())
         finally:
             log.close()
+        portable.supervise(self.proc)
         assert self.proc.stdin and self.proc.stdout
         self.proc.stdin.write(self.passphrase)
         self.proc.stdin.close()
@@ -163,13 +166,8 @@ class Conductor:
 
     def stop(self) -> None:
         proc, self.proc = self.proc, None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+        if proc is not None:
+            portable.terminate(proc, grace=15)
 
 
 class BootstrapServer:
@@ -184,9 +182,11 @@ class BootstrapServer:
         log = open(self.log_path, "ab")
         try:
             self.proc = subprocess.Popen([str(binary), "--listen", self.listen],
-                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log)
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log,
+                                         **portable.popen_kwargs())
         finally:
             log.close()
+        portable.supervise(self.proc)
         assert self.proc.stdout
         deadline = time.monotonic() + timeout
         for raw in self.proc.stdout:
@@ -200,9 +200,5 @@ class BootstrapServer:
 
     def stop(self) -> None:
         proc, self.proc = self.proc, None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        if proc is not None:
+            portable.terminate(proc, grace=5)

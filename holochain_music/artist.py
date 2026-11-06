@@ -56,7 +56,7 @@ def normalise_wav(source: Path, destination: Path) -> dict:
             data_len = frames * channels * 2
             if not 0 < data_len <= MAX_WAV_BYTES:
                 raise ArtistError("WAV is empty or too large")
-            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
             with os.fdopen(fd, "wb") as out:
                 out.write(struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + data_len, b"WAVE", b"fmt ", 16, 1,
                                       channels, rate, rate * channels * 2, channels * 2, 16, b"data", data_len))

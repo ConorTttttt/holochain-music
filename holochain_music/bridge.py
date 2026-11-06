@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
-import select
 import subprocess
 import threading
 import time
 from pathlib import Path
 
+from holochain_storage import portable
 from holochain_storage.holochain_identity import AuthoredRecord
 
 from . import binaries
@@ -43,6 +42,7 @@ class Bridge:
         self._ids = itertools.count(1)
         self._buffer = bytearray()
         self._dead: str | None = None
+        self._pipe: portable.PipeReader | None = None
 
     def start(self) -> dict:
         argv = [str(binaries.find("music_app_bridge")), "--admin", f"127.0.0.1:{self.admin_port}",
@@ -54,9 +54,11 @@ class Bridge:
         log = open(self.log_path, "ab")
         try:
             self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                         stderr=log, bufsize=0)
+                                         stderr=log, bufsize=0, **portable.popen_kwargs())
         finally:
             log.close()
+        portable.supervise(self.proc)
+        self._pipe = portable.PipeReader(self.proc.stdout)
         ready = self._read_line(self.timeout)
         if not ready.get("ready"):
             raise BridgeError("conductor bridge did not start")
@@ -64,25 +66,18 @@ class Bridge:
         threading.Thread(target=self._reader, name="hm-bridge-reader", daemon=True).start()
         return self.whoami
 
-    def _read_line(self, timeout: float, proc: subprocess.Popen | None = None) -> dict:
-        proc = proc or self.proc
-        if proc is None or proc.stdout is None:
+    def _read_line(self, timeout: float, pipe: portable.PipeReader | None = None) -> dict:
+        pipe = pipe or self._pipe
+        if pipe is None:
             raise BridgeError("conductor bridge is not running")
         deadline = time.monotonic() + timeout
         while b"\n" not in self._buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BridgeError("conductor bridge timed out")
-            try:
-                readable, _, _ = select.select([proc.stdout], [], [], remaining)
-            except (ValueError, OSError) as exc:  # stdout closed by stop()
-                raise BridgeError("conductor bridge exited") from exc
-            if not readable:
+            data = pipe.read(remaining)  # None: timeout; b"": closed by stop() or exit
+            if data is None:
                 continue
-            try:
-                data = os.read(proc.stdout.fileno(), 65536)
-            except (ValueError, OSError) as exc:
-                raise BridgeError("conductor bridge exited") from exc
             if not data:
                 raise BridgeError("conductor bridge exited (see bridge log)")
             self._buffer.extend(data)
@@ -100,11 +95,11 @@ class Bridge:
 
     def _reader(self) -> None:
         reason = "conductor bridge exited (see bridge log)"
-        proc = self.proc  # stop() clears self.proc; keep our own handle
+        proc, pipe = self.proc, self._pipe  # stop() clears self.proc; keep our own handles
         try:
             while proc.poll() is None:
                 try:
-                    reply = self._read_line(3600, proc)
+                    reply = self._read_line(3600, pipe)
                 except BridgeError as exc:
                     if "timed out" in str(exc):
                         continue
@@ -168,6 +163,8 @@ class Bridge:
                 proc.wait(timeout=5)
             except (OSError, subprocess.TimeoutExpired):
                 proc.kill()
+        if self._pipe is not None:
+            self._pipe.close()
 
 
 def to_record(row) -> AuthoredRecord:

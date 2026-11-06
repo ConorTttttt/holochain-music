@@ -9,14 +9,14 @@ from __future__ import annotations
 
 import json
 from ipaddress import IPv4Address, IPv4Network, AddressValueError
-import os
-import select
 import time
 from pathlib import Path
 import subprocess
 import tempfile
 from typing import Any, Callable
 from urllib.parse import urlsplit
+
+from holochain_storage import portable
 
 from holochain_storage.holochain_identity import (
     HOST_PURPOSE, OWNER_PURPOSE, key_for_agent,
@@ -53,9 +53,11 @@ def _receive_verified_progress(
     argv = [*argv, "--progress-jsonl"]
     try:
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                bufsize=0)
+                                bufsize=0, **portable.popen_kwargs())
     except OSError as exc:
         raise ConductorBridgeError("cannot start pinned MoQ progress receiver") from exc
+    portable.supervise(proc)
+    pipe = portable.PipeReader(proc.stdout)
     expected = 0
     end: dict | None = None
     pending = bytearray()
@@ -67,10 +69,9 @@ def _receive_verified_progress(
             remaining = min(deadline - time.monotonic(), 30.0)
             if remaining <= 0:
                 raise ConductorBridgeError("MoQ progress timed out")
-            readable, _, _ = select.select([proc.stdout], [], [], remaining)
-            if not readable:
+            data = pipe.read(remaining)
+            if data is None:
                 raise ConductorBridgeError("MoQ chunk progress stalled")
-            data = os.read(proc.stdout.fileno(), 4096)
             if not data:
                 raise ConductorBridgeError("MoQ terminated without transfer-complete event")
             total_stdout += len(data)
@@ -128,6 +129,7 @@ def _receive_verified_progress(
         if proc.poll() is None:
             proc.kill()
         proc.wait()
+        pipe.close()
         if proc.stdout:
             proc.stdout.close()
 

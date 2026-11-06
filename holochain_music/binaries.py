@@ -1,14 +1,19 @@
 """Locate the native executables the app supervises.
 
 Search order per tool: explicit environment variable, the packaged
-`libexec` directory (``/usr/lib/holochain-music/bin`` for the .deb, or
-``$HOLOCHAIN_MUSIC_LIBEXEC``), then ``PATH``. Every result is absolute.
+`libexec` directory (``$HOLOCHAIN_MUSIC_LIBEXEC``; else ``<root>/bin`` when
+this package is installed as ``<root>/python/holochain_music`` — the layout
+of both the .deb (``/usr/lib/holochain-music``) and the Windows installer
+(``C:\\Program Files\\Holochain Music``); else the .deb default), then
+``PATH``. Every result is absolute. Windows tools carry ``.exe``.
 """
 from __future__ import annotations
 
 import os
 import shutil
 from pathlib import Path
+
+from holochain_storage import portable
 
 TOOLS = {
     "holochain": "HOLOCHAIN_BIN",
@@ -25,11 +30,23 @@ class MissingBinary(RuntimeError):
     pass
 
 
+def installed_root() -> Path | None:
+    """`<root>` if this package lives at `<root>/python/holochain_music`."""
+    here = Path(__file__).resolve().parent
+    if here.parent.name == "python" and (here.parent.parent / "bin").is_dir():
+        return here.parent.parent
+    return None
+
+
 def libexec_dirs() -> list[Path]:
     dirs = []
     if os.environ.get("HOLOCHAIN_MUSIC_LIBEXEC"):
         dirs.append(Path(os.environ["HOLOCHAIN_MUSIC_LIBEXEC"]))
-    dirs.append(LIBEXEC_DEFAULT)
+    root = installed_root()
+    if root is not None:
+        dirs.append(root / "bin")
+    if not portable.IS_WINDOWS:
+        dirs.append(LIBEXEC_DEFAULT)
     return dirs
 
 
@@ -38,8 +55,8 @@ def find(tool: str, *, required: bool = True) -> Path | None:
         raise KeyError(tool)
     override = os.environ.get(TOOLS[tool])
     candidates = [Path(override)] if override else []
-    candidates += [d / tool for d in libexec_dirs()]
-    found = shutil.which(tool)
+    candidates += [d / portable.exe(tool) for d in libexec_dirs()]
+    found = shutil.which(portable.exe(tool))
     if found:
         candidates.append(Path(found))
     for candidate in candidates:

@@ -171,7 +171,8 @@ class BufferedPcmPlayer:
                  burst_bytes: int = 0,
                  output_factory: Callable[[AudioFormat], object] | None = None,
                  pace: bool = True):
-        if backend not in ("null", "alsa"):
+        from .audio_output import valid_backend
+        if not valid_backend(backend):
             raise PlaybackError("unknown PCM output backend")
         if type(max_blocks) is not int or not 1 <= max_blocks <= 256:
             raise PlaybackError("invalid audio buffer capacity")
@@ -211,10 +212,9 @@ class BufferedPcmPlayer:
             # Open before any PCM is accepted, so a missing device fails closed.
             if self._factory is not None:
                 output = self._factory(audio)
-            elif self.backend == "alsa":
-                output = AlsaOutput(audio, device=self.device)
             else:
-                output = NullOutput(audio)
+                from .audio_output import open_output
+                output = open_output(self.backend, audio, device=self.device)
             self._device, self._format = output, audio
             self._worker = threading.Thread(target=self._run, name="holochain-music-s11-pcm", daemon=True)
             self._worker.start()

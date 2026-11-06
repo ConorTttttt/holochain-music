@@ -16,13 +16,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-import select
 import subprocess
 import tempfile
 import threading
 import time
 from typing import Callable, Iterable
 
+from holochain_storage import portable
 from holochain_storage.package import (
     _assert_manifest, _read_verified_chunk, _verify_signed, canonical, manifest_digest,
 )
@@ -84,7 +84,7 @@ class MoqHost:
             raise MoqFetchError("nothing to host")
         self.state_dir.mkdir(parents=True, exist_ok=True)
         served = self.state_dir / "served.json"
-        served.write_text(json.dumps({"files": self.files}))
+        served.write_text(json.dumps({"files": self.files}), encoding="utf-8")
         ready = self.state_dir / "ready.json"
         ready.unlink(missing_ok=True)
         argv = [str(self.binary), "serve", "--served-list", str(served), "--store", str(self.store),
@@ -94,16 +94,18 @@ class MoqHost:
             argv += ["--allow-lan", "--advertise-ip", self.advertise_ip]
         log = open(self.state_dir / "moq-host.log", "ab")
         try:
-            self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+            self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                         **portable.popen_kwargs())
         finally:
             log.close()
+        portable.supervise(self.proc)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 raise MoqFetchError("MoQ host exited during start-up (see moq-host.log)")
             if ready.is_file():
                 try:
-                    self.ready = json.loads(ready.read_text())
+                    self.ready = json.loads(ready.read_text(encoding="utf-8"))
                     break
                 except ValueError:
                     pass
@@ -131,13 +133,8 @@ class MoqHost:
 
     def stop(self) -> None:
         proc, self.proc, self.ready = self.proc, None, None
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
+        if proc is not None:
+            portable.terminate(proc, grace=5)
 
 
 def fetch_ciphertext(
@@ -191,9 +188,11 @@ def fetch_ciphertext(
             argv.append("--allow-lan")
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, bufsize=0)
+                                    stderr=subprocess.DEVNULL, bufsize=0, **portable.popen_kwargs())
         except OSError as exc:
             raise MoqFetchError("cannot start MoQ fetch") from exc
+        portable.supervise(proc)
+        pipe = portable.PipeReader(proc.stdout)
         position = 0
         pending = bytearray()
         total_out = 0
@@ -208,12 +207,11 @@ def fetch_ciphertext(
                 if remaining <= 0:
                     raise MoqFetchError("MoQ fetch exceeded its total time budget")
                 wait = min(0.2, remaining)
-                readable, _, _ = select.select([proc.stdout], [], [], wait)
-                if not readable:
+                data = pipe.read(wait)
+                if data is None:
                     if proc.poll() is not None and not pending:
                         raise MoqFetchError("MoQ fetch ended before completion")
                     continue
-                data = os.read(proc.stdout.fileno(), 4096)
                 if not data:
                     raise MoqFetchError("MoQ fetch ended before completion")
                 total_out += len(data)
@@ -262,6 +260,7 @@ def fetch_ciphertext(
             if proc.poll() is None:
                 proc.kill()
             proc.wait()
+            pipe.close()
             if proc.stdout:
                 proc.stdout.close()
 

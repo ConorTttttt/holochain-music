@@ -131,6 +131,8 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
             request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
         ("POST", "/api/settings"): settings,
+        # Lets the Start-menu "Quit" entry (and the UI) end a console-less app.
+        ("POST", "/api/shutdown"): noargs(lambda: (app.shutdown_requested.set(), {"stopping": True})[1]),
     }
 
 

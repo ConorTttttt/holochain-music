@@ -10,6 +10,8 @@ import signal
 import sys
 import threading
 
+from music_catalogue.audio_output import available_backends
+
 from . import __version__
 
 
@@ -23,8 +25,26 @@ def _passphrase(confirm: bool) -> str:
     return first
 
 
+def _read_session(paths) -> dict | None:
+    """The running instance's private UI link (same protection as the keys)."""
+    try:
+        info = json.loads(paths.session_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    url = info.get("url") if isinstance(info, dict) else None
+    if not isinstance(url, str) or not url.startswith("http://127.0.0.1:") or "#token=" not in url:
+        return None
+    return info
+
+
+def _open_browser(url: str) -> None:
+    import webbrowser
+    webbrowser.open(url)
+
+
 def cmd_start(args) -> int:
     from .app import AlreadyRunning, MusicApp
+    from .library import _atomic_json
     from .server import serve
     app = MusicApp()
     if args.audio:
@@ -34,19 +54,28 @@ def cmd_start(args) -> int:
     try:
         app.start(offline=args.offline)
     except AlreadyRunning as exc:
+        # Launching again (e.g. from the Start menu or the desktop entry)
+        # re-opens the running instance instead of failing silently.
+        session = _read_session(app.paths)
+        if session and not args.no_browser:
+            _open_browser(session["url"])
+            print("Holochain Music is already running; opened it in your browser.", flush=True)
+            return 0
         print(exc, file=sys.stderr)
         return 1
     print("Status:", app.status_message, flush=True)
     server, url = serve(app, port=args.port)
+    _atomic_json(app.paths.session_file, {"url": url, "pid": os.getpid(), "version": __version__})
     print("Open this private link in a browser on THIS computer (do not share it):", flush=True)
     print(url, flush=True)
-    stop = threading.Event()
+    stop = app.shutdown_requested
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    if hasattr(signal, "SIGBREAK"):  # Windows console Ctrl+Break / window close
+        signal.signal(signal.SIGBREAK, lambda *_: stop.set())
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
     thread.start()
     if not args.no_browser:
-        import webbrowser
-        webbrowser.open(url)
+        _open_browser(url)
     try:
         while not stop.wait(0.5):
             pass
@@ -54,9 +83,55 @@ def cmd_start(args) -> int:
         pass
     finally:
         print("Shutting down…", flush=True)
+        app.paths.session_file.unlink(missing_ok=True)
         server.shutdown()
         server.server_close()
         app.stop()
+    return 0
+
+
+def cmd_open(args) -> int:
+    from .paths import AppPaths
+    session = _read_session(AppPaths.default())
+    if not session:
+        print("Holochain Music is not running.", file=sys.stderr)
+        return 1
+    _open_browser(session["url"])
+    return 0
+
+
+def cmd_quit(args) -> int:
+    """Ask the running instance to shut down cleanly (Start-menu "Quit")."""
+    import http.client
+    from urllib.parse import urlsplit
+    from .paths import AppPaths
+    session = _read_session(AppPaths.default())
+    if not session:
+        print("Holochain Music is not running.")
+        return 0
+    parts = urlsplit(session["url"])
+    token = parts.fragment[len("token="):]
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    try:
+        conn.request("POST", "/api/shutdown", body=b"{}", headers={
+            "Authorization": f"Bearer {token}", "Content-Type": "application/json",
+            "Origin": f"http://127.0.0.1:{parts.port}", "Host": f"127.0.0.1:{parts.port}"})
+        ok = conn.getresponse().status == 200
+    except OSError:
+        ok = False
+    finally:
+        conn.close()
+    print("Holochain Music is shutting down." if ok else "Could not reach Holochain Music.")
+    return 0 if ok else 1
+
+
+def cmd_audio_devices(args) -> int:
+    from music_catalogue.audio_output import WASAPI, list_output_devices
+    if sys.platform != "win32":
+        print("Linux uses ALSA device names (see `aplay -L`), e.g. default, plughw:0,0")
+        return 0
+    for row in list_output_devices(WASAPI):
+        print(row["name"])
     return 0
 
 
@@ -95,8 +170,13 @@ def cmd_bootstrap(args) -> int:
     server = BootstrapServer(args.listen, paths.logs / "bootstrap-server.log")
     server.start()
     print(f"Bootstrap + relay listening on {args.listen}. Other computers: set bootstrap/relay URL to http://{args.listen}")
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
-        signal.sigwait({signal.SIGINT, signal.SIGTERM})
+        while not stop.wait(0.5):  # portable: Windows has no signal.sigwait
+            pass
+    except KeyboardInterrupt:
+        pass
     finally:
         server.stop()
     return 0
@@ -140,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--offline", action="store_true", help="play your downloaded library without any network")
     s.add_argument("--no-browser", action="store_true")
     s.add_argument("--port", type=int, default=0)
-    s.add_argument("--audio", choices=("alsa", "null"))
+    s.add_argument("--audio", choices=available_backends())
     s.set_defaults(func=cmd_start)
     b = sub.add_parser("backup", help="export or import an encrypted backup of keys and library")
     b.add_argument("action", choices=("export", "import"))
@@ -155,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
     bs = sub.add_parser("bootstrap-server", help="run a bootstrap+relay for a private LAN")
     bs.add_argument("--listen", required=True, help="e.g. 192.168.1.50:47011")
     bs.set_defaults(func=cmd_bootstrap)
+    sub.add_parser("open", help="open the running player in your browser").set_defaults(func=cmd_open)
+    sub.add_parser("quit", help="shut the running player down cleanly").set_defaults(func=cmd_quit)
+    sub.add_parser("audio-devices", help="list audio output devices").set_defaults(func=cmd_audio_devices)
     e = sub.add_parser("export", help="export a playable WAV (perpetual licence only)")
     e.add_argument("file_id")
     e.add_argument("out")

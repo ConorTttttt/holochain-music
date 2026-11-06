@@ -26,3 +26,5 @@ dna/workdir/*.dna
 crates/*/target/
 integration/workdir/*.dna
 integration/workdir/*.happ
+# Windows cross-build target (packaging/windows)
+music-e2e/target-*/

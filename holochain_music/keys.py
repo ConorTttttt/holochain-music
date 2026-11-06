@@ -2,7 +2,9 @@
 
 Secrets are raw key files inside a 0700 directory, each created 0600 with
 O_EXCL and never followed through symlinks — the same model as OpenSSH and
-GnuPG home directories. They protect against other local users, not against
+GnuPG home directories. On Windows the directory carries a protected DACL
+(current user + SYSTEM only) that every key file inherits, and reads refuse
+files whose DACL grants any other account (see holochain_storage.portable). They protect against other local users, not against
 malware running as this user or theft of an unlocked disk. Use full-disk
 encryption; see docs/security-model.md.
 
@@ -18,7 +20,6 @@ import os
 from pathlib import Path, PurePosixPath
 import secrets
 import shutil
-import stat
 import tarfile
 import tempfile
 
@@ -29,6 +30,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from holochain_storage import portable
 from holochain_storage.package import (
     b64, canonical, create_package, decrypt_package, from_b64, public_key_bytes,
 )
@@ -45,23 +47,20 @@ class KeyStoreError(RuntimeError):
 
 def _read_secret(path: Path, size: int) -> bytes:
     try:
-        info = path.lstat()
-    except FileNotFoundError:
-        raise
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
-        raise KeyStoreError(f"refusing non-regular key file {path.name}")
-    if info.st_mode & 0o077:
-        raise KeyStoreError(f"key file {path.name} is readable by other users; run chmod 600")
+        info = portable.check_secret_file(path)
+    except portable.PortabilityError as exc:
+        raise KeyStoreError(str(exc)) from exc
     if info.st_size != size:
         raise KeyStoreError(f"key file {path.name} has the wrong size")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | portable.O_NOFOLLOW | portable.O_BINARY | portable.O_NOINHERIT)
     with os.fdopen(fd, "rb") as f:
         return f.read()
 
 
 def _write_secret(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | portable.O_NOFOLLOW | portable.O_BINARY
+                 | portable.O_NOINHERIT, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()
@@ -72,9 +71,10 @@ class KeyStore:
     def __init__(self, directory: Path):
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
-        if self.dir.is_symlink():
-            raise KeyStoreError("refusing symlinked key directory")
-        self.dir.chmod(0o700)
+        try:
+            portable.make_private_dir(self.dir)
+        except portable.PortabilityError as exc:
+            raise KeyStoreError("refusing symlinked key directory") from exc
 
     def _get_or_create(self, name: str, size: int, factory) -> bytes:
         path = self.dir / name
@@ -120,7 +120,7 @@ class KeyStore:
             raise KeyStoreError("invalid content key")
         content = self.dir / "content"
         content.mkdir(exist_ok=True)
-        content.chmod(0o700)
+        portable.make_private_dir(content)
         _write_secret(self._content_path(file_id), key)
 
     def content_key(self, file_id: str) -> bytes:
@@ -170,8 +170,8 @@ def export_backup(*, sources: dict[str, Path], destination: Path, passphrase: st
                 info.size = len(payload)
                 outer.addfile(info, io.BytesIO(payload))
             outer.add(work / "cas", arcname="cas")
-        os.chmod(temp, 0o600)
-        os.replace(temp, destination)
+        portable.make_private_file(temp)
+        portable.replace(temp, destination)
     return destination
 
 
@@ -199,11 +199,11 @@ def import_backup(*, source: Path, passphrase: str, targets: dict[str, Path]) ->
         with tarfile.open(source, "r") as outer:
             outer.extractall(work, members=_safe_members(outer, {"backup.json", "manifest.json", "cas"}),
                              filter="data")
-        header = json.loads((work / "backup.json").read_text())
+        header = json.loads((work / "backup.json").read_text(encoding="utf-8"))
         if header.get("schema") != BACKUP_SCHEMA:
             raise KeyStoreError("not a Holochain Music backup")
         key = _unwrap_key(passphrase, header)
-        manifest = json.loads((work / "manifest.json").read_text())
+        manifest = json.loads((work / "manifest.json").read_text(encoding="utf-8"))
         inner = decrypt_package(manifest, work / "cas", work / "inner.tar", key, bytes.fromhex(header["signer_hex"]))
         restored = []
         with tarfile.open(inner, "r") as tar:
@@ -216,8 +216,9 @@ def import_backup(*, source: Path, passphrase: str, targets: dict[str, Path]) ->
                 if Path(path).exists():
                     Path(path).rmdir()
                 shutil.move(str(staging / name), str(path))
-                Path(path).chmod(0o700)
-                for f in Path(path).rglob("*"):
-                    f.chmod(0o700 if f.is_dir() else 0o600)
+                portable.make_private_dir(Path(path))
+                if not portable.IS_WINDOWS:  # Windows: the DACL above propagates to children
+                    for f in Path(path).rglob("*"):
+                        f.chmod(0o700 if f.is_dir() else 0o600)
                 restored.append(name)
         return restored

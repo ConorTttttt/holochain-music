@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 
+from holochain_storage import portable
 from holochain_storage.package import (
     StorageError, canonical, manifest_digest, object_path, verify_package,
 )
@@ -45,7 +46,7 @@ def _atomic_json(path: Path, value) -> None:
             f.flush()
             os.fsync(f.fileno())
         os.chmod(temp, 0o600)
-        os.replace(temp, path)
+        portable.replace(temp, path)
     except BaseException:
         Path(temp).unlink(missing_ok=True)
         raise

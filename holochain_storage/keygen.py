@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
     private = Ed25519PrivateKey.generate()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(private.private_bytes_raw())
         f.flush()
