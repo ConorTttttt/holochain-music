@@ -24,6 +24,7 @@ from holochain_storage.holochain_identity import (
 )
 from holochain_storage.package import StorageError, manifest_digest
 from music_catalogue.contract import CatalogueError, validate_track, verify_track_manifest
+from .metadata import HEX64, genres_list, validate_artwork_record
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA, _bound_local_url
 from music_catalogue.moq_host import MoqFetchError, fetch_document
 
@@ -98,7 +99,8 @@ class Catalogue:
                 "duration_ms": body["duration_ms"], "disc_number": body["disc_number"],
                 "track_number": body["track_number"], "audio_format": body["audio_format"],
                 "file_id": body["file_id"], "manifest_sha256": body["manifest_sha256"],
-                "rights_basis": body["rights_basis"]}
+                "rights_basis": body["rights_basis"],
+                "genres": body.get("genres", []), "artwork_sha256": body.get("artwork_sha256")}
 
     def profile(self, agent: str) -> dict | None:
         cached = self._profiles.get(agent)
@@ -146,9 +148,27 @@ class Catalogue:
         for r in self.bridge.records("list_albums", artist=agent):
             b = r.body
             if r.author == agent and b.get("artist_agent") == agent and b.get("schema") == ALBUM_SCHEMA:
+                try:
+                    genres = genres_list(b.get("genres", []))
+                    cover = b.get("artwork_sha256")
+                    if cover is not None and (not isinstance(cover, str) or not HEX64.fullmatch(cover)):
+                        continue
+                except ValueError:
+                    continue
                 out.append({"album_id": b.get("album_id"), "title": str(b.get("title", ""))[:200],
-                            "release_date": b.get("release_date"), "artist_agent": agent})
+                            "release_date": b.get("release_date"), "artist_agent": agent,
+                            "artwork_sha256": cover, "genres": genres})
         return out
+
+    def artwork(self, agent: str, digest: str) -> dict:
+        """Public art is verified against author + digest before it reaches the UI."""
+        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
+            raise CatalogueError("invalid artwork digest")
+        record = self.bridge.record("get_artwork", artist=agent, sha256=digest)
+        if record is None or record.author != agent:
+            raise CatalogueError("artwork is not available from this artist")
+        validate_artwork_record(record.body, author=agent, digest=digest)
+        return {"mime_type": record.body["mime_type"], "data_base64": record.body["data_base64"]}
 
     # ---- trust resolution for playback --------------------------------
     def resolve(self, artist_agent: str, track_id: str) -> TrustedTrack:

@@ -48,6 +48,75 @@ async function act(path, body = {}, okMessage) {
   catch (e) { toast(e.message); return null; }
 }
 
+// ---- public cover art and artist metadata ------------------------------
+const coverCache = new Map();
+function genresFromInput(value) {
+  const tags = value.split(',').map(x => x.trim()).filter(Boolean);
+  if (tags.length > 6 || new Set(tags.map(x => x.toLocaleLowerCase())).size !== tags.length
+      || tags.some(x => new TextEncoder().encode(x).length > 32 || /[\\x00-\\x1f\\x7f]/.test(x))) {
+    throw new Error('Use up to 6 unique genres, each no longer than 32 bytes.');
+  }
+  return tags;
+}
+function genreBadges(genres) {
+  return (genres || []).map(g => el('span', { class: 'genre-tag', text: g }));
+}
+function coverThumb(agent, sha, alt = '', large = false) {
+  const holder = el('span', { class: large ? 'cover-art large' : 'cover-art' });
+  if (!agent || !sha) { holder.append(el('span', { text: '♫', 'aria-hidden': true })); return holder; }
+  const img = el('img', { alt, loading: 'lazy' });
+  holder.append(img);
+  const key = agent + ':' + sha;
+  if (!coverCache.has(key)) {
+    coverCache.set(key, api('/api/catalogue/artwork', { artist: agent, sha256: sha }).then(({ mime_type, data_base64 }) => {
+      const raw = atob(data_base64);
+      const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
+      return URL.createObjectURL(new Blob([bytes], { type: mime_type }));
+    }).catch(e => { coverCache.delete(key); throw e; }));
+  }
+  coverCache.get(key).then(url => { img.src = url; }).catch(() => {
+    holder.replaceChildren(el('span', { text: '♫', 'aria-hidden': true }));
+  });
+  return holder;
+}
+async function uploadCover(file) {
+  if (!file) return null;
+  if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) {
+    throw new Error('Choose a JPEG, PNG or WebP image under 8 MB.');
+  }
+  const bitmap = await createImageBitmap(file);
+  try {
+    if (bitmap.width > 8192 || bitmap.height > 8192 || !bitmap.width || !bitmap.height) {
+      throw new Error('Invalid or oversized artwork dimensions.');
+    }
+    for (const size of [512, 384, 320, 256, 192, 128]) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const crop = Math.min(bitmap.width, bitmap.height);
+      ctx.drawImage(bitmap, (bitmap.width - crop) / 2, (bitmap.height - crop) / 2, crop, crop,
+        0, 0, size, size);
+      for (const quality of [0.78, 0.6, 0.4]) {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+        if (!blob || blob.type !== 'image/webp' || blob.size > 32768) continue;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const result = await api('/api/artist/artwork', {
+          mime_type: 'image/webp', data_base64: btoa(binary),
+        });
+        return result.artwork_sha256;
+      }
+    }
+  } finally { bitmap.close(); }
+  throw new Error('Artwork could not be compressed under the 32 KB public-cover limit.');
+}
+function artistField(label, control) {
+  return el('label', { class: 'artist-field' }, el('span', { text: label }), control);
+}
+
 // ---- status helpers --------------------------------------------------
 function accessBadge(item) {
   if (!item) return el('span', { class: 'badge', text: 'Not in library' });
@@ -59,6 +128,9 @@ function accessBadge(item) {
   if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Offline ready' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
   if (item.playable) return el('span', { class: 'badge ok', text: `Streaming access until ${new Date(item.grant_expires_at * 1000).toLocaleString()}` });
+  if (item.request_status === 'declined') return el('span', { class: 'badge bad', text: 'Access declined by artist' });
+  if (item.request_status === 'pending' && item.requested) return el('span', { class: 'badge warn',
+    text: item.request_queued ? 'Request queued for artist' : 'Access requested · awaiting artist' });
   if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
   if (item.requested && item.request_queued) return el('span', { class: 'badge warn', text: 'Request waiting for the artist to come online' });
   if (item.requested) return el('span', { class: 'badge warn', text: 'Access requested' });
@@ -80,11 +152,22 @@ function trackActions(fileId, catalogueRow) {
   } else if (catalogueRow && catalogueRow.artist_agent !== state.agent) {
     const request = async kind => {
       const r = await act('/api/access/request', { track_key: catalogueRow.key, kind });
-      if (r) toast(r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' : 'Private request sent to the artist', 'info');
+      if (r) toast(r.already_pending ? 'You already have a pending request for this access type.' :
+        r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' :
+        'Private request sent to the artist', 'info');
       render();
     };
-    box.append(el('button', { class: 'btn', type: 'button', text: 'Request streaming', onclick: () => request('stream') }));
-    box.append(el('button', { class: 'btn primary', type: 'button', text: 'Request licence', onclick: () => request('perpetual-personal') }));
+    for (const [kind, label, klass] of [
+      ['stream', 'Request streaming', 'btn'],
+      ['perpetual-personal', 'Request licence', 'btn primary'],
+    ]) {
+      if (item && item.requested === kind && (item.request_status === 'pending'
+          || item.request_status === 'declined' || !item.grant_kind)) continue;
+      const buttonText = item && item.grant_kind === 'stream' && kind === 'stream'
+        ? 'Renew streaming access' : label;
+      box.append(el('button', { class: klass, type: 'button', text: buttonText,
+        onclick: () => request(kind) }));
+    }
   }
   return box;
 }
@@ -93,9 +176,12 @@ function trackRow(t, fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const active = state.player && state.player.track_key === fileId;
   return el('div', { class: `row${active ? ' active' : ''}` },
-    el('div', { class: 'title' }, el('strong', { text: t.title || 'Untitled' }),
-      el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
-        onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist'))),
+    el('div', { class: 'title release-title' },
+      coverThumb(t.artist_agent, t.artwork_sha256, '', false),
+      el('div', {}, el('strong', { text: t.title || 'Untitled' }),
+        el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
+          onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist')),
+        el('div', { class: 'genre-tags' }, ...genreBadges(t.genres)))),
     el('div', { class: 'album' }, accessBadge(item)),
     el('div', { class: 'dur muted', text: fmt(t.duration_ms) }),
     trackActions(fileId, catalogueRow));
@@ -130,7 +216,10 @@ const views = {
     const out = [el('h1', { text: profile ? profile.display_name : 'Artist' }),
       el('p', { class: 'sub', text: profile ? profile.biography : '' }), el('p', { class: 'mono muted', text: agent })];
     for (const album of albums) {
-      out.push(el('h2', { text: `${album.title}${album.release_date ? ' · ' + album.release_date : ''}` }));
+      out.push(el('div', { class: 'album-heading' },
+        coverThumb(agent, album.artwork_sha256, album.title + ' cover', true),
+        el('div', {}, el('h2', { text: `${album.title}${album.release_date ? ' · ' + album.release_date : ''}` }),
+          el('div', { class: 'genre-tags' }, ...genreBadges(album.genres)))));
       out.push(list(tracks.filter(t => t.album_id === album.album_id).sort((a, b) => a.track_number - b.track_number)
         .map(t => trackRow(t, t.file_id, t)), 'No tracks on this album yet.'));
     }
@@ -180,25 +269,191 @@ const views = {
     const title = el('input', { required: true, maxlength: '200' });
     const rights = el('select', {}, el('option', { value: 'original_owner', text: 'I own the rights to this recording' }),
       el('option', { value: 'licensed_by_rights_holder', text: 'I am licensed by the rights holder' }));
+    const genres = el('input', { maxlength: '220', placeholder: 'e.g. Electronic, Ambient, Downtempo' });
+    const artwork = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const trackNumber = el('input', { type: 'number', min: 1, max: 999, value: '1' });
+    const { albums } = state.online ? await api('/api/catalogue/artist', { agent: state.agent }) : { albums: [] };
+    const album = el('select', {}, el('option', { value: '', text: 'Release as a single' }),
+      ...albums.map(a => el('option', { value: a.album_id, text: a.title })));
     const name = el('input', { maxlength: '120', placeholder: 'Artist name shown to listeners' });
     const bio = el('textarea', { maxlength: '2048', rows: '3' });
     const profile = el('form', { class: 'stack', onsubmit: async e => { e.preventDefault();
       await act('/api/artist/profile', { display_name: name.value, biography: bio.value }, 'Artist profile published'); } },
       f('Artist name', name), f('Biography', bio), el('button', { class: 'btn', type: 'submit', text: 'Save profile' }));
     form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title), f('Rights declaration', rights),
-      el('p', { class: 'muted', text: 'The file is encrypted locally (AES-256-GCM). Only ciphertext is hosted; the content key never leaves this computer. Your declaration is not a copyright verification.' }),
+      f('Genres (comma-separated, max 6)', genres), f('Cover artwork (optional; JPEG, PNG or WebP)', artwork),
+      f('Album', album), f('Track number (if part of an album)', trackNumber),
+      el('p', { class: 'muted', text: 'Audio is encrypted locally. Covers are public and resized before publication. Your declaration is not a copyright verification.' }),
       el('button', { class: 'btn primary', type: 'submit', text: 'Encrypt & publish' }));
-    form.addEventListener('submit', async e => { e.preventDefault(); const b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Encrypting & publishing…';
-      const r = await act('/api/artist/publish', { path: path.value, title: title.value, rights_basis: rights.value }, 'Track published and hosted');
-      b.disabled = false; b.textContent = 'Encrypt & publish'; if (r) show('mytracks'); });
+    form.addEventListener('submit', async e => {
+      e.preventDefault(); const b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Publishing…';
+      try {
+        const tags = genresFromInput(genres.value);
+        const cover = await uploadCover(artwork.files[0]);
+        const r = await api('/api/artist/publish', {
+          path: path.value, title: title.value, rights_basis: rights.value,
+          genres: tags, artwork_sha256: cover, album_id: album.value || null,
+          track_number: Number(trackNumber.value),
+        });
+        if (r) { toast('Track published with its metadata', 'info'); await refreshLibrary(); show('mytracks'); }
+      } catch (err) { toast(err.message); }
+      finally { b.disabled = false; b.textContent = 'Encrypt & publish'; }
+    });
     return [el('h1', { text: 'Artist studio' }), el('h2', { text: '1. Your profile' }), el('div', { class: 'card' }, profile),
-      el('h2', { text: '2. Publish a track' }), el('div', { class: 'card' }, form)];
+      el('h2', { text: '2. Publish a track' }), el('div', { class: 'card' }, form),
+      el('button', { class: 'btn', type: 'button', text: 'Create an album from existing songs',
+        onclick: () => show('albums') })];
   },
   async mytracks() {
     const { tracks } = await api('/api/artist/tracks', {});
-    return [el('h1', { text: 'Your releases' }), el('p', { class: 'sub', text: 'Hosted by this computer over pinned MoQ/QUIC while the app is running.' }),
-      list(tracks.map(t => el('div', { class: 'row' }, el('div', { class: 'title' }, el('strong', { text: t.title }), el('span', { class: 'mono', text: t.file_id })),
-        el('div', { text: new Date(t.published_at * 1000).toLocaleDateString() }), el('div', { class: 'muted', text: fmt(t.duration_ms) }), el('div'))), 'You have not published anything yet.')];
+    return [el('h1', { text: 'Your releases' }),
+      el('p', { class: 'sub', text: 'Update a song’s genres and artwork, or move it into an album without changing its encrypted audio or existing listener licences.' }),
+      el('div', { class: 'actions request-bulk' },
+        el('button', { class: 'btn primary', type: 'button', text: 'Manage albums',
+          onclick: () => show('albums') })),
+      list(tracks.map(t => {
+        const row = trackRow({ ...t, artist_agent: state.agent, artist_name: 'You' }, t.file_id, null);
+        row.querySelector('.actions').append(el('button', { class: 'btn', type: 'button',
+          text: 'Edit song', onclick: () => show('editTrack', t.file_id) }));
+        return row;
+      }), 'No songs published yet. Publish a track first.')];
+  },
+  async albums() {
+    const [{ albums }, { tracks }] = await Promise.all([
+      api('/api/catalogue/artist', { agent: state.agent }), api('/api/artist/tracks', {}),
+    ]);
+    return [el('h1', { text: 'Albums' }),
+      el('p', { class: 'sub', text: 'Combine songs you have already published into albums. Choose the order, cover, genres and release date. Editing never re-encrypts audio or changes listener grants.' }),
+      el('div', { class: 'actions request-bulk' },
+        el('button', { class: 'btn primary', type: 'button', text: '+ Create album',
+          onclick: () => show('albumEditor') })),
+      albums.length ? el('div', { class: 'album-grid' }, ...albums.map(a =>
+        el('div', { class: 'card album-card' },
+          coverThumb(state.agent, a.artwork_sha256, a.title + ' cover', true),
+          el('div', {}, el('strong', { text: a.title }),
+            el('p', { class: 'muted', text: (a.release_date || 'No release date') +
+              ' · ' + tracks.filter(t => t.album_id === a.album_id).length + ' songs' }),
+            el('div', { class: 'genre-tags' }, ...genreBadges(a.genres)),
+            el('button', { class: 'btn', type: 'button', text: 'Edit album and songs',
+              onclick: () => show('albumEditor', a.album_id) }))))) :
+        el('p', { class: 'empty', text: 'No albums yet. Create one from the songs you published.' })];
+  },
+  async albumEditor(albumId) {
+    const [{ albums }, { tracks }] = await Promise.all([
+      api('/api/catalogue/artist', { agent: state.agent }), api('/api/artist/tracks', {}),
+    ]);
+    const current = albumId ? albums.find(a => a.album_id === albumId) : null;
+    if (albumId && !current) throw new Error('Album is not available from your catalogue.');
+    const title = el('input', { required: true, maxlength: '200', value: current ? current.title : '',
+      placeholder: 'Album title' });
+    const date = el('input', { type: 'date', value: current ? current.release_date || '' : '' });
+    const genres = el('input', { maxlength: '220', value: (current && current.genres || []).join(', '),
+      placeholder: 'e.g. Rock, Alternative, Indie' });
+    const coverFile = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const entries = [...tracks].sort((a, b) => a.title.localeCompare(b.title)).map((t, index) => {
+      const assigned = !!albumId && t.album_id === albumId;
+      const checked = el('input', { type: 'checkbox', checked: assigned });
+      const order = el('input', { type: 'number', min: 1, max: 999,
+        value: String(assigned ? t.track_number || index + 1 : index + 1), 'aria-label': 'Order for ' + t.title });
+      return { track: t, checked, order, row: el('div', { class: 'album-track-choice' },
+        el('label', {}, checked, ' ', t.title),
+        artistField('Position', order),
+        el('span', { class: 'muted', text: t.album_id && !assigned ? 'Currently in another album' : '' })) };
+    });
+    const progress = el('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
+    const save = el('button', { class: 'btn primary', type: 'submit',
+      text: current ? 'Save album and track list' : 'Create album with selected songs' });
+    const form = el('form', { class: 'stack album-form' },
+      artistField('Album title', title),
+      artistField('Release date (optional)', date),
+      artistField('Genres (comma-separated, max 6)', genres),
+      current ? coverThumb(state.agent, current.artwork_sha256, current.title + ' cover', true) : null,
+      artistField('Album artwork (optional; compressed and made public)', coverFile),
+      el('h2', { text: 'Choose and order songs' }),
+      el('p', { class: 'muted', text: 'Tick songs to include. Numbers set their order on the album. Unticking an existing album song returns it to singles.' }),
+      ...entries.map(e => e.row), progress, save);
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault(); save.disabled = true;
+      let changed = 0;
+      try {
+        const tags = genresFromInput(genres.value);
+        const imageDigest = coverFile.files[0] ? await uploadCover(coverFile.files[0])
+          : current && current.artwork_sha256 || null;
+        const selected = entries.filter(e => e.checked.checked).sort((a, b) =>
+          Number(a.order.value) - Number(b.order.value));
+        if (selected.some(e => !Number.isInteger(Number(e.order.value))
+          || Number(e.order.value) < 1 || Number(e.order.value) > 999)) {
+          throw new Error('Each selected track needs a valid position (1–999).');
+        }
+        progress.textContent = 'Saving album metadata…';
+        const result = current ? await api('/api/artist/album/update', {
+          album_id: albumId, title: title.value, release_date: date.value || null,
+          genres: tags, artwork_sha256: imageDigest,
+        }) : await api('/api/artist/album', {
+          title: title.value, release_date: date.value || null,
+          genres: tags, artwork_sha256: imageDigest,
+        });
+        const id = result.album_id;
+        const desired = new Map(selected.map((e, i) => [e.track.file_id, i + 1]));
+        const changes = entries.filter(e => desired.has(e.track.file_id)
+          ? e.track.album_id !== id || e.track.track_number !== desired.get(e.track.file_id)
+          : e.track.album_id === id);
+        for (const e of changes) {
+          progress.textContent = `Updating song ${changed + 1} of ${changes.length}…`;
+          await api('/api/artist/track/update', {
+            file_id: e.track.file_id,
+            album_id: desired.has(e.track.file_id) ? id : null,
+            track_number: desired.get(e.track.file_id) || 1,
+            genres: e.track.genres || [], artwork_sha256: e.track.artwork_sha256 || null,
+          });
+          changed++;
+        }
+        toast(`Album saved; ${changed} songs updated`, 'info');
+        await refreshLibrary(); show('albums');
+      } catch (err) {
+        progress.textContent = `${changed} songs updated before interruption. Check the album and retry as needed.`;
+        toast(err.message);
+      } finally { save.disabled = false; }
+    });
+    return [el('h1', { text: current ? 'Edit album' : 'Create album' }),
+      el('button', { class: 'btn', type: 'button', text: '← Back to albums', onclick: () => show('albums') }),
+      el('div', { class: 'card' }, form)];
+  },
+  async editTrack(fileId) {
+    const [{ tracks }, { albums }] = await Promise.all([
+      api('/api/artist/tracks', {}), api('/api/catalogue/artist', { agent: state.agent }),
+    ]);
+    const track = tracks.find(t => t.file_id === fileId);
+    if (!track) throw new Error('Track not found among your releases.');
+    const tags = el('input', { maxlength: '220', value: (track.genres || []).join(', '),
+      placeholder: 'e.g. Jazz, Soul, R&B' });
+    const album = el('select', {}, el('option', { value: '', text: 'Single / no album' }),
+      ...albums.map(a => el('option', { value: a.album_id, text: a.title })));
+    album.value = track.album_id || '';
+    const position = el('input', { type: 'number', min: 1, max: 999, value: String(track.track_number || 1) });
+    const coverFile = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp' });
+    const save = el('button', { class: 'btn primary', type: 'submit', text: 'Save song metadata' });
+    const form = el('form', { class: 'stack album-form' },
+      artistField('Genres (comma-separated, max 6)', tags),
+      artistField('Album', album), artistField('Track position', position),
+      coverThumb(state.agent, track.artwork_sha256, track.title + ' artwork', true),
+      artistField('Replace artwork (optional)', coverFile),
+      el('p', { class: 'muted', text: 'These changes republish public metadata only. Your encrypted recording, purchases and grants stay unchanged.' }), save);
+    form.addEventListener('submit', async ev => {
+      ev.preventDefault(); save.disabled = true;
+      try {
+        const artwork = coverFile.files[0] ? await uploadCover(coverFile.files[0]) : track.artwork_sha256 || null;
+        await api('/api/artist/track/update', {
+          file_id: fileId, album_id: album.value || null, track_number: Number(position.value),
+          genres: genresFromInput(tags.value), artwork_sha256: artwork,
+        });
+        toast('Song metadata updated', 'info'); await refreshLibrary(); show('mytracks');
+      } catch (err) { toast(err.message); }
+      finally { save.disabled = false; }
+    });
+    return [el('h1', { text: 'Edit ' + track.title }),
+      el('button', { class: 'btn', type: 'button', text: '← Back to releases', onclick: () => show('mytracks') }),
+      el('div', { class: 'card' }, form)];
   },
   async requests() {
     const { requests } = await api('/api/artist/requests', {});
@@ -254,11 +509,20 @@ const views = {
         return el('div', { class: 'row request-row' },
           el('div', { class: 'title' }, el('strong', { text: r.track_title }),
             el('span', { class: 'mono', text: r.listener_agent }),
-            el('span', { class: 'muted', text: new Date(r.received_at * 1000).toLocaleString() })),
+            el('span', { class: 'muted', text: new Date(r.received_at * 1000).toLocaleString() }),
+            r.duplicate_count > 1 ? el('span', { class: 'muted',
+              text: `${r.duplicate_count} identical requests combined` }) : null),
           el('div', {}, el('span', { class: 'badge', text: kind }),
             el('span', { class: badge, text: r.status[0].toUpperCase() + r.status.slice(1) })),
           el('div', { class: 'request-note', text: r.note || 'No message' }),
-          r.status !== 'pending' ? el('div', { class: 'muted', text: 'Decision recorded' }) :
+          r.status === 'declined' ? el('div', { class: 'actions' },
+            el('button', { class: 'btn', type: 'button', text: 'Resend decline notice',
+              disabled: busy, onclick: async () => {
+                const result = await act('/api/artist/reject/notify', { request_hash: r.request_hash });
+                if (result) toast(result.queued ? 'The decline notice is queued for the listener.' :
+                  'Decline notice sent privately.', 'info');
+              } })) :
+          r.status === 'approved' ? el('div', { class: 'muted', text: 'Decision recorded' }) :
             el('div', { class: 'actions' },
               el('button', { class: 'btn primary', type: 'button', text: 'Accept',
                 disabled: busy, onclick: () => decide('approve', [r], false) }),
@@ -283,6 +547,7 @@ const views = {
       let succeeded = 0;
       let queued = 0;
       let failed = 0;
+      let notificationFailures = 0;
       try {
         for (let i = 0; i < pending.length; i += 25) {
           const slice = pending.slice(i, i + 25);
@@ -293,10 +558,12 @@ const views = {
           succeeded += result.succeeded;
           queued += result.results.filter(x => x.ok && x.queued).length;
           failed += result.results.filter(x => !x.ok).length;
+          notificationFailures += result.results.filter(x => x.notification_error).length;
           // Do not retry automatically: a delivery may have succeeded before the HTTP reply failed.
         }
-        toast(`${succeeded} ${action === 'approve' ? 'accepted' : 'declined'}${queued ? ` (${queued} delivery queued)` : ''}${failed ? `; ${failed} failed` : ''}.`,
-          failed ? 'error' : 'info');
+        const warning = notificationFailures ? `; ${notificationFailures} notice(s) failed — use Resend decline notice` : '';
+        toast(`${succeeded} ${action === 'approve' ? 'accepted' : 'declined'}${queued ? ` (${queued} delivery queued)` : ''}${failed ? `; ${failed} failed` : ''}${warning}.`,
+          failed || notificationFailures ? 'error' : 'info');
       } catch (e) {
         toast(`Batch interrupted after ${succeeded} succeeded: ${e.message}. Refresh to see which remain.`);
       } finally {
@@ -310,7 +577,7 @@ const views = {
     declineFiltered.addEventListener('click', () => decide('decline', matching(), true));
     paint();
     return [el('h1', { text: 'Access requests' }),
-      el('p', { class: 'sub', text: 'Accept or decline individual requests, or filter by track folder, type, status and listener. Accepting grants only the access requested. Permanent personal licences allow offline export and cannot be revoked. Declines are saved privately on this computer; listeners are not yet notified.' }),
+      el('p', { class: 'sub', text: 'Accept or decline requests individually or in filtered batches. Repeat submissions for the same listener, song, access type and recipient key are combined. Declines are delivered privately, or queued while a listener is offline. Previously declined requests can be notified again. Permanent personal licences cannot be revoked.' }),
       el('div', { class: 'request-filters' }, folderFilter, kindFilter, statusFilter, searchField),
       summary, el('div', { class: 'request-bulk actions' }, acceptAll, acceptFiltered, declineFiltered),
       progress, rowsHost];
@@ -464,9 +731,13 @@ async function slowPoll() {
   ticks += 1;
   if (state.online && ticks % 3 === 0) {
     try { const r = await api('/api/grants/sync', {}); if (r.new_grants) { toast(`${r.new_grants} new grant(s) received`, 'info'); await refreshLibrary(); if (view === 'library' || view === 'browse') render(); } } catch (_) {}
+    try { const r = await api('/api/decisions/sync', {}); if (r.new_decisions) {
+      toast(`${r.new_decisions} access request(s) declined by an artist`, 'info');
+      await refreshLibrary(); if (['library', 'browse', 'artist', 'search'].includes(view)) render();
+    } } catch (_) {}
     try { const { requests } = await api('/api/artist/requests', {}); const open = requests.filter(r => r.status === 'pending').length; const c = $('request-count'); c.hidden = !open; c.textContent = open; } catch (_) {}
   }
-  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]));
+  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete, t.request_status]));
   await refreshLibrary();
   if (view === 'library' && before !== JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]))) render();
 }

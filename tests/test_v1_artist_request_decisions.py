@@ -48,6 +48,7 @@ def make_artist(root):
         request("wrong-manifest", FILE_A, "stream") | {"manifest_sha256": "0" * 64},
     ]
     artist.issued = lambda: []
+    artist.deliver = lambda op, **kw: {"delivered": True}
     return artist
 
 
@@ -68,7 +69,7 @@ class DecisionTests(unittest.TestCase):
         self.assertFalse(rows[0]["granted"])
 
     def test_decline_persists_with_private_file_permissions_and_is_idempotent(self):
-        self.assertEqual(self.artist.reject(request_hash="one"), {"declined": True})
+        self.assertEqual(self.artist.reject(request_hash="one"), {"declined": True, "delivered": True})
         self.assertTrue(self.artist.reject(request_hash="one")["already_decided"])
         self.assertEqual(self.artist.requests()[0]["status"], "declined")
         self.assertEqual(self.artist.requests()[1]["status"], "pending")
@@ -91,6 +92,55 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtistError, "cannot be declined"):
             self.artist.reject(request_hash="one")
         self.assertFalse((self.root / "request-decisions.json").exists())
+
+    def test_identical_legacy_requests_collapse_and_resolution_is_shared(self):
+        old = self.artist._inbox
+        self.artist._inbox = lambda: [request("duplicate", FILE_A, "stream"), *old()]
+        rows = self.artist.requests()
+        self.assertEqual([r["request_hash"] for r in rows], ["duplicate", "two", "three"])
+        self.assertEqual(rows[0]["duplicate_count"], 2)
+        self.artist._save_decision("one", status="declined")
+        rows = self.artist.requests()
+        self.assertEqual(rows[0]["status"], "declined")
+        with self.assertRaisesRegex(ArtistError, "already approved or declined"):
+            self.artist.grant(request_hash="duplicate", kind="stream")
+
+    def test_stream_renewal_after_approved_request_is_a_new_pending_group(self):
+        old = request("old-grant", FILE_A, "stream") | {"request_id": "a" * 32}
+        renewed = request("renewed", FILE_A, "stream") | {"request_id": "b" * 32}
+        self.artist._inbox = lambda: [renewed, old]
+        self.artist.issued = lambda: [{
+            "listener_agent": "listener-one", "file_id": FILE_A,
+            "kind": "stream", "request_hash": "old-grant", "issued_at": 60,
+        }]
+        rows = self.artist.requests()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r["status"] for r in rows], ["pending", "approved"])
+        self.assertEqual(rows[0]["request_hash"], "renewed")
+
+    def test_decline_queues_delivery_and_explicit_resend_recovers(self):
+        calls = []
+        def send(op, **kw):
+            calls.append((op, kw))
+            return {"queued": True}
+        self.artist.deliver = send
+        result = self.artist.reject(request_hash="one")
+        self.assertTrue(result["queued"])
+        self.assertEqual(calls[0][0], "send_decision")
+        self.assertEqual(calls[0][1]["listener"], "listener-one")
+        self.assertEqual(calls[0][1]["decision"]["file_id"], FILE_A)
+        self.assertEqual(calls[0][1]["decision"]["decision"], "declined")
+        self.assertEqual(self.artist.requests()[0]["status"], "declined")
+        self.assertEqual(self.artist.resend_decline(request_hash="one"), {"queued": True})
+        self.assertEqual(len(calls), 2)
+
+    def test_notification_failure_does_not_undo_decline(self):
+        from holochain_music.bridge import BridgeError
+        self.artist.deliver = lambda op, **kw: (_ for _ in ()).throw(BridgeError("recipient refused"))
+        result = self.artist.reject(request_hash="one")
+        self.assertTrue(result["declined"])
+        self.assertIn("recipient refused", result["notification_error"])
+        self.assertEqual(self.artist.requests()[0]["status"], "declined")
 
     def test_batch_decline_affects_explicit_ids_only_and_is_idempotent(self):
         result = self.artist.decide_batch(action="decline", request_hashes=["two", "three"])

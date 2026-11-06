@@ -14,6 +14,7 @@ copyright ownership.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,7 @@ from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 from .bridge import Bridge, BridgeError
 from .keys import KeyStore, KeyStoreError
 from .library import LibraryError, _atomic_json, _read_json, file_key
+from .metadata import ARTWORK_SCHEMA, HEX64, artwork_bytes, genres_list, validate_artwork_record
 from .outbox import OutboxError
 
 RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000)
@@ -118,18 +120,86 @@ class ArtistService:
             "display_name": display_name.strip(), "biography": biography.strip(),
             "artwork_manifest_sha256": None})
 
-    def create_album(self, title: str, release_date: str | None) -> dict:
+    def publish_artwork(self, *, mime_type: str, data_base64: str) -> dict:
+        """Small, explicitly public cover art stored separately from secret audio."""
+        image = artwork_bytes(mime_type=mime_type, data_base64=data_base64)
+        digest = hashlib.sha256(image).hexdigest()
+        self.bridge.call("publish_artwork", entry={
+            "schema": ARTWORK_SCHEMA, "artist_agent": self.me, "mime_type": mime_type,
+            "sha256": digest, "data_base64": data_base64})
+        return {"artwork_sha256": digest, "bytes": len(image)}
+
+    def _require_artwork(self, digest: str | None) -> None:
+        if digest is None:
+            return
+        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
+            raise ArtistError("invalid artwork digest")
+        row = self.bridge.record("get_artwork", artist=self.me, sha256=digest)
+        if row is None or row.author != self.me:
+            raise ArtistError("upload artwork as this artist first")
+        try:
+            validate_artwork_record(row.body, author=self.me, digest=digest)
+        except ValueError as exc:
+            raise ArtistError("invalid or unverified artwork") from exc
+
+    def create_album(self, title: str, release_date: str | None,
+                     genres: list[str] | None = None, artwork_sha256: str | None = None) -> dict:
         album_id = secrets.token_hex(16)
+        self._album_revision(album_id=album_id, title=title, release_date=release_date,
+                             genres=genres or [], artwork_sha256=artwork_sha256)
+        return {"album_id": album_id}
+
+    def _album_revision(self, *, album_id: str, title: str, release_date: str | None,
+                        genres: list[str], artwork_sha256: str | None) -> None:
+        if not isinstance(album_id, str) or len(album_id) != 32 or any(c not in "0123456789abcdef" for c in album_id):
+            raise ArtistError("invalid album ID")
+        self._require_artwork(artwork_sha256)
         self.bridge.call("publish_album", entry={
             "schema": "holochain-music/album/v1", "artist_agent": self.me, "album_id": album_id,
-            "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None})
-        return {"album_id": album_id}
+            "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None,
+            "artwork_sha256": artwork_sha256, "genres": genres_list(genres)})
+
+    def update_album(self, *, album_id: str, title: str, release_date: str | None,
+                     genres: list[str], artwork_sha256: str | None) -> dict:
+        records = self.bridge.records("list_albums", artist=self.me)
+        if not any(r.author == self.me and r.body.get("album_id") == album_id for r in records):
+            raise ArtistError("album not found for this artist")
+        self._album_revision(album_id=album_id, title=title, release_date=release_date,
+                             genres=genres, artwork_sha256=artwork_sha256)
+        return {"album_id": album_id, "updated": True}
+
+    def update_track(self, *, file_id: str, album_id: str | None, track_number: int,
+                     genres: list[str], artwork_sha256: str | None) -> dict:
+        """Append artist-owned metadata revision; preserve immutable audio identifiers."""
+        file_id = file_key(file_id)
+        saved = self.files / file_id / "track.json"
+        if not saved.is_file():
+            raise ArtistError("only tracks published on this artist account can be edited")
+        local = _read_json(saved, 64 * 1024)
+        if type(track_number) is not int or not 1 <= track_number <= 999:
+            raise ArtistError("invalid track number")
+        self._require_artwork(artwork_sha256)
+        row = self.bridge.record("get_track", artist=self.me, track_id=local["track_id"])
+        if (row is None or row.author != self.me or row.body.get("file_id") != file_id
+                or row.body.get("manifest_sha256") != local["manifest_sha256"]):
+            raise ArtistError("published track does not match this encrypted audio")
+        body = dict(row.body)
+        body.update(album_id=album_id, track_number=track_number, genres=genres_list(genres),
+                    artwork_sha256=artwork_sha256)
+        self.bridge.call("publish_track", entry=body)
+        _atomic_json(saved, {**local, "album_id": album_id, "track_number": track_number,
+                             "genres": body["genres"], "artwork_sha256": artwork_sha256})
+        return {"file_id": file_id, "track_id": local["track_id"], "album_id": album_id,
+                "genres": body["genres"], "artwork_sha256": artwork_sha256, "track_number": track_number}
 
     def publish_track(self, *, wav: Path, title: str, album_id: str | None = None,
                       track_number: int = 1, disc_number: int = 1,
-                      rights_basis: str = "original_owner") -> dict:
+                      rights_basis: str = "original_owner", genres: list[str] | None = None,
+                      artwork_sha256: str | None = None) -> dict:
         if rights_basis not in ("original_owner", "licensed_by_rights_holder"):
             raise ArtistError("invalid rights declaration")
+        clean_genres = genres_list(genres or [])
+        self._require_artwork(artwork_sha256)
         artist_key = self.keys.artist_ed25519()
         self._ensure_key(OWNER_PURPOSE, public_key_bytes(artist_key))
         tmpdir = self.root / "tmp"
@@ -157,11 +227,14 @@ class ArtistService:
             "schema": "holochain-music/track/v1", "artist_agent": self.me, "track_id": track_id,
             "album_id": album_id or None, "title": title.strip(), "duration_ms": info["duration_ms"],
             "disc_number": disc_number, "track_number": track_number, "audio_format": "audio/wav",
-            "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis})
+            "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis,
+            "genres": clean_genres, "artwork_sha256": artwork_sha256})
         self.host_file(manifest, owner_agent=self.me, artist_key=public_key_bytes(artist_key))
         _atomic_json(d / "track.json", {"track_id": track_id, "title": title.strip(), "file_id": file_id,
                                         "manifest_sha256": digest, "owner_agent": self.me,
-                                        "published_at": int(time.time()), **info})
+                                        "published_at": int(time.time()), "album_id": album_id,
+                                        "track_number": track_number, "genres": clean_genres,
+                                        "artwork_sha256": artwork_sha256, **info})
         return {"track_id": track_id, "file_id": file_id, "manifest_sha256": digest, **info}
 
     # ---- hosting --------------------------------------------------------
@@ -244,11 +317,16 @@ class ArtistService:
         return rows
 
     def requests(self) -> list[dict]:
+        """One actionable row per listener/track/manifest/access type/key.
+
+        Legacy duplicate private entries remain on the artist source chain, but
+        never become multiple offers or consume multiple bulk decisions.
+        """
         with self._request_lock:
             mine = {t["file_id"]: t for t in self.my_tracks()}
-            issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
+            issued = self.issued()
             decisions = self._decisions()
-            out = []
+            grouped: dict[tuple, dict] = {}
             for b in self._inbox():
                 track = mine.get(b.get("file_id"))
                 if track is None or b.get("manifest_sha256") != track["manifest_sha256"]:
@@ -256,19 +334,61 @@ class ArtistService:
                 h = b.get("request_hash")
                 if not isinstance(h, str) or not 0 < len(h) <= 80:
                     continue
+                kind = b.get("kind")
+                if kind not in ("stream", "perpetual-personal"):
+                    continue
+                # A new listener-generated ID represents a genuine new request
+                # generation, such as a stream renewal after its previous grant
+                # expired. Older messages with no ID are collapsed as legacy.
+                key = (b["listener_agent"], b["file_id"], b["manifest_sha256"],
+                       kind, b.get("x25519_public_hex"), b.get("request_id"))
                 decision = decisions.get(h, {})
-                # Existing grants from earlier releases also count as resolved.
-                legacy_granted = (b["listener_agent"], b["file_id"], b.get("kind")) in issued
+                legacy_granted = any(
+                    g.get("listener_agent") == b["listener_agent"]
+                    and g.get("file_id") == b["file_id"] and g.get("kind") == kind
+                    and (g.get("request_hash") == h or
+                         (not g.get("request_hash") and
+                          int(g.get("issued_at", b["received_at"])) >= b["received_at"]))
+                    for g in issued
+                )
                 status = ("approved" if legacy_granted or decision.get("status") == "approved"
                           else "declined" if decision.get("status") == "declined" else "pending")
-                out.append({"request_hash": h, "listener_agent": b["listener_agent"],
-                            "file_id": b["file_id"], "track_title": track["title"], "kind": b.get("kind"),
-                            "note": str(b.get("note", ""))[:500], "received_at": b["received_at"],
-                            "status": status, "granted": status == "approved", "declined": status == "declined"})
+                if key not in grouped:
+                    grouped[key] = {
+                        "request_hash": h, "listener_agent": b["listener_agent"],
+                        "file_id": b["file_id"], "manifest_sha256": b["manifest_sha256"],
+                        "request_id": b.get("request_id"),
+                        "track_title": track["title"], "kind": kind,
+                        "note": str(b.get("note", ""))[:500],
+                        "received_at": b["received_at"], "status": status,
+                        "duplicate_count": 1,
+                    }
+                else:
+                    row = grouped[key]
+                    row["duplicate_count"] += 1
+                    # Resolved decisions on an older duplicate apply to its
+                    # entire group. A grant always takes precedence over a decline.
+                    if status == "approved" or (status == "declined" and row["status"] == "pending"):
+                        row["status"] = status
+            out = list(grouped.values())
+            for row in out:
+                row["granted"] = row["status"] == "approved"
+                row["declined"] = row["status"] == "declined"
             return out
 
+    def _send_decline(self, row: dict) -> dict:
+        return self.deliver("send_decision", listener=row["listener_agent"], decision={
+            "file_id": row["file_id"], "manifest_sha256": row["manifest_sha256"],
+            "kind": row["kind"], "request_id": row.get("request_id"),
+            "decision": "declined",
+        })
+
     def reject(self, *, request_hash: str) -> dict:
-        """Privately decline a verified request. No grant or listener notification is issued."""
+        """Record locally first; privately notify the verified requester.
+
+        Remote delivery can be queued for seven days if the listener is offline.
+        A notification failure must never erase a recorded decision.
+        """
         with self._request_lock:
             row = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
             if row is None:
@@ -278,7 +398,19 @@ class ArtistService:
             if row["status"] == "declined":
                 return {"declined": True, "already_decided": True}
             self._save_decision(request_hash, status="declined")
-            return {"declined": True}
+            try:
+                outcome = self._send_decline(row)
+            except (BridgeError, OutboxError, ValueError) as exc:
+                return {"declined": True, "notification_error": str(exc)[:160]}
+            return {"declined": True, **outcome}
+
+    def resend_decline(self, *, request_hash: str) -> dict:
+        """Explicit repair for decisions saved before notifications existed."""
+        with self._request_lock:
+            row = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
+            if row is None or row["status"] != "declined":
+                raise ArtistError("no declined request found")
+            return self._send_decline(row)
 
     def decide_batch(self, *, request_hashes: list[str], action: str) -> dict:
         """Apply explicit snapshot IDs only; never run an unbounded server-side 'all'.
@@ -300,7 +432,8 @@ class ArtistService:
                         raise ArtistError("request is already resolved")
                     result = (self.grant(request_hash=h, kind=row["kind"]) if action == "approve"
                               else self.reject(request_hash=h))
-                outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued"))})
+                outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued")),
+                                 "notification_error": result.get("notification_error")})
             except (ArtistError, BridgeError, KeyStoreError, LibraryError, OutboxError,
                     ContentGrantError, StorageError, ValueError, KeyError, TypeError) as exc:
                 outcomes.append({"request_hash": h, "ok": False, "error": str(exc)[:160]})
@@ -321,6 +454,8 @@ class ArtistService:
             raise ArtistError("unknown access request")
         if current["status"] != "pending":
             raise ArtistError("request is already approved or declined")
+        if current["kind"] != kind:
+            raise ArtistError("grant type must match the access requested")
         request = next((r for r in self._inbox() if r["request_hash"] == request_hash), None)
         if request is None:
             raise ArtistError("unknown access request")

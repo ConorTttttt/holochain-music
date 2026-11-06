@@ -4,7 +4,7 @@
 
 use hdk::prelude::*;
 use music_storage_integrity::{
-    EntryTypes, FileCommitment, InboxAccessRequest, InboxGrant, LinkTypes, MoqEndpoint,
+    EntryTypes, FileCommitment, InboxAccessRequest, InboxGrant, InboxDecision, LinkTypes, MoqEndpoint,
     ReplicaClaim, SigningKeyBinding, UnitEntryTypes,
 };
 use std::collections::HashSet;
@@ -146,8 +146,9 @@ pub fn init(_: ()) -> ExternResult<InitCallbackResult> {
     let zome = zome_info()?.name;
     let mut functions = HashSet::new();
     functions.insert((zome.clone(), FunctionName::from("receive_access_request")));
-    functions.insert((zome, FunctionName::from("receive_grant")));
-    // Only these two inbox functions are remote-callable by any agent.
+    functions.insert((zome.clone(), FunctionName::from("receive_grant")));
+    functions.insert((zome, FunctionName::from("receive_decision")));
+    // Only these inbox endpoints are remote-callable; sender provenance is checked.
     create_cap_grant(ZomeCallCapGrant {
         tag: INBOX_TAG.into(),
         access: CapAccess::Unrestricted,
@@ -163,6 +164,17 @@ pub struct AccessRequestPayload {
     pub x25519_public_hex: String,
     pub kind: String,
     pub note: String,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DecisionPayload {
+    pub file_id: String,
+    pub manifest_sha256: String,
+    pub kind: String,
+    pub request_id: Option<String>,
+    pub decision: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -183,6 +195,12 @@ pub struct SendAccessRequest {
 pub struct SendGrant {
     pub listener: AgentPubKey,
     pub grant: GrantPayload,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SendDecision {
+    pub listener: AgentPubKey,
+    pub decision: DecisionPayload,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -275,12 +293,52 @@ pub fn receive_access_request(payload: AccessRequestPayload) -> ExternResult<Act
         listener_agent: sender.to_string(),
         file_id: payload.file_id, manifest_sha256: payload.manifest_sha256,
         x25519_public_hex: payload.x25519_public_hex, kind: payload.kind, note: payload.note,
+        request_id: payload.request_id,
     }))
 }
 
 #[hdk_extern]
 pub fn get_inbox_access_requests(_: ()) -> ExternResult<Vec<InboxRow<InboxAccessRequest>>> {
     inbox(UnitEntryTypes::InboxAccessRequest)
+}
+
+/// Artist: notify a listener of a decline without publishing the relationship.
+#[hdk_extern]
+pub fn send_decision(input: SendDecision) -> ExternResult<()> {
+    remote(input.listener, "receive_decision", input.decision)
+}
+
+/// Listener cell: record the VERIFIED caller as artist provenance, not a
+/// user-supplied owner_agent.
+#[hdk_extern]
+pub fn receive_decision(payload: DecisionPayload) -> ExternResult<ActionHash> {
+    let sender = call_info()?.provenance;
+    if payload.decision != "declined" {
+        return Err(guest(format!("{REFUSED} invalid decision")));
+    }
+    let existing = inbox::<InboxDecision>(UnitEntryTypes::InboxDecision)?;
+    sender_check(&sender, existing.iter().map(|r| (r.body.owner_agent.clone(), r.received_at)))?;
+    if let Some(duplicate) = existing.iter().find(|r| {
+        r.body.owner_agent == sender.to_string()
+            && r.body.file_id == payload.file_id
+            && r.body.manifest_sha256 == payload.manifest_sha256
+            && r.body.kind == payload.kind
+            && r.body.request_id == payload.request_id
+            && r.body.decision == payload.decision
+    }) {
+        return Ok(duplicate.action_hash.clone());
+    }
+    create_entry(EntryTypes::InboxDecision(InboxDecision {
+        schema: music_storage_integrity::INBOX_DECISION_SCHEMA.into(),
+        owner_agent: sender.to_string(),
+        file_id: payload.file_id, manifest_sha256: payload.manifest_sha256,
+        kind: payload.kind, request_id: payload.request_id, decision: payload.decision,
+    }))
+}
+
+#[hdk_extern]
+pub fn get_inbox_decisions(_: ()) -> ExternResult<Vec<InboxRow<InboxDecision>>> {
+    inbox(UnitEntryTypes::InboxDecision)
 }
 
 /// Artist: deliver a signed grant privately to the listener's cell.

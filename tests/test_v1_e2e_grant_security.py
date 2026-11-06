@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 
-from holochain_music.app import MusicApp
+from holochain_music.app import AppError, MusicApp
 from holochain_music.bridge import BridgeError
 from holochain_music.paths import AppPaths
 
@@ -130,10 +130,16 @@ class GrantInboxSecurity(unittest.TestCase):
         self.raw_request(self.listener, note="still welcome")
 
     def test_6_request_while_artist_fully_offline_is_queued_then_delivered(self):
-        # Runs last: stops and restarts the artist.
+        # A different file is needed because earlier tests left a pending
+        # stream request on the original file (now deduplicated).
+        write_tone(self.base / "pending.wav", seconds=2.0)
+        type(self).queued_pub = self.artist.publish_track(wav=self.base / "pending.wav", title="Queue test")
+        type(self).queued_key = f"{self.artist.agent}:{self.queued_pub['track_id']}"
+        poll(lambda: self.listener.catalogue.resolve(self.artist.agent, self.queued_pub["track_id"]),
+             420, "second track discovery")
         self.artist.stop()
         restarted = MusicApp(self.artist.paths)
-        out = self.listener.request_access(self.key, "stream", "queued please")
+        out = self.listener.request_access(self.queued_key, "stream", "queued please")
         self.assertTrue(out.get("queued"), out)
         restarted.start()
         self.assertTrue(restarted.online)
@@ -145,6 +151,29 @@ class GrantInboxSecurity(unittest.TestCase):
         print(f"\nqueued request delivered {time.monotonic() - t0:.0f}s after artist restart", flush=True)
         rows = [r for r in restarted.artist._inbox() if r["note"] == "queued please"]
         self.assertEqual([r["listener_agent"] for r in rows], [self.listener.agent])
+
+    def test_7_decline_notifies_listener_and_rejects_forged_decisions(self):
+        """End-to-end private rejection after an offline queued request."""
+        pending = poll(lambda: [r for r in self.artist.artist.requests()
+                               if r["file_id"] == self.queued_pub["file_id"]
+                               and r["listener_agent"] == self.listener.agent], 120, "queued request")
+        meta = self.listener.library.meta(self.queued_pub["file_id"])
+        self.mallory.bridge.call("send_decision", listener=self.listener.agent, decision={
+            "file_id": self.queued_pub["file_id"], "manifest_sha256": self.queued_pub["manifest_sha256"],
+            "kind": "stream", "request_id": meta.get("request_id"), "decision": "declined"})
+        self.assertEqual(self.listener.sync_decisions(), 0)
+        self.assertEqual(self.listener.library.meta(self.queued_pub["file_id"])["request_status"], "pending")
+        rejected = self.artist.artist.reject(request_hash=pending[0]["request_hash"])
+        self.assertTrue(rejected["declined"])
+        poll(lambda: self.listener.sync_decisions() or
+             self.listener.library.meta(self.queued_pub["file_id"]).get("request_status") == "declined",
+             120, "decline notification", 5)
+        meta = self.listener.library.meta(self.queued_pub["file_id"])
+        self.assertEqual(meta["request_status"], "declined")
+        with self.assertRaisesRegex(AppError, "declined"):
+            self.listener.request_access(self.queued_key, "stream")
+        self.assertEqual(self.listener.sync_decisions(), 0)
+
 
 
 if __name__ == "__main__":

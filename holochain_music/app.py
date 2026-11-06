@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import secrets
 from pathlib import Path
 import socket
 import threading
@@ -77,6 +78,7 @@ class MusicApp:
         self.online = False
         self._lock_fd = None
         self._sync_lock = threading.Lock()
+        self._request_lock = threading.RLock()
         self.player = Player(backend=self.settings["audio_backend"], device=self.settings["audio_device"],
                              resolve=self._session_for, on_finished=self._advance,
                              on_started=self._record_play)
@@ -257,6 +259,7 @@ class MusicApp:
                 "title": t["title"], "artist_agent": trusted.artist_agent,
                 "artist_name": profile["display_name"] if profile else "Unknown artist",
                 "album_id": t["album_id"], "album_title": album, "duration_ms": t["duration_ms"],
+                "genres": t.get("genres", []), "artwork_sha256": t.get("artwork_sha256"),
                 "track_number": t["track_number"], "manifest_sha256": trusted.digest,
                 "artist_key_hex": trusted.artist_key.hex(), "listener_agent": self.agent,
                 "hosts": [{"node_agent": h.node_agent, "url": h.url, "fingerprint": h.fingerprint}
@@ -296,35 +299,99 @@ class MusicApp:
                     continue
         return added
 
+    def sync_decisions(self) -> int:
+        """Import only private, conductor-attributed decisions matching the
+        current request's artist, file, manifest, kind and unique request ID.
+        A stale or forged denial can never override a grant or a new request.
+        """
+        self.require_online()
+        updated = 0
+        with self._sync_lock:
+            for row in self.bridge.call("get_inbox_decisions") or []:
+                b = row.get("body") if isinstance(row, dict) else None
+                if not isinstance(b, dict) or b.get("schema") != "holochain-music/inbox-decision/v1":
+                    continue
+                try:
+                    file_id = file_key(b["file_id"])
+                    meta = self.library.meta(file_id)
+                    if (meta is None or b.get("decision") != "declined"
+                            or b.get("owner_agent") != meta.get("artist_agent")
+                            or b.get("manifest_sha256") != meta.get("manifest_sha256")
+                            or b.get("kind") != meta.get("requested")
+                            or b.get("request_id") != meta.get("request_id")):
+                        continue
+                    grant = self.library.grant(file_id)
+                    if grant is not None:
+                        expiry = grant.get("body", {}).get("expires_at")
+                        # An expired stream is not valid access: its renewal can
+                        # be declined. Active grants/licences remain untouched.
+                        if meta.get("grant_kind") == "perpetual-personal" or (
+                                isinstance(expiry, int) and expiry > time.time()):
+                            continue
+                    if meta.get("request_status") == "declined":
+                        continue
+                    self.library.update_meta(file_id, request_status="declined",
+                                             request_queued=False, declined_at=int(time.time()))
+                    updated += 1
+                except (KeyError, TypeError, ValueError, LibraryError):
+                    continue
+        return updated
+
     def request_access(self, track_key: str, kind: str, note: str = "") -> dict:
-        """Send a private request to the artist's cell (artist must be online)."""
+        """Send a single outstanding private request for a file/access type."""
         self.require_online()
         if kind not in ("stream", "perpetual-personal"):
             raise AppError("invalid access kind")
         artist, track_id = self._split_key(track_key)
         if artist == self.agent:
             raise AppError("this is your own track; it is already in your library")
-        # Only the DHT track record is needed to ask: the artist's host may be
-        # offline. Hosts, manifest and signatures are verified when the grant
-        # arrives (sync_grants) and again before any playback.
-        record = self.bridge.record("get_track", artist=artist, track_id=track_id)
-        if record is None or record.author != artist:
-            raise AppError("track not found in the catalogue")
-        validate_track(record.body, author=artist)
-        file_id, digest = record.body["file_id"], record.body["manifest_sha256"]
-        if self.library.meta(file_id) is None:
-            profile = self.catalogue.profile(artist)
-            self.library.add_pending(file_id, {
-                "track_key": track_key, "track_id": track_id, "title": record.body["title"],
-                "artist_agent": artist, "artist_name": profile["display_name"] if profile else "Unknown artist",
-                "album_id": record.body["album_id"], "duration_ms": record.body["duration_ms"],
-                "manifest_sha256": digest, "listener_agent": self.agent})
-        outcome = self.outbox.deliver("send_access_request", owner=artist, request={
-            "file_id": file_id, "manifest_sha256": digest,
-            "x25519_public_hex": self.keys.listener_public_hex(), "kind": kind, "note": note[:500]})
-        self.library.update_meta(file_id, requested=kind, requested_at=int(time.time()),
-                                 request_queued=bool(outcome.get("queued")))
-        return {"requested": True, "file_id": file_id, **outcome}
+        with self._request_lock:
+            record = self.bridge.record("get_track", artist=artist, track_id=track_id)
+            if record is None or record.author != artist:
+                raise AppError("track not found in the catalogue")
+            validate_track(record.body, author=artist)
+            file_id, digest = record.body["file_id"], record.body["manifest_sha256"]
+            existing = self.library.meta(file_id)
+            if existing is not None and existing.get("artist_agent") != artist:
+                raise AppError("this file belongs to a different artist")
+            if existing is not None and existing.get("manifest_sha256") != digest:
+                raise AppError("the artist has changed this track's encrypted content")
+            grant = self.library.grant(file_id) if existing is not None else None
+            if grant is not None:
+                expiry = grant.get("body", {}).get("expires_at")
+                if existing.get("grant_kind") == "perpetual-personal" or (
+                        kind == "stream" and isinstance(expiry, int) and expiry > time.time()):
+                    raise AppError("you already have access to this track")
+            if existing is not None and existing.get("requested") == kind:
+                if existing.get("request_status") == "declined":
+                    raise AppError("the artist declined this access request")
+                # After a streaming grant has expired, a new request is a
+                # renewal, not a duplicate. A later pending renewal remains
+                # deduplicated even while the expired grant file still exists.
+                renewal_pending = (
+                    existing.get("request_status") == "pending"
+                    and existing.get("requested_at", 0) > existing.get("grant_received_at", 0))
+                if grant is None or renewal_pending:
+                    return {"requested": True, "file_id": file_id, "already_pending": True,
+                            "queued": bool(existing.get("request_queued"))}
+            if existing is None:
+                profile = self.catalogue.profile(artist)
+                self.library.add_pending(file_id, {
+                    "track_key": track_key, "track_id": track_id, "title": record.body["title"],
+                    "artist_agent": artist, "artist_name": profile["display_name"] if profile else "Unknown artist",
+                    "album_id": record.body["album_id"], "duration_ms": record.body["duration_ms"],
+                    "genres": record.body.get("genres", []),
+                    "artwork_sha256": record.body.get("artwork_sha256"),
+                    "manifest_sha256": digest, "listener_agent": self.agent})
+            request_id = secrets.token_hex(16)
+            outcome = self.outbox.deliver("send_access_request", owner=artist, request={
+                "file_id": file_id, "manifest_sha256": digest,
+                "x25519_public_hex": self.keys.listener_public_hex(),
+                "kind": kind, "note": note[:500], "request_id": request_id})
+            self.library.update_meta(file_id, requested=kind, requested_at=int(time.time()),
+                                     request_id=request_id, request_status="pending",
+                                     request_queued=bool(outcome.get("queued")))
+            return {"requested": True, "file_id": file_id, **outcome}
 
     @staticmethod
     def _split_key(track_key: str) -> tuple[str, str]:
@@ -347,7 +414,8 @@ class MusicApp:
                 playable = False
             out.append({k: m.get(k) for k in ("file_id", "track_key", "title", "artist_name", "artist_agent",
                                               "album_title", "album_id", "duration_ms", "track_number",
-                                              "grant_kind", "requested", "request_queued", "complete")}
+                                              "genres", "artwork_sha256",
+                                              "grant_kind", "requested", "request_queued", "request_status", "complete")}
                        | {"playable": playable, "grant_expires_at": expires,
                           "offline_ready": bool(m.get("complete")) and m.get("grant_kind") == "perpetual-personal",
                           "download": d.progress() if d else None})
@@ -449,6 +517,21 @@ class MusicApp:
                                bytes.fromhex(meta["artist_key_hex"]))
 
     # ---- artist conveniences -------------------------------------------
+    def update_artist_track(self, *, file_id: str, album_id: str | None, track_number: int,
+                            genres: list[str], artwork_sha256: str | None) -> dict:
+        self.require_online()
+        result = self.artist.update_track(file_id=file_id, album_id=album_id, track_number=track_number,
+                                          genres=genres, artwork_sha256=artwork_sha256)
+        album_title = None
+        if album_id:
+            album = next((a for a in self.catalogue.albums(self.agent) if a["album_id"] == album_id), None)
+            album_title = album["title"] if album else None
+        if self.library.meta(file_id) is not None:
+            self.library.update_meta(file_id, album_id=album_id, album_title=album_title,
+                                     track_number=track_number, genres=result["genres"],
+                                     artwork_sha256=artwork_sha256)
+        return result
+
     def publish_track(self, **kwargs) -> dict:
         self.require_online()
         result = self.artist.publish_track(**kwargs)
@@ -471,7 +554,9 @@ class MusicApp:
         self.library.add(manifest=manifest, meta={
             "track_key": f"{self.agent}:{track_id}", "track_id": track_id, "title": track["title"],
             "artist_agent": self.agent, "artist_name": profile["display_name"] if profile else "You",
-            "album_id": None, "album_title": None, "duration_ms": track["duration_ms"], "track_number": 1,
+            "album_id": track.get("album_id"), "album_title": None,
+            "genres": track.get("genres", []), "artwork_sha256": track.get("artwork_sha256"),
+            "duration_ms": track["duration_ms"], "track_number": track.get("track_number", 1),
             "manifest_sha256": manifest_digest(manifest), "artist_key_hex": artist_key.hex(),
             "listener_agent": self.agent, "hosts": []})
         self.library.set_grant(file_id, licence, "perpetual-personal")

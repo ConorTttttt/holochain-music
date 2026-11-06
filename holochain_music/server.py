@@ -17,12 +17,13 @@ from urllib.parse import urlsplit
 from .app import AppError, MusicApp, USER_ERRORS
 
 MAX_BODY = 16 * 1024
+MAX_ARTWORK_BODY = 60 * 1024
 UI = Path(__file__).with_name("ui")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8"),
           "/icon.svg": ("icon.svg", "image/svg+xml")}
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
@@ -60,7 +61,7 @@ def routes(app: MusicApp) -> dict:
         return {"exported": str(app.export_wav(d["file_id"], target))}
 
     def publish(d):
-        _keys(d, {"path", "title"}, {"album_id", "track_number", "rights_basis"})
+        _keys(d, {"path", "title"}, {"album_id", "track_number", "rights_basis", "genres", "artwork_sha256"})
         path = Path(_text(d["path"], 1024)).expanduser()
         if not path.is_absolute() or not path.is_file():
             raise AppError("WAV file not found (use an absolute path)")
@@ -68,7 +69,39 @@ def routes(app: MusicApp) -> dict:
         if type(tn) is not int or not 1 <= tn <= 999:
             raise AppError("invalid track number")
         return app.publish_track(wav=path, title=_text(d["title"], 200), album_id=d.get("album_id") or None,
-                                 track_number=tn, rights_basis=d.get("rights_basis", "original_owner"))
+                                 track_number=tn, rights_basis=d.get("rights_basis", "original_owner"),
+                                 genres=d.get("genres", []), artwork_sha256=d.get("artwork_sha256"))
+
+    def album_create(d):
+        _keys(d, {"title"}, {"release_date", "genres", "artwork_sha256"})
+        return app.artist.create_album(
+            _text(d["title"], 200), d.get("release_date"),
+            genres=d.get("genres", []), artwork_sha256=d.get("artwork_sha256"))
+
+    def album_update(d):
+        _keys(d, {"album_id", "title"}, {"release_date", "genres", "artwork_sha256"})
+        return app.artist.update_album(
+            album_id=_text(d["album_id"], 32), title=_text(d["title"], 200),
+            release_date=d.get("release_date"), genres=d.get("genres", []),
+            artwork_sha256=d.get("artwork_sha256"))
+
+    def track_update(d):
+        _keys(d, {"file_id", "track_number", "genres"}, {"album_id", "artwork_sha256"})
+        return app.update_artist_track(
+            file_id=_text(d["file_id"], 64), album_id=d.get("album_id"),
+            track_number=d["track_number"], genres=d["genres"],
+            artwork_sha256=d.get("artwork_sha256"))
+
+    def artwork_upload(d):
+        _keys(d, {"mime_type", "data_base64"})
+        return app.artist.publish_artwork(
+            mime_type=_text(d["mime_type"], 24),
+            data_base64=_text(d["data_base64"], 45000))
+
+    def artwork_get(d):
+        _keys(d, {"artist", "sha256"})
+        return app.catalogue.artwork(
+            _text(d["artist"], 80), _text(d["sha256"], 64))
 
     def settings(d):
         allowed = {"bootstrap_url", "relay_url", "allow_lan", "host_enabled", "host_advertise_ip",
@@ -106,8 +139,10 @@ def routes(app: MusicApp) -> dict:
             _text(_keys(d, {"query"})["query"], 80), 50)}),
         ("POST", "/api/catalogue/artists"): online(noargs(lambda: {"artists": app.catalogue.artists()})),
         ("POST", "/api/catalogue/artist"): catalogue_artist,
+        ("POST", "/api/catalogue/artwork"): online(artwork_get),
         ("POST", "/api/access/request"): access_request,
         ("POST", "/api/grants/sync"): noargs(lambda: {"new_grants": app.sync_grants()}),
+        ("POST", "/api/decisions/sync"): online(noargs(lambda: {"new_decisions": app.sync_decisions()})),
         ("POST", "/api/download"): lambda d: app.download(_keys(d, {"file_id"})["file_id"]),
         ("POST", "/api/play"): lambda d: p.play(_keys(d, {"file_id"}, {"start_frame"})["file_id"], d.get("start_frame", 0)),
         ("POST", "/api/pause"): noargs(p.pause),
@@ -123,14 +158,18 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/profile"): online(lambda d: app.artist.save_profile(
             _text(_keys(d, {"display_name"}, {"biography"})["display_name"], 120),
             _text(d.get("biography", ""), 2048, empty_ok=True))),
-        ("POST", "/api/artist/album"): online(lambda d: app.artist.create_album(
-            _text(_keys(d, {"title"}, {"release_date"})["title"], 200), d.get("release_date") or None)),
+        ("POST", "/api/artist/album"): online(album_create),
+        ("POST", "/api/artist/album/update"): online(album_update),
+        ("POST", "/api/artist/track/update"): online(track_update),
+        ("POST", "/api/artist/artwork"): online(artwork_upload),
         ("POST", "/api/artist/publish"): publish,
         ("POST", "/api/artist/tracks"): online(noargs(lambda: {"tracks": app.artist.my_tracks()})),
         ("POST", "/api/artist/requests"): online(noargs(lambda: {"requests": app.artist.requests()})),
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
             request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
         ("POST", "/api/artist/reject"): online(lambda d: app.artist.reject(
+            request_hash=_text(_keys(d, {"request_hash"})["request_hash"], 80))),
+        ("POST", "/api/artist/reject/notify"): online(lambda d: app.artist.resend_decline(
             request_hash=_text(_keys(d, {"request_hash"})["request_hash"], 80))),
         ("POST", "/api/artist/requests/bulk"): online(lambda d: app.artist.decide_batch(
             request_hashes=_keys(d, {"request_hashes", "action"})["request_hashes"],
@@ -184,7 +223,8 @@ def make_handler(app: MusicApp, token: str, *, port: int):
                 data = {}
                 if method == "POST":
                     size = self.headers.get("Content-Length")
-                    if size is None or not size.isdecimal() or int(size) > MAX_BODY:
+                    max_body = MAX_ARTWORK_BODY if path.path == "/api/artist/artwork" else MAX_BODY
+                    if size is None or not size.isdecimal() or int(size) > max_body:
                         raise AppError("invalid request length")
                     raw = self.rfile.read(int(size))
                     data = json.loads(raw) if raw else {}

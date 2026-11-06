@@ -97,3 +97,33 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
 }
 .main:focus { outline: none; }
 a { color: var(--accent); }
+
+/* Album and song metadata studio */
+.release-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cover-art { display: inline-grid; width: 46px; height: 46px; flex: none; place-items: center;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px;
+  color: var(--muted); font-size: 22px; overflow: hidden; }
+.cover-art.large { width: 118px; height: 118px; font-size: 48px; border-radius: 12px; }
+.cover-art img { width: 100%; height: 100%; object-fit: cover; }
+.genre-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.genre-tag { font-size: 11px; padding: 1px 6px; border-radius: 999px;
+  background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+.album-heading { display: flex; align-items: center; gap: 16px; margin-top: 16px; }
+.album-heading h2 { margin: 0; }
+.album-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(245px, 1fr)); gap: 12px; }
+.album-card { display: flex; align-items: flex-start; gap: 12px; }
+.album-card strong { display: block; font-size: 16px; }
+.album-card .btn { margin-top: 10px; }
+.album-form { max-width: 760px !important; }
+.artist-field { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.artist-field input, .artist-field select { color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px; width: 100%; }
+.album-track-choice { display: grid; grid-template-columns: minmax(180px, 1fr) 110px minmax(0, .6fr);
+  gap: 14px; align-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.album-track-choice label:first-child { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.album-track-choice input[type=checkbox] { width: auto; accent-color: var(--accent); }
+@media (max-width: 700px) {
+  .album-track-choice { grid-template-columns: 1fr 90px; }
+  .album-track-choice .muted { grid-column: 1 / -1; }
+  .album-card { flex-wrap: wrap; }
+}
