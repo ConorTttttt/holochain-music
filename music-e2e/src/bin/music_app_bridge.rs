@@ -26,6 +26,7 @@ const ORIGIN: &str = "holochain-music-app";
 const CATALOGUE_ZOME: &str = "music_catalogue";
 const STORAGE_ZOME: &str = "music_storage";
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+const MAX_CONCURRENT: usize = 16;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error + Send + Sync> {
     io::Error::new(io::ErrorKind::InvalidData, message.into()).into()
@@ -310,25 +311,42 @@ async fn main() {
     let ready = json!({"ready": true, "whoami": bridge.whoami});
     if stdout.write_all(format!("{ready}\n").as_bytes()).await.is_err() { return; }
     let _ = stdout.flush().await;
+    // Requests run concurrently (bounded): a slow call_remote to an offline
+    // peer must not stall catalogue reads. Replies carry the request id and
+    // may arrive out of order; one writer task serialises stdout.
+    let bridge = std::sync::Arc::new(bridge);
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT));
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Value>(64);
+    let writer = tokio::spawn(async move {
+        while let Some(reply) = rx.recv().await {
+            if stdout.write_all(format!("{reply}\n").as_bytes()).await.is_err() { break; }
+            let _ = stdout.flush().await;
+        }
+    });
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        let reply = if line.len() > MAX_REQUEST_BYTES {
-            json!({"id": Value::Null, "ok": false, "error": "request too large"})
-        } else {
-            match serde_json::from_str::<Value>(&line) {
-                Ok(request) => {
-                    let id = request.get("id").cloned().unwrap_or(Value::Null);
-                    let op = request.get("op").and_then(Value::as_str).unwrap_or("");
-                    let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
-                    match bridge.dispatch(op, &args).await {
-                        Ok(result) => json!({"id": id, "ok": true, "result": result}),
-                        Err(e) => json!({"id": id, "ok": false, "error": short_error(e.as_ref())}),
-                    }
-                }
-                Err(_) => json!({"id": Value::Null, "ok": false, "error": "invalid JSON request"}),
-            }
+        if line.len() > MAX_REQUEST_BYTES {
+            let _ = tx.send(json!({"id": Value::Null, "ok": false, "error": "request too large"})).await;
+            continue;
+        }
+        let Ok(request) = serde_json::from_str::<Value>(&line) else {
+            let _ = tx.send(json!({"id": Value::Null, "ok": false, "error": "invalid JSON request"})).await;
+            continue;
         };
-        if stdout.write_all(format!("{reply}\n").as_bytes()).await.is_err() { break; }
-        let _ = stdout.flush().await;
+        let Ok(permit) = permits.clone().acquire_owned().await else { break };
+        let (bridge, tx) = (bridge.clone(), tx.clone());
+        tokio::spawn(async move {
+            let _permit = permit;
+            let id = request.get("id").cloned().unwrap_or(Value::Null);
+            let op = request.get("op").and_then(Value::as_str).unwrap_or("");
+            let args = request.get("args").cloned().unwrap_or_else(|| json!({}));
+            let reply = match bridge.dispatch(op, &args).await {
+                Ok(result) => json!({"id": id, "ok": true, "result": result}),
+                Err(e) => json!({"id": id, "ok": false, "error": short_error(e.as_ref())}),
+            };
+            let _ = tx.send(reply).await;
+        });
     }
+    drop(tx);
+    let _ = writer.await;
 }

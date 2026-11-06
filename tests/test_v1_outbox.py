@@ -17,6 +17,8 @@ class FakeSend:
         self.calls.append((op, args))
         if self.mode == "offline":
             raise BridgeError("recipient unreachable (offline?): no peer")
+        if self.mode == "ws-timeout":  # call_remote to an offline agent outlives the client socket
+            raise BridgeError("Websocket error: Timeout")
         if self.mode == "ratelimited":
             raise BridgeError("rate limited: too many deliveries from you today")
         if self.mode == "invalid":
@@ -46,6 +48,10 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(self.box.flush(), {"delivered": 1, "expired": 0, "pending": 0})
         self.assertEqual(self.send.calls[-1], ("send_access_request", self.args))
 
+    def test_offline_recipient_timeout_is_queued(self):
+        self.send.mode = "ws-timeout"
+        self.assertTrue(self.box.deliver("send_access_request", **self.args)["queued"])
+
     def test_rate_limit_and_invalid_are_not_queued(self):
         for mode in ("ratelimited", "invalid"):
             self.send.mode = mode
@@ -58,6 +64,14 @@ class OutboxTests(unittest.TestCase):
         self.box.deliver("send_grant", listener="uhCAkL", grant={"grant_json": "{}"})
         self.send.mode = "ratelimited"
         self.assertEqual(self.box.flush()["pending"], 0)
+
+    def test_one_attempt_per_offline_recipient_per_pass(self):
+        self.send.mode = "offline"
+        for _ in range(5):
+            self.box.deliver("send_access_request", **self.args)
+        calls = len(self.send.calls)
+        self.assertEqual(self.box.flush()["pending"], 5)
+        self.assertEqual(len(self.send.calls) - calls, 1)
 
     def test_expiry_and_size_bound(self):
         self.send.mode = "offline"

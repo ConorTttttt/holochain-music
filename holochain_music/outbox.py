@@ -20,7 +20,7 @@ from .library import _atomic_json, _read_json
 RETRY_SECONDS = 30
 EXPIRY_SECONDS = 7 * 24 * 3600
 MAX_ITEMS = 200
-RETRYABLE = ("unreachable", "busy", "timed out", "NetworkError", "not running")
+RETRYABLE = ("unreachable", "busy", "timed out", "Timeout", "NetworkError", "not running")
 OPS = ("send_access_request", "send_grant")
 
 
@@ -67,11 +67,18 @@ class Outbox:
     def flush(self) -> dict:
         """One retry pass. Returns counts; never raises for per-item failures."""
         delivered = expired = 0
+        failed_recipients: set[str] = set()
         with self._lock:
             keep = []
             for item in self.items():
                 if self.clock() - item["created_at"] > EXPIRY_SECONDS:
                     expired += 1
+                    continue
+                recipient = item["args"].get("owner") or item["args"].get("listener") or ""
+                if recipient in failed_recipients:
+                    # One slow attempt per offline recipient per pass: avoids
+                    # piling up stuck remote calls in the bridge.
+                    keep.append(item)
                     continue
                 try:
                     self.send(item["op"], **item["args"])
@@ -81,6 +88,7 @@ class Outbox:
                         continue  # permanent failure: drop (e.g. rate limited, invalid)
                     item["attempts"] += 1
                     item["last_error"] = str(exc)[:200]
+                    failed_recipients.add(recipient)
                     keep.append(item)
             self._save(keep)
         return {"delivered": delivered, "expired": expired, "pending": len(keep)}

@@ -179,7 +179,10 @@ class MusicApp:
             raise BridgeError("conductor agent changed unexpectedly; refusing to continue")
         moq = binaries.find("holochain-music-moq")
         self.catalogue = Catalogue(self.bridge, moq_binary=moq, allow_lan=self.settings["allow_lan"])
-        self.outbox = Outbox(self.paths.data / "outbox.json", self.bridge.call)
+        # Wait at most 15 s for a peer; slower deliveries are queued and retried.
+        bridge = self.bridge
+        self.outbox = Outbox(self.paths.data / "outbox.json",
+                             lambda op, **kw: bridge.call(op, timeout=15, **kw))
         self.outbox.start()
         self.artist = ArtistService(bridge=self.bridge, keys=self.keys, host_root=self.paths.host,
                                     deliver=self.outbox.deliver)

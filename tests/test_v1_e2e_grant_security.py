@@ -139,7 +139,10 @@ class GrantInboxSecurity(unittest.TestCase):
         self.assertTrue(restarted.online)
         self.apps["artist"] = restarted
         type(self).artist = restarted
-        poll(lambda: self.listener.outbox.flush()["delivered"] or not self.listener.outbox.items(), 180, "outbox", 5)
+        t0 = time.monotonic()
+        # Rediscovering a restarted peer can take minutes (see readiness report).
+        poll(lambda: self.listener.outbox.flush()["delivered"] or not self.listener.outbox.items(), 600, "outbox", 5)
+        print(f"\nqueued request delivered {time.monotonic() - t0:.0f}s after artist restart", flush=True)
         rows = [r for r in restarted.artist._inbox() if r["note"] == "queued please"]
         self.assertEqual([r["listener_agent"] for r in rows], [self.listener.agent])
 

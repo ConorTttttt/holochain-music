@@ -7,7 +7,7 @@ Each trial: new artist + listener homes, shared fresh loopback bootstrap, both
 started together, artist publishes a 1 s tone, then the listener's catalogue is
 polled every second. Settings are interleaved trial by trial. One computer only.
 """
-import json, shutil, socket, sys, tempfile, time
+import json, os, shutil, socket, sys, tempfile, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 from holochain_music.app import MusicApp
@@ -51,6 +51,9 @@ for trial in range(trials):
         finally:
             for a in apps:
                 a.stop()
-            shutil.rmtree(base, ignore_errors=True)
+            if os.environ.get("HM_KEEP") != "1":
+                shutil.rmtree(base, ignore_errors=True)
+            else:
+                row["dir"] = str(base)
         with out.open("a") as f:
             f.write(json.dumps(row) + "\n")

@@ -27,16 +27,22 @@ class BridgeError(RuntimeError):
 
 
 class Bridge:
+    """Concurrent client: one reader thread routes replies by request id, so a
+    slow call (e.g. call_remote to an offline peer) never blocks other calls."""
+
     def __init__(self, admin_port: int, *, app_id: str, log_path: Path,
-                 pins: dict | None = None, timeout: float = 60):
+                 pins: dict | None = None, timeout: float = 90):
         self.admin_port, self.app_id, self.log_path = admin_port, app_id, Path(log_path)
         self.pins = pins or {}
         self.timeout = timeout
         self.proc: subprocess.Popen | None = None
         self.whoami: dict | None = None
-        self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._pending: dict[int, list] = {}
+        self._pending_lock = threading.Lock()
         self._ids = itertools.count(1)
         self._buffer = bytearray()
+        self._dead: str | None = None
 
     def start(self) -> dict:
         argv = [str(binaries.find("music_app_bridge")), "--admin", f"127.0.0.1:{self.admin_port}",
@@ -55,19 +61,28 @@ class Bridge:
         if not ready.get("ready"):
             raise BridgeError("conductor bridge did not start")
         self.whoami = ready["whoami"]
+        threading.Thread(target=self._reader, name="hm-bridge-reader", daemon=True).start()
         return self.whoami
 
-    def _read_line(self, timeout: float) -> dict:
-        assert self.proc and self.proc.stdout
+    def _read_line(self, timeout: float, proc: subprocess.Popen | None = None) -> dict:
+        proc = proc or self.proc
+        if proc is None or proc.stdout is None:
+            raise BridgeError("conductor bridge is not running")
         deadline = time.monotonic() + timeout
         while b"\n" not in self._buffer:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise BridgeError("conductor bridge timed out")
-            readable, _, _ = select.select([self.proc.stdout], [], [], remaining)
+            try:
+                readable, _, _ = select.select([proc.stdout], [], [], remaining)
+            except (ValueError, OSError) as exc:  # stdout closed by stop()
+                raise BridgeError("conductor bridge exited") from exc
             if not readable:
                 continue
-            data = os.read(self.proc.stdout.fileno(), 65536)
+            try:
+                data = os.read(proc.stdout.fileno(), 65536)
+            except (ValueError, OSError) as exc:
+                raise BridgeError("conductor bridge exited") from exc
             if not data:
                 raise BridgeError("conductor bridge exited (see bridge log)")
             self._buffer.extend(data)
@@ -83,24 +98,56 @@ class Bridge:
             raise BridgeError("invalid conductor reply")
         return value
 
-    def call(self, op: str, **args):
-        with self._lock:
-            if self.proc is None or self.proc.poll() is not None:
-                raise BridgeError("conductor bridge is not running")
-            request_id = next(self._ids)
+    def _reader(self) -> None:
+        reason = "conductor bridge exited (see bridge log)"
+        proc = self.proc  # stop() clears self.proc; keep our own handle
+        try:
+            while proc.poll() is None:
+                try:
+                    reply = self._read_line(3600, proc)
+                except BridgeError as exc:
+                    if "timed out" in str(exc):
+                        continue
+                    reason = str(exc)
+                    break
+                with self._pending_lock:
+                    slot = self._pending.get(reply.get("id"))
+                if slot is not None:
+                    slot[1] = reply
+                    slot[0].set()
+        finally:
+            self._dead = reason
+            with self._pending_lock:
+                for slot in self._pending.values():
+                    slot[0].set()
+
+    def call(self, op: str, timeout: float | None = None, **args):
+        if self.proc is None or self.proc.poll() is not None or self._dead:
+            raise BridgeError("conductor bridge is not running")
+        request_id = next(self._ids)
+        slot = [threading.Event(), None]
+        with self._pending_lock:
+            self._pending[request_id] = slot
+        try:
             line = json.dumps({"id": request_id, "op": op, "args": args}, separators=(",", ":")) + "\n"
-            try:
-                assert self.proc.stdin
-                self.proc.stdin.write(line.encode())
-                self.proc.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
-                raise BridgeError("conductor bridge is not running") from exc
-            reply = self._read_line(self.timeout)
-            if reply.get("id") != request_id:
-                raise BridgeError("conductor bridge reply out of sequence")
+            with self._write_lock:
+                try:
+                    assert self.proc.stdin
+                    self.proc.stdin.write(line.encode())
+                    self.proc.stdin.flush()
+                except (BrokenPipeError, OSError) as exc:
+                    raise BridgeError("conductor bridge is not running") from exc
+            if not slot[0].wait(timeout or self.timeout):
+                raise BridgeError("conductor call timed out")
+            reply = slot[1]
+            if reply is None:
+                raise BridgeError(self._dead or "conductor bridge is not running")
             if not reply.get("ok"):
                 raise BridgeError(str(reply.get("error", "conductor call failed"))[:300])
             return reply.get("result")
+        finally:
+            with self._pending_lock:
+                self._pending.pop(request_id, None)
 
     def records(self, op: str, **args) -> list[AuthoredRecord]:
         rows = self.call(op, **args)
