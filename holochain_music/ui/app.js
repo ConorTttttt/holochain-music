@@ -48,6 +48,75 @@ async function act(path, body = {}, okMessage) {
   catch (e) { toast(e.message); return null; }
 }
 
+// ---- public cover art and artist metadata ------------------------------
+const coverCache = new Map();
+function genresFromInput(value) {
+  const tags = value.split(',').map(x => x.trim()).filter(Boolean);
+  if (tags.length > 6 || new Set(tags.map(x => x.toLocaleLowerCase())).size !== tags.length
+      || tags.some(x => new TextEncoder().encode(x).length > 32 || /[\\x00-\\x1f\\x7f]/.test(x))) {
+    throw new Error('Use up to 6 unique genres, each no longer than 32 bytes.');
+  }
+  return tags;
+}
+function genreBadges(genres) {
+  return (genres || []).map(g => el('span', { class: 'genre-tag', text: g }));
+}
+function coverThumb(agent, sha, alt = '', large = false) {
+  const holder = el('span', { class: large ? 'cover-art large' : 'cover-art' });
+  if (!agent || !sha) { holder.append(el('span', { text: '♫', 'aria-hidden': true })); return holder; }
+  const img = el('img', { alt, loading: 'lazy' });
+  holder.append(img);
+  const key = agent + ':' + sha;
+  if (!coverCache.has(key)) {
+    coverCache.set(key, api('/api/catalogue/artwork', { artist: agent, sha256: sha }).then(({ mime_type, data_base64 }) => {
+      const raw = atob(data_base64);
+      const bytes = Uint8Array.from(raw, c => c.charCodeAt(0));
+      return URL.createObjectURL(new Blob([bytes], { type: mime_type }));
+    }).catch(e => { coverCache.delete(key); throw e; }));
+  }
+  coverCache.get(key).then(url => { if (img.isConnected) img.src = url; }).catch(() => {
+    if (img.isConnected) holder.replaceChildren(el('span', { text: '♫', 'aria-hidden': true }));
+  });
+  return holder;
+}
+async function uploadCover(file) {
+  if (!file) return null;
+  if (!file.type.startsWith('image/') || file.size > 8 * 1024 * 1024) {
+    throw new Error('Choose a JPEG, PNG or WebP image under 8 MB.');
+  }
+  const bitmap = await createImageBitmap(file);
+  try {
+    if (bitmap.width > 8192 || bitmap.height > 8192 || !bitmap.width || !bitmap.height) {
+      throw new Error('Invalid or oversized artwork dimensions.');
+    }
+    for (const size of [512, 384, 320, 256, 192, 128]) {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      const crop = Math.min(bitmap.width, bitmap.height);
+      ctx.drawImage(bitmap, (bitmap.width - crop) / 2, (bitmap.height - crop) / 2, crop, crop,
+        0, 0, size, size);
+      for (const quality of [0.78, 0.6, 0.4]) {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+        if (!blob || blob.type !== 'image/webp' || blob.size > 32768) continue;
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 8192) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        const result = await api('/api/artist/artwork', {
+          mime_type: 'image/webp', data_base64: btoa(binary),
+        });
+        return result.artwork_sha256;
+      }
+    }
+  } finally { bitmap.close(); }
+  throw new Error('Artwork could not be compressed under the 32 KB public-cover limit.');
+}
+function artistField(label, control) {
+  return el('label', { class: 'artist-field' }, el('span', { text: label }), control);
+}
+
 // ---- status helpers --------------------------------------------------
 function accessBadge(item) {
   if (!item) return el('span', { class: 'badge', text: 'Not in library' });
