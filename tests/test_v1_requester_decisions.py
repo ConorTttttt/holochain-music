@@ -116,6 +116,21 @@ class RequesterTests(unittest.TestCase):
         self.assertEqual(self.app.sync_decisions(), 0)
         self.assertEqual(self.app.library.meta(FILE)["request_status"], "pending")
 
+    def test_expired_stream_can_renew_only_once(self):
+        from holochain_music.library import _atomic_json
+        key = ARTIST + ":" + TRACK
+        self.app.request_access(key, "stream")
+        self.app.library.update_meta(FILE, request_status="approved",
+                                     grant_kind="stream", grant_received_at=100)
+        _atomic_json(self.app.library.tracks_dir / FILE / "grant.json",
+                     {"body": {"expires_at": 101}})
+        new_request = self.app.request_access(key, "stream")
+        self.assertTrue(new_request["requested"])
+        self.assertFalse(new_request.get("already_pending", False))
+        self.assertEqual(self.app.outbox.deliver.call_count, 2)
+        self.assertTrue(self.app.request_access(key, "stream")["already_pending"])
+        self.assertEqual(self.app.outbox.deliver.call_count, 2)
+
     def test_existing_legacy_request_does_not_send_again(self):
         self.app.library.add_pending(FILE, {
             "artist_agent": ARTIST, "manifest_sha256": MANIFEST,
