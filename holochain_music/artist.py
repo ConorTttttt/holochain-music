@@ -20,6 +20,7 @@ from pathlib import Path
 import secrets
 import struct
 import tempfile
+import threading
 import time
 import wave
 
@@ -80,6 +81,7 @@ class ArtistService:
         self.bridge, self.keys = bridge, keys
         # Delivery may be queued by the app's outbox when the listener is offline.
         self.deliver = deliver or (lambda op, **kw: (bridge.call(op, **kw), {"delivered": True})[1])
+        self._request_lock = threading.RLock()
         self.root = Path(host_root)
         self.cas = self.root / "cas"
         self.files = self.root / "files"
@@ -215,6 +217,19 @@ class ArtistService:
         p = self._issued_log()
         return _read_json(p, 4 * 1024 * 1024) if p.is_file() else []
 
+    def _decision_log(self) -> Path:
+        # Local and private. Never publish request decisions or counterparties to the DHT.
+        return self.root / "request-decisions.json"
+
+    def _decisions(self) -> dict:
+        p = self._decision_log()
+        return _read_json(p, 16 * 1024 * 1024) if p.is_file() else {}
+
+    def _save_decision(self, request_hash: str, *, status: str, kind: str | None = None) -> None:
+        decisions = self._decisions()
+        decisions[request_hash] = {"status": status, "kind": kind, "decided_at": int(time.time())}
+        _atomic_json(self._decision_log(), decisions)
+
     def _inbox(self) -> list[dict]:
         """Private requests on this artist's own chain. `listener_agent` was
         set by this conductor from the remote call's verified provenance."""
@@ -228,24 +243,82 @@ class ArtistService:
         return rows
 
     def requests(self) -> list[dict]:
-        mine = {t["file_id"]: t for t in self.my_tracks()}
-        issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
-        out = []
-        for b in self._inbox():
-            track = mine.get(b.get("file_id"))
-            if track is None or b.get("manifest_sha256") != track["manifest_sha256"]:
-                continue
-            out.append({"request_hash": b["request_hash"], "listener_agent": b["listener_agent"],
-                        "file_id": b["file_id"], "track_title": track["title"], "kind": b.get("kind"),
-                        "note": str(b.get("note", ""))[:500], "received_at": b["received_at"],
-                        "granted": (b["listener_agent"], b["file_id"], b.get("kind")) in issued})
-        return out
+        with self._request_lock:
+            mine = {t["file_id"]: t for t in self.my_tracks()}
+            issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
+            decisions = self._decisions()
+            out = []
+            for b in self._inbox():
+                track = mine.get(b.get("file_id"))
+                if track is None or b.get("manifest_sha256") != track["manifest_sha256"]:
+                    continue
+                h = b.get("request_hash")
+                if not isinstance(h, str) or not 0 < len(h) <= 80:
+                    continue
+                decision = decisions.get(h, {})
+                # Existing grants from earlier releases also count as resolved.
+                legacy_granted = (b["listener_agent"], b["file_id"], b.get("kind")) in issued
+                status = ("approved" if legacy_granted or decision.get("status") == "approved"
+                          else "declined" if decision.get("status") == "declined" else "pending")
+                out.append({"request_hash": h, "listener_agent": b["listener_agent"],
+                            "file_id": b["file_id"], "track_title": track["title"], "kind": b.get("kind"),
+                            "note": str(b.get("note", ""))[:500], "received_at": b["received_at"],
+                            "status": status, "granted": status == "approved", "declined": status == "declined"})
+            return out
+
+    def reject(self, *, request_hash: str) -> dict:
+        """Privately decline a verified request. No grant or listener notification is issued."""
+        with self._request_lock:
+            row = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
+            if row is None:
+                raise ArtistError("unknown access request")
+            if row["status"] == "approved":
+                raise ArtistError("an already granted licence or stream cannot be declined retroactively")
+            if row["status"] == "declined":
+                return {"declined": True, "already_decided": True}
+            self._save_decision(request_hash, status="declined")
+            return {"declined": True}
+
+    def decide_batch(self, *, request_hashes: list[str], action: str) -> dict:
+        """Apply explicit snapshot IDs only; never run an unbounded server-side 'all'.
+        Each result is independent so a failed delivery cannot silently skip others."""
+        if action not in ("approve", "decline"):
+            raise ArtistError("invalid decision")
+        if (not isinstance(request_hashes, list) or not 1 <= len(request_hashes) <= 25
+                or any(not isinstance(h, str) or not 0 < len(h) <= 80 for h in request_hashes)
+                or len(set(request_hashes)) != len(request_hashes)):
+            raise ArtistError("provide 1–25 distinct request hashes")
+        outcomes = []
+        for h in request_hashes:
+            try:
+                with self._request_lock:
+                    row = next((r for r in self.requests() if r["request_hash"] == h), None)
+                    if row is None:
+                        raise ArtistError("unknown access request")
+                    if row["status"] != "pending":
+                        raise ArtistError("request is already resolved")
+                    result = (self.grant(request_hash=h, kind=row["kind"]) if action == "approve"
+                              else self.reject(request_hash=h))
+                outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued"))})
+            except (ArtistError, ValueError, KeyError, TypeError) as exc:
+                outcomes.append({"request_hash": h, "ok": False, "error": str(exc)[:160]})
+        return {"action": action, "processed": len(outcomes),
+                "succeeded": sum(o["ok"] for o in outcomes), "results": outcomes}
 
     def grant(self, *, request_hash: str, kind: str) -> dict:
         """Approve one private request: wrap the content key to the X25519 key
         the listener sent in that authenticated request and deliver privately."""
+        with self._request_lock:
+            return self._grant_locked(request_hash=request_hash, kind=kind)
+
+    def _grant_locked(self, *, request_hash: str, kind: str) -> dict:
         if kind not in ("stream", "perpetual-personal"):
             raise ArtistError("unknown grant kind")
+        current = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
+        if current is None:
+            raise ArtistError("unknown access request")
+        if current["status"] != "pending":
+            raise ArtistError("request is already approved or declined")
         request = next((r for r in self._inbox() if r["request_hash"] == request_hash), None)
         if request is None:
             raise ArtistError("unknown access request")
@@ -268,6 +341,8 @@ class ArtistService:
             "file_id": file_id, "manifest_sha256": manifest_digest(manifest), "kind": kind,
             "grant_json": canonical(grant).decode()})
         log = self.issued()
-        log.append({"listener_agent": listener_agent, "file_id": file_id, "kind": kind, "issued_at": int(time.time())})
+        log.append({"listener_agent": listener_agent, "file_id": file_id, "kind": kind,
+                    "request_hash": request_hash, "issued_at": int(time.time())})
         _atomic_json(self._issued_log(), log[-5000:])
+        self._save_decision(request_hash, status="approved", kind=kind)
         return {"granted": True, "kind": kind, **outcome}
