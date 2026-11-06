@@ -28,7 +28,10 @@ import urllib.error
 import urllib.request
 import wave
 
-LAUNCHER = next((a for a in sys.argv[1:] if not a.startswith("--")), "/usr/bin/holochain-music")
+WINDOWS = sys.platform == "win32"
+DEFAULT_LAUNCHER = (r"C:\Program Files\Holochain Music\holochain-music.exe" if WINDOWS
+                    else "/usr/bin/holochain-music")
+LAUNCHER = next((a for a in sys.argv[1:] if not a.startswith("--")), DEFAULT_LAUNCHER)
 KEEP = "--keep" in sys.argv
 
 
@@ -51,6 +54,11 @@ class Instance:
     def start(self, *extra: str) -> None:
         env = {"PATH": "/usr/bin:/bin", "HOME": str(self.home), "HOLOCHAIN_MUSIC_HOME": str(self.home),
                "LANG": "C.UTF-8"}
+        if WINDOWS:  # clean env too, but Windows processes need SystemRoot/TEMP
+            root = os.environ.get("SystemRoot", r"C:\Windows")
+            env = {"SystemRoot": root, "PATH": rf"{root}\System32;{root}", "TEMP": str(self.home),
+                   "TMP": str(self.home), "USERPROFILE": str(self.home), "LOCALAPPDATA": str(self.home),
+                   "HOLOCHAIN_MUSIC_HOME": str(self.home)}
         self.log = open(self.home / "launcher.log", "w")
         self.proc = subprocess.Popen([LAUNCHER, "start", "--no-browser", "--audio", "null", *extra],
                                      stdout=subprocess.PIPE, stderr=self.log, text=True, env=env)
@@ -73,7 +81,13 @@ class Instance:
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGTERM)
+            if WINDOWS:  # no SIGTERM: ask the app to shut down over its own API
+                try:
+                    self.api("/api/shutdown", {})
+                except Exception:
+                    self.proc.kill()
+            else:
+                self.proc.send_signal(signal.SIGTERM)
             self.proc.wait(timeout=60)
         self.proc = None
 
@@ -98,7 +112,7 @@ def play_to_end(inst: Instance, file_id: str) -> dict:
 
 
 def main() -> int:
-    base = Path(tempfile.mkdtemp(prefix="hm-smoke-", dir=os.environ.get("TMPDIR", "/tmp")))
+    base = Path(tempfile.mkdtemp(prefix="hm-smoke-", dir=os.environ.get("TMPDIR") or (None if WINDOWS else "/tmp")))
     bootstrap = f"http://127.0.0.1:{free_port()}"
     artist, listener = Instance("artist", base, bootstrap), Instance("listener", base, bootstrap)
     t0 = time.monotonic()

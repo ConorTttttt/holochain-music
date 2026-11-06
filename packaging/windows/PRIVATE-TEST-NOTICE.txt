@@ -1,0 +1,30 @@
+HOLOCHAIN MUSIC 1.0.0-rc1 FOR WINDOWS - UNSIGNED PRIVATE TEST BUILD
+
+This installer is a development build for private hardware testing only.
+It is NOT a release and must NOT be redistributed or published.
+
+* It is not code-signed. Windows SmartScreen may show "Windows protected
+  your PC". Before choosing to run it, check that the file's SHA-256 matches
+  the value you were given separately by the person who built it
+  (PowerShell: Get-FileHash .\HolochainMusic-1.0.0-rc-windows-x64.exe).
+  Do not turn off SmartScreen, Microsoft Defender or the firewall to
+  install or use this application.
+
+* Licensing review is not complete. This build bundles the Holochain
+  conductor (Cryptographic Autonomy License 1.0) and other third-party
+  components listed in licenses\THIRD-PARTY.txt. Public distribution is
+  blocked until that review is finished.
+
+* What it installs: the application into Program Files, a Start menu
+  folder, and Windows Firewall rules that allow the bundled holochain.exe,
+  holochain-music-moq.exe and kitsune2-bootstrap-srv.exe to accept
+  connections on PRIVATE networks only.
+
+* Your data: identity keys, the Holochain conductor and your music library
+  live in %LOCALAPPDATA%\HolochainMusic and are readable only by your
+  Windows account. Upgrading or uninstalling never deletes them. Make an
+  encrypted backup with:  holochain-music.exe backup export <file>
+
+* Experimental: Windows<->Linux LAN streaming is under test. Physical
+  playback and two-computer networking have not yet been verified on real
+  Windows hardware.
