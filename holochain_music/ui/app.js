@@ -129,6 +129,7 @@ function accessBadge(item) {
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
   if (item.playable) return el('span', { class: 'badge ok', text: `Streaming access until ${new Date(item.grant_expires_at * 1000).toLocaleString()}` });
   if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
+  if (item.request_status === 'declined') return el('span', { class: 'badge bad', text: 'Access declined by artist' });
   if (item.requested && item.request_queued) return el('span', { class: 'badge warn', text: 'Request waiting for the artist to come online' });
   if (item.requested) return el('span', { class: 'badge warn', text: 'Access requested' });
   return el('span', { class: 'badge', text: 'No access' });
@@ -149,11 +150,19 @@ function trackActions(fileId, catalogueRow) {
   } else if (catalogueRow && catalogueRow.artist_agent !== state.agent) {
     const request = async kind => {
       const r = await act('/api/access/request', { track_key: catalogueRow.key, kind });
-      if (r) toast(r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' : 'Private request sent to the artist', 'info');
+      if (r) toast(r.already_pending ? 'You already have a pending request for this access type.' :
+        r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' :
+        'Private request sent to the artist', 'info');
       render();
     };
-    box.append(el('button', { class: 'btn', type: 'button', text: 'Request streaming', onclick: () => request('stream') }));
-    box.append(el('button', { class: 'btn primary', type: 'button', text: 'Request licence', onclick: () => request('perpetual-personal') }));
+    for (const [kind, label, klass] of [
+      ['stream', 'Request streaming', 'btn'],
+      ['perpetual-personal', 'Request licence', 'btn primary'],
+    ]) {
+      if (item && item.requested === kind) continue; // pending/declined: no duplicate submit button
+      box.append(el('button', { class: klass, type: 'button', text: label,
+        onclick: () => request(kind) }));
+    }
   }
   return box;
 }
@@ -495,11 +504,20 @@ const views = {
         return el('div', { class: 'row request-row' },
           el('div', { class: 'title' }, el('strong', { text: r.track_title }),
             el('span', { class: 'mono', text: r.listener_agent }),
-            el('span', { class: 'muted', text: new Date(r.received_at * 1000).toLocaleString() })),
+            el('span', { class: 'muted', text: new Date(r.received_at * 1000).toLocaleString() }),
+            r.duplicate_count > 1 ? el('span', { class: 'muted',
+              text: `${r.duplicate_count} identical requests combined` }) : null),
           el('div', {}, el('span', { class: 'badge', text: kind }),
             el('span', { class: badge, text: r.status[0].toUpperCase() + r.status.slice(1) })),
           el('div', { class: 'request-note', text: r.note || 'No message' }),
-          r.status !== 'pending' ? el('div', { class: 'muted', text: 'Decision recorded' }) :
+          r.status === 'declined' ? el('div', { class: 'actions' },
+            el('button', { class: 'btn', type: 'button', text: 'Resend decline notice',
+              disabled: busy, onclick: async () => {
+                const result = await act('/api/artist/reject/notify', { request_hash: r.request_hash });
+                if (result) toast(result.queued ? 'The decline notice is queued for the listener.' :
+                  'Decline notice sent privately.', 'info');
+              } })) :
+          r.status === 'approved' ? el('div', { class: 'muted', text: 'Decision recorded' }) :
             el('div', { class: 'actions' },
               el('button', { class: 'btn primary', type: 'button', text: 'Accept',
                 disabled: busy, onclick: () => decide('approve', [r], false) }),
@@ -551,7 +569,7 @@ const views = {
     declineFiltered.addEventListener('click', () => decide('decline', matching(), true));
     paint();
     return [el('h1', { text: 'Access requests' }),
-      el('p', { class: 'sub', text: 'Accept or decline individual requests, or filter by track folder, type, status and listener. Accepting grants only the access requested. Permanent personal licences allow offline export and cannot be revoked. Declines are saved privately on this computer; listeners are not yet notified.' }),
+      el('p', { class: 'sub', text: 'Accept or decline requests individually or in filtered batches. Repeat submissions for the same listener, song, access type and recipient key are combined. Declines are delivered privately, or queued while a listener is offline. Previously declined requests can be notified again. Permanent personal licences cannot be revoked.' }),
       el('div', { class: 'request-filters' }, folderFilter, kindFilter, statusFilter, searchField),
       summary, el('div', { class: 'request-bulk actions' }, acceptAll, acceptFiltered, declineFiltered),
       progress, rowsHost];
@@ -705,9 +723,13 @@ async function slowPoll() {
   ticks += 1;
   if (state.online && ticks % 3 === 0) {
     try { const r = await api('/api/grants/sync', {}); if (r.new_grants) { toast(`${r.new_grants} new grant(s) received`, 'info'); await refreshLibrary(); if (view === 'library' || view === 'browse') render(); } } catch (_) {}
+    try { const r = await api('/api/decisions/sync', {}); if (r.new_decisions) {
+      toast(`${r.new_decisions} access request(s) declined by an artist`, 'info');
+      await refreshLibrary(); if (['library', 'browse', 'artist', 'search'].includes(view)) render();
+    } } catch (_) {}
     try { const { requests } = await api('/api/artist/requests', {}); const open = requests.filter(r => r.status === 'pending').length; const c = $('request-count'); c.hidden = !open; c.textContent = open; } catch (_) {}
   }
-  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]));
+  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete, t.request_status]));
   await refreshLibrary();
   if (view === 'library' && before !== JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]))) render();
 }
