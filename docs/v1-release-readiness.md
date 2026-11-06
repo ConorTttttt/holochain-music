@@ -53,10 +53,10 @@ stacked on S18 (`0ac4687`). Not pushed, merged or tagged.
 | Python, all (`python -m unittest discover -s tests`, real S4 + MoQ binaries) | **PASS 260**, SKIP 1 (opt-in e2e), 103 s |
 | ↳ new v1: storage/keys/backup/library/WAV (13), player (7), real-QUIC streaming (5), MoQ host (11), licence (4), API (9 incl. backup restore) | PASS |
 | v1 end-to-end two-conductor flow (`HOLOCHAIN_MUSIC_E2E=1`) | **PASS ×4** (latest includes the admin-Origin regression check) |
-| Installed-package black-box smoke test | **PASS** |
+| Installed-package black-box smoke test (final package `75849927…3abb2`, after the admin-Origin fix) | **PASS** (83 s) |
 | `.deb` assembly reproducibility (two builds, same inputs) | **PASS** identical SHA-256 `079c6ca5…7df3`. Rebuilding the Rust binaries reproducibly: NOT RUN |
 | Rust: moq-music 8 · storage integrity 3 · catalogue integrity 6 | PASS |
-| Existing three-conductor Sweettests (prebuilt S16-era binaries) **against the new v1 DNAs** | catalogue 2, catalogue+storage identity 2, S7, S9, S10, S11, S12, S13, S16: **PASS**; S14, S15: see log addendum |
+| Existing three-conductor Sweettests (prebuilt S16-era binaries) **against the new v1 DNAs** | catalogue 2, catalogue+storage identity 2, S7, S9, S10, S11, S12, S13, S14, S15, S16: **all PASS** (11 binaries, 13 tests) |
 
 E2E timings (same machine): both instances online 10–33 s; publish 0.2–3.7 s;
 **first catalogue discovery 0–283 s** (high variance in initial gossip); private
