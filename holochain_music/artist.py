@@ -14,6 +14,7 @@ copyright ownership.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,7 @@ from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 from .bridge import Bridge, BridgeError
 from .keys import KeyStore, KeyStoreError
 from .library import LibraryError, _atomic_json, _read_json, file_key
+from .metadata import ARTWORK_SCHEMA, HEX64, artwork_bytes, genres_list, validate_artwork_record
 from .outbox import OutboxError
 
 RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000)
@@ -118,18 +120,86 @@ class ArtistService:
             "display_name": display_name.strip(), "biography": biography.strip(),
             "artwork_manifest_sha256": None})
 
-    def create_album(self, title: str, release_date: str | None) -> dict:
+    def publish_artwork(self, *, mime_type: str, data_base64: str) -> dict:
+        """Small, explicitly public cover art stored separately from secret audio."""
+        image = artwork_bytes(mime_type=mime_type, data_base64=data_base64)
+        digest = hashlib.sha256(image).hexdigest()
+        self.bridge.call("publish_artwork", entry={
+            "schema": ARTWORK_SCHEMA, "artist_agent": self.me, "mime_type": mime_type,
+            "sha256": digest, "data_base64": data_base64})
+        return {"artwork_sha256": digest, "bytes": len(image)}
+
+    def _require_artwork(self, digest: str | None) -> None:
+        if digest is None:
+            return
+        if not isinstance(digest, str) or not HEX64.fullmatch(digest):
+            raise ArtistError("invalid artwork digest")
+        row = self.bridge.record("get_artwork", artist=self.me, sha256=digest)
+        if row is None or row.author != self.me:
+            raise ArtistError("upload artwork as this artist first")
+        try:
+            validate_artwork_record(row.body, author=self.me, digest=digest)
+        except ValueError as exc:
+            raise ArtistError("invalid or unverified artwork") from exc
+
+    def create_album(self, title: str, release_date: str | None,
+                     genres: list[str] | None = None, artwork_sha256: str | None = None) -> dict:
         album_id = secrets.token_hex(16)
+        self._album_revision(album_id=album_id, title=title, release_date=release_date,
+                             genres=genres or [], artwork_sha256=artwork_sha256)
+        return {"album_id": album_id}
+
+    def _album_revision(self, *, album_id: str, title: str, release_date: str | None,
+                        genres: list[str], artwork_sha256: str | None) -> None:
+        if not isinstance(album_id, str) or len(album_id) != 32 or any(c not in "0123456789abcdef" for c in album_id):
+            raise ArtistError("invalid album ID")
+        self._require_artwork(artwork_sha256)
         self.bridge.call("publish_album", entry={
             "schema": "holochain-music/album/v1", "artist_agent": self.me, "album_id": album_id,
-            "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None})
-        return {"album_id": album_id}
+            "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None,
+            "artwork_sha256": artwork_sha256, "genres": genres_list(genres)})
+
+    def update_album(self, *, album_id: str, title: str, release_date: str | None,
+                     genres: list[str], artwork_sha256: str | None) -> dict:
+        records = self.bridge.records("list_albums", artist=self.me)
+        if not any(r.author == self.me and r.body.get("album_id") == album_id for r in records):
+            raise ArtistError("album not found for this artist")
+        self._album_revision(album_id=album_id, title=title, release_date=release_date,
+                             genres=genres, artwork_sha256=artwork_sha256)
+        return {"album_id": album_id, "updated": True}
+
+    def update_track(self, *, file_id: str, album_id: str | None, track_number: int,
+                     genres: list[str], artwork_sha256: str | None) -> dict:
+        """Append artist-owned metadata revision; preserve immutable audio identifiers."""
+        file_id = file_key(file_id)
+        saved = self.files / file_id / "track.json"
+        if not saved.is_file():
+            raise ArtistError("only tracks published on this artist account can be edited")
+        local = _read_json(saved, 64 * 1024)
+        if type(track_number) is not int or not 1 <= track_number <= 999:
+            raise ArtistError("invalid track number")
+        self._require_artwork(artwork_sha256)
+        row = self.bridge.record("get_track", artist=self.me, track_id=local["track_id"])
+        if (row is None or row.author != self.me or row.body.get("file_id") != file_id
+                or row.body.get("manifest_sha256") != local["manifest_sha256"]):
+            raise ArtistError("published track does not match this encrypted audio")
+        body = dict(row.body)
+        body.update(album_id=album_id, track_number=track_number, genres=genres_list(genres),
+                    artwork_sha256=artwork_sha256)
+        self.bridge.call("publish_track", entry=body)
+        _atomic_json(saved, {**local, "album_id": album_id, "track_number": track_number,
+                             "genres": body["genres"], "artwork_sha256": artwork_sha256})
+        return {"file_id": file_id, "track_id": local["track_id"], "album_id": album_id,
+                "genres": body["genres"], "artwork_sha256": artwork_sha256, "track_number": track_number}
 
     def publish_track(self, *, wav: Path, title: str, album_id: str | None = None,
                       track_number: int = 1, disc_number: int = 1,
-                      rights_basis: str = "original_owner") -> dict:
+                      rights_basis: str = "original_owner", genres: list[str] | None = None,
+                      artwork_sha256: str | None = None) -> dict:
         if rights_basis not in ("original_owner", "licensed_by_rights_holder"):
             raise ArtistError("invalid rights declaration")
+        clean_genres = genres_list(genres or [])
+        self._require_artwork(artwork_sha256)
         artist_key = self.keys.artist_ed25519()
         self._ensure_key(OWNER_PURPOSE, public_key_bytes(artist_key))
         tmpdir = self.root / "tmp"
@@ -157,11 +227,14 @@ class ArtistService:
             "schema": "holochain-music/track/v1", "artist_agent": self.me, "track_id": track_id,
             "album_id": album_id or None, "title": title.strip(), "duration_ms": info["duration_ms"],
             "disc_number": disc_number, "track_number": track_number, "audio_format": "audio/wav",
-            "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis})
+            "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis,
+            "genres": clean_genres, "artwork_sha256": artwork_sha256})
         self.host_file(manifest, owner_agent=self.me, artist_key=public_key_bytes(artist_key))
         _atomic_json(d / "track.json", {"track_id": track_id, "title": title.strip(), "file_id": file_id,
                                         "manifest_sha256": digest, "owner_agent": self.me,
-                                        "published_at": int(time.time()), **info})
+                                        "published_at": int(time.time()), "album_id": album_id,
+                                        "track_number": track_number, "genres": clean_genres,
+                                        "artwork_sha256": artwork_sha256, **info})
         return {"track_id": track_id, "file_id": file_id, "manifest_sha256": digest, **info}
 
     # ---- hosting --------------------------------------------------------
