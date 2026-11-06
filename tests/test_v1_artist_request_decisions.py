@@ -135,6 +135,7 @@ class DecisionTests(unittest.TestCase):
 
         class FakeApp:
             player = mock.Mock()
+            next_track = mock.Mock()
             def __init__(self):
                 self.artist = artist
                 self.online = True
