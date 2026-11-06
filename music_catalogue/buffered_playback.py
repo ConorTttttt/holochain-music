@@ -76,16 +76,25 @@ class NullOutput:
 class AlsaOutput:
     """Pass RAW S16_LE frames to Linux `aplay`, never an intermediate WAV."""
 
-    def __init__(self, fmt: AudioFormat, *, device: str = "default", executable: str | None = None):
+    def __init__(self, fmt: AudioFormat, *, device: str = "default", executable: str | None = None,
+                 buffer_us: int | None = None):
         binary = executable if executable is not None else shutil.which("aplay")
         if not binary:
             raise PlaybackError("ALSA aplay was not found (install alsa-utils)")
         if not isinstance(device, str) or not device or len(device) > 128 or "\x00" in device:
             raise PlaybackError("invalid ALSA device")
+        # Optional small device buffer: bounds how much audio is queued in
+        # ALSA (and so the delay before a seek is heard). None keeps aplay's
+        # default (S11 behaviour).
+        extra = []
+        if buffer_us is not None:
+            if type(buffer_us) is not int or not 20_000 <= buffer_us <= 2_000_000:
+                raise PlaybackError("invalid ALSA buffer time")
+            extra = [f"--buffer-time={buffer_us}"]
         try:
             self.proc = subprocess.Popen(
                 [binary, "-q", "-t", "raw", "-f", "S16_LE", "-r", str(fmt.sample_rate),
-                 "-c", str(fmt.channels), "-D", device],
+                 "-c", str(fmt.channels), "-D", device, *extra],
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -121,14 +130,21 @@ class AlsaOutput:
             raise PlaybackError("ALSA output exited with an error")
 
     def abort(self) -> None:
+        # Aborted audio is discarded, never drained: kill aplay at once. A
+        # SIGTERM + 3 s wait here made every seek and track change take ~3 s
+        # (aplay does not exit promptly on SIGTERM while its stdin is open).
         self._closed = True
+        if self.proc.stdin and not self.proc.stdin.closed:
+            try:
+                self.proc.stdin.close()
+            except OSError:
+                pass
         if self.proc.poll() is None:
-            self.proc.terminate()
+            self.proc.kill()
             try:
                 self.proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=3)
+                pass
         if self.proc.stdin and not self.proc.stdin.closed:
             try:
                 self.proc.stdin.close()
@@ -152,6 +168,7 @@ class BufferedPcmPlayer:
     def __init__(self, *, backend: str = "null", device: str = "default",
                  max_blocks: int = MAX_QUEUE_BLOCKS,
                  prebuffer_blocks: int = MIN_START_BLOCKS,
+                 burst_bytes: int = 0,
                  output_factory: Callable[[AudioFormat], object] | None = None,
                  pace: bool = True):
         if backend not in ("null", "alsa"):
@@ -162,6 +179,11 @@ class BufferedPcmPlayer:
             raise PlaybackError("invalid audio prebuffer")
         if not isinstance(pace, bool):
             raise PlaybackError("invalid pacing mode")
+        if type(burst_bytes) is not int or not 0 <= burst_bytes <= 4 * 1024 * 1024:
+            raise PlaybackError("invalid start burst")
+        # The first `burst_bytes` are written without wall-clock pacing so the
+        # output device reaches its start threshold immediately.
+        self.burst_bytes = burst_bytes
         self.backend, self.device = backend, device
         self.max_blocks, self.prebuffer_blocks, self.pace = max_blocks, prebuffer_blocks, pace
         self._factory = output_factory
@@ -346,7 +368,8 @@ class BufferedPcmPlayer:
                     self._callbacks += 1
                 # `aplay` may apply its own backpressure, while software pacing
                 # also caps how far our small FIFO can run ahead of wall clock.
-                if self.pace and self._interrupt.wait(len(block) / fmt.byte_rate):
+                if self.pace and self._played_bytes > self.burst_bytes and \
+                        self._interrupt.wait(len(block) / fmt.byte_rate):
                     return
         except BaseException as exc:
             with self._cv:

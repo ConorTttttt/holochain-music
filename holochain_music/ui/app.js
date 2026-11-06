@@ -262,32 +262,68 @@ async function render() {
 function show(name, arg = null) { view = name; viewArg = arg; render(); $('main').focus(); }
 
 // ---- player bar ------------------------------------------------------
+// ---- player state: ordered, with optimistic seeks ----------------------
+// Every server status carries a monotonically increasing `seq`. Responses
+// older than one already applied (e.g. a poll that was in flight when the
+// user seeked) are dropped, so the timeline can never jump back to a stale
+// position. While a seek is pending the UI shows its target.
+let lastSeq = -1;
+let pendingSeek = null;   // { frame, sentSeq }
+let seekTimer = null;
+function applyPlayer(p) {
+  if (!p || typeof p.seq !== 'number' || p.seq < lastSeq) return false;
+  lastSeq = p.seq;
+  state.player = p;
+  if (pendingSeek && pendingSeek.sentSeq !== undefined && p.seq > pendingSeek.sentSeq &&
+      (p.output_active || ['paused', 'stopped', 'finished', 'error'].includes(p.state))) pendingSeek = null;
+  return true;
+}
+function displayedFrame(p) { return pendingSeek ? pendingSeek.frame : p.position_frames; }
+function requestSeek(frame) {
+  const p = state.player; if (!p || !p.total_frames) return;
+  pendingSeek = { frame: Math.max(0, Math.min(p.total_frames - 1, Math.floor(frame))) };
+  renderPlayer();
+  // Coalesce rapid slider/keyboard input: only the latest target is sent.
+  clearTimeout(seekTimer);
+  seekTimer = setTimeout(async () => {
+    const target = pendingSeek.frame;
+    try {
+      const r = await api('/api/seek', { frame: target });
+      if (pendingSeek && pendingSeek.frame === target) pendingSeek.sentSeq = r.seq;
+      applyPlayer(r); renderPlayer();
+    } catch (e) { pendingSeek = null; toast(e.message); }
+  }, 120);
+}
+
 function renderPlayer() {
   const p = state.player; if (!p) return;
   const item = libraryById.get(p.track_key);
   $('now-title').textContent = item ? item.title : 'Nothing playing';
   $('now-artist').textContent = item ? item.artist_name : 'Choose a track';
-  const labels = { idle: 'Idle', loading: 'Verifying…', playing: p.source === 'offline' ? 'Playing · offline copy' : 'Streaming',
+  // "Playing" only once PCM for the current position has actually been written.
+  const playingLabel = !p.output_active ? 'Starting…' : p.source === 'offline' ? 'Playing · offline copy' : 'Streaming';
+  const labels = { idle: 'Idle', loading: 'Opening · verifying…', seeking: 'Seeking…', playing: playingLabel,
     buffering: 'Buffering…', paused: 'Paused', stopped: 'Stopped', finished: 'Finished', error: 'Error' };
-  const badge = $('state-badge'); badge.textContent = labels[p.state] || p.state;
+  const badge = $('state-badge'); badge.textContent = pendingSeek && p.state !== 'error' ? 'Seeking…' : (labels[p.state] || p.state);
   badge.className = `badge ${p.state === 'error' ? 'bad' : p.state === 'buffering' ? 'warn' : ['playing', 'paused'].includes(p.state) ? 'ok' : ''}`;
   if (p.state === 'error' && p.error && renderPlayer.lastError !== p.error) toast(p.error);
   renderPlayer.lastError = p.error;
-  const playing = p.state === 'playing' || p.state === 'buffering';
+  const playing = ['playing', 'buffering', 'seeking'].includes(p.state);
   $('btn-play').textContent = playing ? '❚❚' : '▶'; $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   $('btn-play').disabled = !p.track_key || p.state === 'loading';
-  $('btn-stop').disabled = !['playing', 'paused', 'buffering', 'loading'].includes(p.state);
+  $('btn-stop').disabled = !['playing', 'paused', 'buffering', 'loading', 'seeking'].includes(p.state);
   const ready = p.total_frames > 0 && p.sample_rate > 0 && p.state !== 'loading';
   $('btn-back').disabled = $('btn-fwd').disabled = $('seek').disabled = !ready;
   $('btn-next').disabled = !state.queue.length;
   const rate = p.sample_rate || 1;
-  $('elapsed').textContent = fmt(1000 * p.position_frames / rate); $('duration').textContent = fmt(1000 * p.total_frames / rate);
-  if (!dragging) $('seek').value = p.total_frames ? Math.round(1000 * p.position_frames / p.total_frames) : 0;
+  const shown = displayedFrame(p);
+  $('elapsed').textContent = fmt(1000 * shown / rate); $('duration').textContent = fmt(1000 * p.total_frames / rate);
+  if (!dragging) $('seek').value = p.total_frames ? Math.round(1000 * shown / p.total_frames) : 0;
   $('seek').setAttribute('aria-valuetext', `${$('elapsed').textContent} of ${$('duration').textContent}`);
   const qc = $('queue-count'); qc.hidden = !state.queue.length; qc.textContent = state.queue.length;
 }
-const seekTo = frame => act('/api/seek', { frame: Math.max(0, Math.min(state.player.total_frames - 1, Math.floor(frame))) });
-const nudge = secs => { const p = state.player; if (p && p.total_frames) seekTo(p.position_frames + secs * p.sample_rate); };
+// ±10 s presses accumulate from the pending target, not the stale position.
+const nudge = secs => { const p = state.player; if (p && p.total_frames) requestSeek(displayedFrame(p) + secs * p.sample_rate); };
 $('btn-play').addEventListener('click', () => { const p = state.player; if (!p || !p.track_key) return;
   if (p.state === 'playing' || p.state === 'buffering') act('/api/pause'); else if (p.state === 'paused') act('/api/resume'); else act('/api/play', { file_id: p.track_key }); });
 $('btn-stop').addEventListener('click', () => act('/api/stop'));
@@ -295,7 +331,7 @@ $('btn-back').addEventListener('click', () => nudge(-10));
 $('btn-fwd').addEventListener('click', () => nudge(10));
 $('btn-next').addEventListener('click', () => act('/api/next'));
 $('seek').addEventListener('pointerdown', () => { dragging = true; });
-$('seek').addEventListener('change', () => { dragging = false; const p = state.player; if (p && p.total_frames) seekTo($('seek').value * p.total_frames / 1000); });
+$('seek').addEventListener('change', () => { dragging = false; const p = state.player; if (p && p.total_frames) requestSeek($('seek').value * p.total_frames / 1000); });
 let volTimer; $('volume').addEventListener('input', () => { clearTimeout(volTimer); volTimer = setTimeout(() => act('/api/volume', { volume: $('volume').value / 100 }), 120); });
 document.querySelectorAll('.nav').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
 $('search-form').addEventListener('submit', e => { e.preventDefault(); const q = $('search').value.trim(); if (q.length >= 2) show('search', q); });
@@ -316,7 +352,10 @@ async function refreshLibrary() {
 }
 async function poll() {
   try {
-    state = await api('/api/state');
+    const s = await api('/api/state');
+    const player = s.player; delete s.player;
+    state = { ...state, ...s };
+    applyPlayer(player);
     $('net-status').textContent = state.online ? 'Online · Holochain' : 'Offline';
     renderPlayer();
   } catch (e) { $('net-status').textContent = 'Not connected'; }
