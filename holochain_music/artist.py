@@ -422,7 +422,8 @@ class ArtistService:
                         raise ArtistError("request is already resolved")
                     result = (self.grant(request_hash=h, kind=row["kind"]) if action == "approve"
                               else self.reject(request_hash=h))
-                outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued"))})
+                outcomes.append({"request_hash": h, "ok": True, "queued": bool(result.get("queued")),
+                                 "notification_error": result.get("notification_error")})
             except (ArtistError, BridgeError, KeyStoreError, LibraryError, OutboxError,
                     ContentGrantError, StorageError, ValueError, KeyError, TypeError) as exc:
                 outcomes.append({"request_hash": h, "ok": False, "error": str(exc)[:160]})
