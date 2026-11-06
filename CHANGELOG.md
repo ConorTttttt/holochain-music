@@ -1,5 +1,33 @@
 # Changelog
 
+## Windows port (unreleased, branch `feat/v1-windows-port`)
+
+### Added
+- `holochain_storage/portable.py`: one OS layer for private dirs/keys
+  (POSIX modes / Windows protected DACLs), single-instance lock, child-process
+  supervision (console-less, Job Object), timed pipe reads (`select` or a
+  bounded reader thread), retrying atomic replace, per-user data dirs
+  (XDG / `%LOCALAPPDATA%\HolochainMusic`).
+- Windows audio backend `wasapi` (`music_catalogue/audio_output.py`): PortAudio
+  WASAPI shared mode, bounded 200 ms ring, immediate abort, MME fallback,
+  device selection; `holochain-music audio-devices`.
+- `holochain-music open` / `quit` and `POST /api/shutdown` (token-protected), so
+  a console-less app can be reopened and stopped. Launching again reopens the
+  running instance's page.
+- Windows packaging: `packaging/windows/` (NSIS installer, C launchers,
+  icon generator, pinned inputs, licence notices),
+  `HolochainMusic-1.0.0-rc-windows-x64.exe` (unsigned, private testing).
+- CI: `.github/workflows/windows.yml` (Windows Rust/Python tests, real
+  conductor e2e on one runner, installer build, silent install/smoke/uninstall).
+- Docs: `docs/windows-installation.md`, `docs/windows-lan-test-plan.md`.
+
+### Changed
+- Binary lookup understands `.exe` and the installed `<root>/{python,bin}` layout.
+- Text files are read and written as UTF-8 explicitly.
+- Permission assertions in tests are platform-aware (`v1_fixtures.assert_private`).
+- Linux behaviour is unchanged (same ALSA backend, same `select`-based reads,
+  same modes, same paths).
+
 ## 1.0.0-rc1 (unreleased)
 
 Builds on milestones S1–S18 (draft PRs #5–#22).

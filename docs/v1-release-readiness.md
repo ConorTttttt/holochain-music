@@ -197,3 +197,70 @@ Keep the main `music-e2e/target` cache (17 GB). The Sweettests run from it.
 - Holochain binaries built for Ubuntu 26.04 only.
 - Sweettests were run from prebuilt S16-era test binaries. The music-e2e
   test crate was not recompiled because of disk space.
+
+## 9. Windows 11 x64 port (branch `feat/v1-windows-port`, 2026-11-06)
+
+Worktree `/mnt/holochain/holochain-music-win`, branched from
+`feat/v1-app-integration` at `cbaa41f`. The Ubuntu RC worktree, its `.deb`
+and all user data are untouched. Nothing is pushed, merged or published.
+Same legend as above. **Everything below ran on the Linux development host.
+Nothing has run on Windows yet.**
+
+### 9.1 Decisions
+
+| Decision | Choice |
+|---|---|
+| Native vs WSL2 | **Native.** Holochain 0.7.0, the pinned version, has official Windows x64 release assets (`holochain`, `hc`, `kitsune2-bootstrap-srv`), built by `holochain/binaries` with default features, the same feature set as our Linux `cargo install`. No version change, no migration, no WSL2. |
+| Keystore | Lair in-process, as on Linux; on Windows it listens on a named pipe (lair 0.7.1 default), so the Unix-socket path limit does not apply. |
+| Audio | `wasapi` backend: PortAudio WASAPI shared mode via `sounddevice` 0.5.6 (MIT; PortAudio MIT). ALSA remains the Linux backend. |
+| Data | `%LOCALAPPDATA%\HolochainMusic\{data,config}` (not Roaming), protected per-user DACL. |
+| Packaging | NSIS 3 per-machine installer, pinned inputs, embedded CPython 3.14.10, unsigned, private test only. |
+
+### 9.2 Definition of done (Windows port)
+
+| Item | Status | Evidence / gap |
+|---|---|---|
+| A Windows installer builds | **PASS** | `HolochainMusic-1.0.0-rc-windows-x64.exe`, 42 MB, built on Linux with NSIS 3.10 from SHA-256-pinned inputs; two builds byte-identical; contents checks pass (`test_windows_packaging`, 10 tests). SHA-256 in `docs/windows-rc-checksums.md`. |
+| Application launches on Windows 11 | **NOT RUN** | No Windows machine or VM here. CI job `installer-smoke` (silent install, `--version`, `status`, two-instance smoke test, uninstall) is written but has never run (needs push). |
+| Holochain identity and catalogue work on Windows | **NOT RUN** | CI `windows-native` runs the two-conductor e2e with the official Windows binaries; never run. |
+| MoQ/QUIC works on Windows | **BLOCKED (build PASS)** | `holochain-music-moq.exe` cross-built (release, `x86_64-pc-windows-gnu`, imports only system DLLs); its Rust tests compile for Windows. Not executed on Windows. |
+| Windows audio plays correctly | **PARTIAL** | Backend logic verified on Linux against a fake PortAudio device: exact authenticated PCM in order, bounded ring, abort < 250 ms with a blocked writer, pause/resume, seek through the real v1 Player, wrong grant never opens the device, WASAPI→MME fallback. **Not run against real WASAPI or speakers.** |
+| Secure key handling retained | **PASS (Linux) / NOT RUN (Windows)** | Same key code; Windows DACL creation/verification is ctypes code exercised only by the Windows-only tests (`WindowsOnlyTests`). ACE classification and SDDL are unit-tested on Linux. |
+| Linux regression tests green | **PASS** | 321 tests, OK, 13 skipped (7 opt-in e2e run separately below, 4 Windows-only, 2 need a built installer), 119 s. Opt-in e2e: see 9.3. |
+| Exact two-computer LAN procedure | **PASS (written)** | `docs/windows-lan-test-plan.md`: Ubuntu→Windows, Windows→Ubuntu, impostor certificate, missing grant, corrupted ciphertext, unavailable host, allow_lan off, queued request, installer lifecycle. |
+| Cross-platform release gate (real Windows↔Ubuntu streaming) | **BLOCKED** | Needs the hardware test (W1). |
+
+### 9.3 Evidence this session
+
+| Test | Result |
+|---|---|
+| Linux baseline before any change (283 tests) | 282 pass, 7 skipped; 1 error was caused by my over-long `TMPDIR` (the existing 100-byte socket guard), not code |
+| Full Linux suite after the port (283 existing + 38 new) | **PASS** 321 run, 13 skipped |
+| New cross-platform tests on Linux (`test_windows_port`, 24 of 28; 4 are Windows-only) | **PASS** |
+| Packaging tests incl. built-installer contents | **PASS** 10/10 |
+| Two-conductor e2e and three-agent grant security on Linux after the port (RC `.deb` bridge + RC hApp, real Holochain 0.7.0 + MoQ) | Two-conductor flow: **PASS** (discover 2.0 s, request→grant 0.5 s, first streamed audio 207 ms, seek during download, 21/21 chunks, no-network playback + export). Grant security (6 tests): **FAIL** on run 1 — setup timed out after 420 s waiting for discovery (the open §4 discovery-delay risk; no app code path in setup changed). Run 2 was invalid: `/tmp` quota exhausted, and run 1's three conductors were still running because a failing `setUpClass` skips teardown (pre-existing test issue). Run 3 on a clean machine: **PASS** 6/6, 212 s |
+| Windows cross-build: `holochain-music-moq.exe` | **PASS** (67 s) |
+| Windows cross-build: `music_app_bridge.exe` | **PASS** after building libsodium from the crate's own source with `ac_cv_func_memset_explicit=no`. The crate's prebuilt mingw libsodium needs a UCRT mingw; Ubuntu's mingw-w64 targets msvcrt. Built **without** `--enable-opt` (that would mean `-march=native`). CI builds with MSVC and the crate's MSVC library instead. |
+| Upstream Windows binaries | SHA-256 match GitHub's recorded digests; MSVC builds needing `VCRUNTIME140.dll` (shipped app-local) |
+| CPython embeddable 3.14.10 | SHA-256 matches python.org's Sigstore bundle digest (signature itself not verified locally) |
+| Pre-existing flaky test `test_host_outage_then_resume_keeps_verified_objects` | Fails when `TMPDIR` is on the `/mnt/holochain` disk, **also on the unchanged RC tree** (2 of 3 runs); passes on tmpfs. Not caused by the port; worth fixing separately |
+
+### 9.4 New blockers for the Windows build
+
+| # | Blocker | Owner action |
+|---|---|---|
+| W1 | Windows↔Ubuntu two-computer test not run (both directions) | `docs/windows-lan-test-plan.md` Parts 1–2 |
+| W2 | App never launched on Windows; installer never executed | Part 3 of the plan, or push to run CI |
+| W3 | Real WASAPI playback through speakers never heard | Part 1 step 8–9 |
+| W4 | Windows CI workflow `.github/workflows/windows.yml` never run | Permission to push |
+| W5 | Windows DACL and Job Object code (ctypes) never executed | CI `windows-native` or Part 3 |
+| W6 | Installer is unsigned | Code-signing certificate before any wider testing |
+| W7 | VC++ runtime and mingw-w64 runtime redistribution to confirm | `licensing-audit.md` §2.5 (plus existing B5) |
+| W8 | Windows `kitsune2-bootstrap-srv.exe` version vs Linux 0.5.1 not compared at runtime | Part 2 (Windows-hosted bootstrap) |
+
+### 9.5 Windows-specific risks to watch in hardware testing
+
+- `hc sandbox generate` and the conductor on Windows paths with spaces in the user name (the test plan uses the defaults).
+- Windows Defender real-time scanning of the CAS while streaming (latency).
+- Sharing violations on `os.replace` (retried for up to 1 s) and on Rust-side renames of CAS objects being read.
+- Kitsune2 transport traffic through the Windows firewall on a network mis-classified as Public.

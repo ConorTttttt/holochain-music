@@ -68,6 +68,36 @@ compatible with Apache-2.0 for our own code.
 (`python3-cryptography`) and is **not** redistributed in the `.deb`. Standard
 library only otherwise.
 
+### 2.5 Windows installer (`HolochainMusic-1.0.0-rc-windows-x64.exe`, private test build)
+
+Reviewed 2026-11-06 for the Windows port (branch `feat/v1-windows-port`).
+Not legal advice. Every input is pinned by SHA-256 in
+`packaging/windows/inputs.sha256`, and all licence texts ship in the
+installer's `licenses\` folder (see `packaging/windows/THIRD-PARTY.txt`).
+
+| Component | Licence | Redistribution finding |
+|---|---|---|
+| `holochain.exe` 0.7.0 (official release asset, unmodified) | CAL-1.0 | **Same open question as §2.1.** Shipping the official upstream binary unmodified, with the licence text and a link to the tagged source, is the most favourable case, but it is still the blocker. |
+| `hc.exe` 0.7.0 (official release asset) | Apache-2.0 | OK with the licence text (shipped). Note: the Linux `.deb` currently says "bundle crate"; `hc`'s `holochain_cli` crate is Apache-2.0. |
+| `kitsune2-bootstrap-srv.exe` (official Holochain 0.7.0 release asset) | Apache-2.0 | OK with the licence text. |
+| `lair-keystore.exe` | MIT OR Apache-2.0 | **Not shipped**: the conductor runs lair in-process. |
+| CPython 3.14.10 embeddable package | PSF-2.0 (its `LICENSE.txt` also lists bundled OpenSSL, libffi, SQLite, zlib, etc.) | Redistribution permitted with the licence file, which is shipped. |
+| `VCRUNTIME140.dll`, `VCRUNTIME140_1.dll` | Microsoft Visual C++ redistributable ("Distributable Code") | Shipped app-local, exactly as python.org does in the embeddable package. A copy is placed beside the upstream MSVC-built Holochain binaries, which import it. **Confirm in the legal review.** The alternative is to require the user to install Microsoft's VC++ Redistributable. |
+| `cryptography` 47.0.0 wheel (bundles OpenSSL 3, Apache-2.0) | Apache-2.0 OR BSD-3-Clause | OK; licence files kept in `dist-info`. |
+| `cffi` 2.1.1 | MIT-0 | OK. |
+| `pycparser` 3.12 | BSD-3-Clause | OK; licence kept. |
+| `sounddevice` 0.5.6 | MIT | OK; licence kept. |
+| PortAudio 19.7 (`libportaudio64bit.dll` from the sounddevice wheel) | MIT-style PortAudio licence | OK; text shipped. **The ASIO-enabled DLLs are deliberately removed**: they contain the Steinberg ASIO SDK, whose terms were not reviewed and which the app does not use. |
+| `holochain-music-moq.exe`, `music_app_bridge.exe` (ours, Windows target) | as §2.3 | Same dependency set as Linux, plus static `libsodium` (ISC) and OpenSSL 3.6 (`openssl-src`, Apache-2.0) in the bridge. The MPL-2.0/CDDL-1.0 obligations from §2.3 apply equally. |
+| Launchers `HolochainMusic.exe`, `holochain-music.exe` (ours, C) | ours | Statically linked against mingw-w64's runtime (permissive: ZPL-2.1 / public-domain headers; confirm in review). |
+| NSIS installer stub | zlib/libpng licence (NSIS) | The licence allows use for any purpose including commercial installers; no notice obligation in the output. |
+
+Result: apart from the existing CAL-1.0 question (§2.1/§2.2) and the
+unconfirmed VC++ runtime and mingw-w64 runtime points above, nothing in the
+Windows installer adds a new redistribution blocker. The private test build is
+labelled "not for public distribution" in its name, notice page and
+uninstall entry.
+
 ## 3. Gaps found
 
 1. No `LICENSE`/`NOTICE` file in this repository or in holochain-moq.
@@ -78,6 +108,9 @@ library only otherwise.
    transitive licence inventory is not reproducible yet. Rebuild them from
    tagged sources with `--locked` and generate SBOMs.
 4. Our own crates have no `license` field (shows as UNKNOWN in the SBOM).
+5. Windows: the VC++ runtime and mingw-w64 runtime points in §2.5 need
+   confirmation. The Windows installer has no generated Rust attribution
+   (cargo-about) yet. That gap is shared with the `.deb`.
 
 ## 4. Recommended next steps (for approval)
 

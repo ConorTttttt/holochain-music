@@ -76,5 +76,5 @@ and downloaded music keep working offline.
 | Catalogue empty | Usually seconds; occasionally minutes after a peer connection drops (see release readiness). Check both computers use the same bootstrap/relay URL. To capture diagnostics start with `RUST_LOG="warn,kitsune2_core=debug,holochain_p2p=debug" holochain-music start` and keep `logs/conductor.log`. |
 | "recipient unreachable" | The artist (or listener) is offline; retry later. |
 | Track **Unavailable** | No host answered after 6 attempts; press Play to retry. Downloaded chunks are kept. |
-| No sound | Check `aplay -l` and that `alsa-utils` is installed; the null backend is silent by design. |
+| No sound | Linux: check `aplay -l` and that `alsa-utils` is installed. Windows: `holochain-music.exe audio-devices`, then set `audio_device` (see `windows-installation.md` §7). The null backend is silent by design. |
 | Data directory path too long | Set `HOLOCHAIN_MUSIC_HOME` to a shorter directory. |

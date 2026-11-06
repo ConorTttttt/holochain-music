@@ -28,6 +28,15 @@ and what is still open.
 - Downloads, offline playback with no network services, WAV export under a
   licence, and passphrase-encrypted backup/restore.
 
+## Windows 11 (port in progress, branch `feat/v1-windows-port`)
+
+A native Windows x64 build: the same Python app and hApp, official Holochain
+0.7.0 Windows binaries, the MoQ host built for Windows, WASAPI audio, and an
+**unsigned private-test** NSIS installer. It builds and passes the automated
+tests that can run on Linux. It has **not yet run on Windows hardware**. See
+[Windows installation](docs/windows-installation.md) and the
+[Windows ↔ Ubuntu LAN test plan](docs/windows-lan-test-plan.md).
+
 ## Not in v1.0.0
 
 Payments or purchases, copyright verification, public-internet hosting or NAT
@@ -37,7 +46,7 @@ input, remote-host upload, key rotation. Two-computer LAN operation is
 
 ## Documentation
 
-- [User guide](docs/user-guide.md) · [Installation, LAN and tests](docs/installation.md)
+- [User guide](docs/user-guide.md) · [Installation, LAN and tests](docs/installation.md) · [Windows](docs/windows-installation.md)
 - [Security model](docs/security-model.md) · [Release readiness](docs/v1-release-readiness.md) · [Changelog](CHANGELOG.md)
 - Design background: [encrypted storage](docs/encrypted-storage-v1.md), [ownership and purchases](docs/ownership-and-purchases.md), milestone notes `docs/s*.md`
 

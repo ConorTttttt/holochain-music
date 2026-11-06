@@ -4,6 +4,7 @@
 
 Ubuntu 26.04 LTS, amd64. The bundled Holochain 0.7.0 binaries are built against
 this release's glibc. Other distributions and releases are untested.
+Windows 11 x64 (private test build): see `windows-installation.md`.
 
 ## Install the package
 

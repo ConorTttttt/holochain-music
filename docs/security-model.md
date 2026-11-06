@@ -100,6 +100,32 @@ project owner's sign-off before release.
 - The MoQ host listens on loopback by default. LAN exposure needs an explicit
   bind/advertise setting, and listeners must opt in to RFC1918 endpoints.
 
+### 5a. Windows port (same model, different OS mechanisms)
+
+| Linux | Windows | Notes |
+|---|---|---|
+| Data dirs 0700, key files 0600 (`O_EXCL`, `O_NOFOLLOW`) | `%LOCALAPPDATA%\HolochainMusic\{data,config}` with a **protected DACL**: full control for the current user and SYSTEM only, inherited by every file created inside (`holochain_storage/portable.py`) | Key reads refuse any file whose DACL grants another account (allowed: user, SYSTEM, Administrators, mirroring root on Linux), and refuse symlinks/reparse points. NULL DACLs and object ACEs fail closed. |
+| Lair keystore on a Unix socket in the conductor dir | Lair's named pipe (lair 0.7.1 default on Windows) | Passphrase: the same random key file, piped on stdin. |
+| `fcntl.flock` single instance | `msvcrt.locking` on `app.lock` | |
+| Children stopped with SIGTERM/SIGKILL | Children have **no console** (`CREATE_NO_WINDOW`) and live in a **kill-on-close Job Object**, so a crashed or killed app never leaves an orphan conductor or MoQ host. Stop is `TerminateProcess`. | Equivalent for the conductor: it has no SIGTERM handler on Linux either. |
+| `select()` on child pipes | One bounded reader thread per pipe (32 × 64 KiB queue) | Same size limits as before; output is still JSON-lines validated. |
+| ALSA `aplay` | WASAPI shared mode via PortAudio (`music_catalogue/audio_output.py`) | Receives only PCM that already passed the grant gate, SHA-256 and AES-GCM; ≤ 200 ms queued; abort discards at once. ASIO is not shipped. |
+| Firewall: user-managed `ufw` | Installer adds **program-scoped inbound rules on the Private profile only** (`holochain.exe`, `holochain-music-moq.exe`, `kitsune2-bootstrap-srv.exe`) | Nothing is opened on Public/Domain networks. No other Windows protection is changed. The uninstaller removes the rules. |
+| `.deb` from a trusted builder | **Unsigned** NSIS installer | SmartScreen warns. Users verify the SHA-256 out of band. Code signing is required before any public release. |
+
+A new local-API route, `POST /api/shutdown`, lets the Start-menu "Quit"
+entry stop a console-less app. It has the same token, Host and Origin
+requirements as every other route. `holochain-music quit` reads the token from
+`data/session.json`, which has the same protection as the key files. Any
+process that can read that file could already read the keys.
+
+Windows-specific residual risks: (1) other processes running as the same user
+can read the data, as on Linux; there is no DPAPI/Credential Manager
+integration. (2) Administrators can read everything. (3) The bundled Python
+runtime and DLLs are protected only by the Program Files ACL. (4) The upstream
+Holochain binaries are verified by pinned SHA-256 that matches GitHub's
+recorded digests, not by a publisher signature.
+
 ## 6. Resource bounds
 
 Per-session (512) and per-host (64) MoQ request limits; host send rate cap;
