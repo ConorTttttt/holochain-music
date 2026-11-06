@@ -43,6 +43,15 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def ws_handshake_status(port: int, origin: str) -> str:
+    import base64
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall((f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                   f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nOrigin: {origin}\r\n\r\n").encode())
+        return s.recv(100).split(b"\r\n")[0].decode()
+
+
 def poll(fn, timeout: float, what: str, interval: float = 2.0):
     deadline = time.monotonic() + timeout
     last = None
@@ -127,6 +136,9 @@ class EndToEndFlow(unittest.TestCase):
         self.assertTrue(artist.online, artist.status_message)
         self.assertTrue(listener.online, listener.status_message)
         timings["both_online_s"] = round(time.monotonic() - t0, 1)
+        # A browser page cannot reach the privileged admin API (Origin check).
+        self.assertIn(" 400 ", ws_handshake_status(artist.conductor.admin_port, "http://evil.example"))
+        self.assertIn(" 101 ", ws_handshake_status(artist.conductor.admin_port, "holochain-music-app"))
 
         # ---- artist publishes a generated 30 s 44.1 kHz stereo tone (~21 chunks)
         wav = self.base / "tone.wav"

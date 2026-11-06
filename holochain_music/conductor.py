@@ -18,6 +18,7 @@ from pathlib import Path
 from . import binaries
 
 APP_ID = "holochain-music"
+ADMIN_ORIGIN = "holochain-music-app"  # must match music_app_bridge ORIGIN
 _ADMIN_RE = re.compile(r"###ADMIN_PORT:(\d+)###")
 
 
@@ -77,8 +78,11 @@ class Conductor:
                       rf"\1 {admin_port}", text, count=1)
         if f"port: {admin_port}" not in text:
             raise ConductorError("could not pin the admin port in conductor config")
-        # Only this machine's processes may reach the admin API.
+        # Only this machine's processes may reach the admin API, and only with
+        # the bridge's Origin: a web page in the user's browser cannot forge
+        # Origin, so it cannot drive the admin WebSocket even on loopback.
         text = _set_yaml_scalar(text, "danger_bind_addr", "null")
+        text = _set_yaml_scalar(text, "allowed_origins", ADMIN_ORIGIN)
         text = _set_yaml_scalar(text, "bootstrap_url", self.bootstrap_url)
         text = _set_yaml_scalar(text, "relay_url", self.relay_url)
         self.config_path.write_text(text)
