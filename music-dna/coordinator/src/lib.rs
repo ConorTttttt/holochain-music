@@ -3,7 +3,7 @@
 //! action author by the integrity zome, not by a caller-supplied field.
 
 use hdk::prelude::*;
-use music_catalogue_integrity::{Album, ArtistProfile, EntryTypes, LinkTypes, Track};
+use music_catalogue_integrity::{Album, ArtistProfile, Artwork, EntryTypes, LinkTypes, Track};
 use std::collections::HashSet;
 
 const ARTISTS_PATH: &str = "catalogue.artists.v1";
@@ -26,6 +26,12 @@ pub struct AlbumLookup {
 pub struct TrackLookup {
     pub artist: AgentPubKey,
     pub track_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ArtworkLookup {
+    pub artist: AgentPubKey,
+    pub sha256: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -118,6 +124,25 @@ pub fn get_album(input: AlbumLookup) -> ExternResult<Option<AuthoredRecord<Album
     Ok(list_albums(input.artist)?.into_iter().find(|r| r.body.album_id == input.album_id))
 }
 
+/// Covers are small PUBLIC entries, separate from encrypted audio.
+#[hdk_extern]
+pub fn publish_artwork(artwork: Artwork) -> ExternResult<ActionHash> {
+    let me = agent_info()?.agent_initial_pubkey;
+    if artwork.artist_agent != me.to_string() {
+        return Err(wasm_error!(WasmErrorInner::Guest("only an artist can publish their artwork".into())));
+    }
+    let hash = create_entry(EntryTypes::Artwork(artwork))?;
+    create_link(me, hash.clone(), LinkTypes::AgentToArtwork, ())?;
+    Ok(hash)
+}
+
+#[hdk_extern]
+pub fn get_artwork(input: ArtworkLookup) -> ExternResult<Option<AuthoredRecord<Artwork>>> {
+    let expected = input.artist.to_string();
+    Ok(linked_records::<Artwork>(input.artist, LinkTypes::AgentToArtwork)?.into_iter()
+        .find(|r| r.author == expected && r.body.artist_agent == expected && r.body.sha256 == input.sha256))
+}
+
 /// Tracks only reference a signed *encrypted package digest* and random file ID.
 /// No plaintext or secret keys are included. The coordinator checks album
 /// existence as a usability guard; this cross-entry check is not enforced
@@ -131,6 +156,16 @@ pub fn publish_track(track: Track) -> ExternResult<ActionHash> {
     if let Some(album_id) = track.album_id.as_ref() {
         if get_album(AlbumLookup { artist: me.clone(), album_id: album_id.clone() })?.is_none() {
             return Err(wasm_error!(WasmErrorInner::Guest("album must be published by the same artist first".into())));
+        }
+    }
+    // Metadata revisions must never silently swap the encrypted file or audio
+    // licence binding behind a stable track ID.
+    if let Some(previous) = get_track(TrackLookup { artist: me.clone(), track_id: track.track_id.clone() })? {
+        let old = previous.body;
+        if old.file_id != track.file_id || old.manifest_sha256 != track.manifest_sha256
+            || old.duration_ms != track.duration_ms || old.audio_format != track.audio_format
+            || old.rights_basis != track.rights_basis {
+            return Err(wasm_error!(WasmErrorInner::Guest("track audio/rights are immutable across metadata revisions".into())));
         }
     }
     let all = typed_path(TRACKS_PATH)?;
