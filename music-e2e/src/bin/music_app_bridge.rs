@@ -97,6 +97,8 @@ struct SearchInput { query: String, limit: u8 }
 struct SendAccessRequest { owner: AgentPubKey, request: Value }
 #[derive(Debug, Serialize)]
 struct SendGrant { listener: AgentPubKey, grant: Value }
+#[derive(Debug, Serialize)]
+struct SendDecision { listener: AgentPubKey, decision: Value }
 
 #[derive(Debug, Deserialize)]
 struct InboxRow {
@@ -278,6 +280,7 @@ impl Bridge {
             // Private inbox (own source chain only; never DHT-linked).
             "get_inbox_access_requests" => self.inbox("get_inbox_access_requests").await,
             "get_inbox_grants" => self.inbox("get_inbox_grants").await,
+            "get_inbox_decisions" => self.inbox("get_inbox_decisions").await,
             // Storage writes.
             "register_signing_key" => self.create(false, "register_signing_key", arg_entry(args)?).await,
             "publish_file_commitment" => self.create(false, "publish_file_commitment", arg_entry(args)?).await,
@@ -286,6 +289,12 @@ impl Bridge {
             "send_access_request" => {
                 let _: () = self.call(false, "send_access_request", &SendAccessRequest {
                     owner: arg_agent(args, "owner")?, request: arg_entry_named(args, "request")?,
+                }).await?;
+                Ok(json!({"delivered": true}))
+            }
+            "send_decision" => {
+                let _: () = self.call(false, "send_decision", &SendDecision {
+                    listener: arg_agent(args, "listener")?, decision: arg_entry_named(args, "decision")?,
                 }).await?;
                 Ok(json!({"delivered": true}))
             }
