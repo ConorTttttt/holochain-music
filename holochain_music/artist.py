@@ -317,11 +317,16 @@ class ArtistService:
         return rows
 
     def requests(self) -> list[dict]:
+        """One actionable row per listener/track/manifest/access type/key.
+
+        Legacy duplicate private entries remain on the artist source chain, but
+        never become multiple offers or consume multiple bulk decisions.
+        """
         with self._request_lock:
             mine = {t["file_id"]: t for t in self.my_tracks()}
             issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
             decisions = self._decisions()
-            out = []
+            grouped: dict[tuple, dict] = {}
             for b in self._inbox():
                 track = mine.get(b.get("file_id"))
                 if track is None or b.get("manifest_sha256") != track["manifest_sha256"]:
@@ -329,19 +334,51 @@ class ArtistService:
                 h = b.get("request_hash")
                 if not isinstance(h, str) or not 0 < len(h) <= 80:
                     continue
+                kind = b.get("kind")
+                if kind not in ("stream", "perpetual-personal"):
+                    continue
+                key = (b["listener_agent"], b["file_id"], b["manifest_sha256"],
+                       kind, b.get("x25519_public_hex"))
                 decision = decisions.get(h, {})
-                # Existing grants from earlier releases also count as resolved.
-                legacy_granted = (b["listener_agent"], b["file_id"], b.get("kind")) in issued
+                legacy_granted = (b["listener_agent"], b["file_id"], kind) in issued
                 status = ("approved" if legacy_granted or decision.get("status") == "approved"
                           else "declined" if decision.get("status") == "declined" else "pending")
-                out.append({"request_hash": h, "listener_agent": b["listener_agent"],
-                            "file_id": b["file_id"], "track_title": track["title"], "kind": b.get("kind"),
-                            "note": str(b.get("note", ""))[:500], "received_at": b["received_at"],
-                            "status": status, "granted": status == "approved", "declined": status == "declined"})
+                if key not in grouped:
+                    grouped[key] = {
+                        "request_hash": h, "listener_agent": b["listener_agent"],
+                        "file_id": b["file_id"], "manifest_sha256": b["manifest_sha256"],
+                        "request_id": b.get("request_id"),
+                        "track_title": track["title"], "kind": kind,
+                        "note": str(b.get("note", ""))[:500],
+                        "received_at": b["received_at"], "status": status,
+                        "duplicate_count": 1,
+                    }
+                else:
+                    row = grouped[key]
+                    row["duplicate_count"] += 1
+                    # Resolved decisions on an older duplicate apply to its
+                    # entire group. A grant always takes precedence over a decline.
+                    if status == "approved" or (status == "declined" and row["status"] == "pending"):
+                        row["status"] = status
+            out = list(grouped.values())
+            for row in out:
+                row["granted"] = row["status"] == "approved"
+                row["declined"] = row["status"] == "declined"
             return out
 
+    def _send_decline(self, row: dict) -> dict:
+        return self.deliver("send_decision", listener=row["listener_agent"], decision={
+            "file_id": row["file_id"], "manifest_sha256": row["manifest_sha256"],
+            "kind": row["kind"], "request_id": row.get("request_id"),
+            "decision": "declined",
+        })
+
     def reject(self, *, request_hash: str) -> dict:
-        """Privately decline a verified request. No grant or listener notification is issued."""
+        """Record locally first; privately notify the verified requester.
+
+        Remote delivery can be queued for seven days if the listener is offline.
+        A notification failure must never erase a recorded decision.
+        """
         with self._request_lock:
             row = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
             if row is None:
@@ -351,7 +388,19 @@ class ArtistService:
             if row["status"] == "declined":
                 return {"declined": True, "already_decided": True}
             self._save_decision(request_hash, status="declined")
-            return {"declined": True}
+            try:
+                outcome = self._send_decline(row)
+            except (BridgeError, OutboxError, ValueError) as exc:
+                return {"declined": True, "notification_error": str(exc)[:160]}
+            return {"declined": True, **outcome}
+
+    def resend_decline(self, *, request_hash: str) -> dict:
+        """Explicit repair for decisions saved before notifications existed."""
+        with self._request_lock:
+            row = next((r for r in self.requests() if r["request_hash"] == request_hash), None)
+            if row is None or row["status"] != "declined":
+                raise ArtistError("no declined request found")
+            return self._send_decline(row)
 
     def decide_batch(self, *, request_hashes: list[str], action: str) -> dict:
         """Apply explicit snapshot IDs only; never run an unbounded server-side 'all'.
@@ -394,6 +443,8 @@ class ArtistService:
             raise ArtistError("unknown access request")
         if current["status"] != "pending":
             raise ArtistError("request is already approved or declined")
+        if current["kind"] != kind:
+            raise ArtistError("grant type must match the access requested")
         request = next((r for r in self._inbox() if r["request_hash"] == request_hash), None)
         if request is None:
             raise ArtistError("unknown access request")
