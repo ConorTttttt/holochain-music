@@ -52,7 +52,8 @@ def routes(app: MusicApp) -> dict:
         _keys(d, {"file_id", "path"})
         target = Path(_text(d["path"], 1024)).expanduser()
         home = Path.home().resolve()
-        if not target.is_absolute() or home not in target.parent.resolve().parents and target.parent.resolve() != home:
+        parent = target.parent.resolve()
+        if not target.is_absolute() or (parent != home and home not in parent.parents):
             raise AppError("choose a destination inside your home directory")
         if target.suffix.lower() != ".wav":
             raise AppError("the export file name must end in .wav")
@@ -75,6 +76,18 @@ def routes(app: MusicApp) -> dict:
         _keys(d, set(), allowed)
         return {"settings": app.save_settings(**d), "restart_required": True}
 
+    def noargs(fn):
+        def wrapped(d):
+            _keys(d, set())
+            return fn()
+        return wrapped
+
+    def access_request(d):
+        _keys(d, {"track_key", "kind"}, {"note"})
+        if d["kind"] not in ("stream", "perpetual-personal"):
+            raise AppError("invalid access kind")
+        return app.request_access(_text(d["track_key"], 120), d["kind"], _text(d.get("note", ""), 500, empty_ok=True))
+
     def online(fn):
         def wrapped(d):
             app.require_online()
@@ -88,25 +101,22 @@ def routes(app: MusicApp) -> dict:
         ("GET", "/api/library"): lambda _: {"tracks": app.library_view()},
         ("GET", "/api/playlists"): lambda _: {"playlists": app.library.playlists()},
         ("GET", "/api/history"): lambda _: {"history": app.library.history()},
-        ("POST", "/api/catalogue/browse"): online(lambda d: {"tracks": app.catalogue.browse(100)} if _keys(d, set()) is not None else None),
+        ("POST", "/api/catalogue/browse"): online(noargs(lambda: {"tracks": app.catalogue.browse(100)})),
         ("POST", "/api/catalogue/search"): online(lambda d: {"tracks": app.catalogue.search(
             _text(_keys(d, {"query"})["query"], 80), 50)}),
-        ("POST", "/api/catalogue/artists"): online(lambda d: {"artists": app.catalogue.artists()} if _keys(d, set()) is not None else None),
+        ("POST", "/api/catalogue/artists"): online(noargs(lambda: {"artists": app.catalogue.artists()})),
         ("POST", "/api/catalogue/artist"): catalogue_artist,
-        ("POST", "/api/access/request"): lambda d: app.request_access(
-            _keys(d, {"track_key", "kind"}, {"note"})["track_key"],
-            d["kind"] if d["kind"] in ("stream", "perpetual-personal") else (_ for _ in ()).throw(AppError("invalid kind")),
-            _text(d.get("note", ""), 500, empty_ok=True)),
-        ("POST", "/api/grants/sync"): lambda d: {"new_grants": app.sync_grants()} if _keys(d, set()) is not None else None,
+        ("POST", "/api/access/request"): access_request,
+        ("POST", "/api/grants/sync"): noargs(lambda: {"new_grants": app.sync_grants()}),
         ("POST", "/api/download"): lambda d: app.download(_keys(d, {"file_id"})["file_id"]),
         ("POST", "/api/play"): lambda d: p.play(_keys(d, {"file_id"}, {"start_frame"})["file_id"], d.get("start_frame", 0)),
-        ("POST", "/api/pause"): lambda d: p.pause() if _keys(d, set()) is not None else None,
-        ("POST", "/api/resume"): lambda d: p.resume() if _keys(d, set()) is not None else None,
-        ("POST", "/api/stop"): lambda d: p.stop() if _keys(d, set()) is not None else None,
+        ("POST", "/api/pause"): noargs(p.pause),
+        ("POST", "/api/resume"): noargs(p.resume),
+        ("POST", "/api/stop"): noargs(p.stop),
         ("POST", "/api/seek"): lambda d: p.seek(_keys(d, {"frame"})["frame"]),
         ("POST", "/api/volume"): lambda d: p.set_volume(_keys(d, {"volume"})["volume"]),
         ("POST", "/api/queue"): lambda d: {"queue": app.set_queue(_keys(d, {"items"})["items"])},
-        ("POST", "/api/next"): lambda d: app.next_track() if _keys(d, set()) is not None else None,
+        ("POST", "/api/next"): noargs(app.next_track),
         ("POST", "/api/playlists"): lambda d: (app.library.save_playlists(_keys(d, {"playlists"})["playlists"]),
                                                {"playlists": app.library.playlists()})[1],
         ("POST", "/api/export"): export,
@@ -116,8 +126,8 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/album"): online(lambda d: app.artist.create_album(
             _text(_keys(d, {"title"}, {"release_date"})["title"], 200), d.get("release_date") or None)),
         ("POST", "/api/artist/publish"): publish,
-        ("POST", "/api/artist/tracks"): online(lambda d: {"tracks": app.artist.my_tracks()} if _keys(d, set()) is not None else None),
-        ("POST", "/api/artist/requests"): online(lambda d: {"requests": app.artist.requests()} if _keys(d, set()) is not None else None),
+        ("POST", "/api/artist/tracks"): online(noargs(lambda: {"tracks": app.artist.my_tracks()})),
+        ("POST", "/api/artist/requests"): online(noargs(lambda: {"requests": app.artist.requests()})),
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
             request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
         ("POST", "/api/settings"): settings,
