@@ -128,8 +128,10 @@ function accessBadge(item) {
   if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Offline ready' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
   if (item.playable) return el('span', { class: 'badge ok', text: `Streaming access until ${new Date(item.grant_expires_at * 1000).toLocaleString()}` });
-  if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
   if (item.request_status === 'declined') return el('span', { class: 'badge bad', text: 'Access declined by artist' });
+  if (item.request_status === 'pending' && item.requested) return el('span', { class: 'badge warn',
+    text: item.request_queued ? 'Request queued for artist' : 'Access requested · awaiting artist' });
+  if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
   if (item.requested && item.request_queued) return el('span', { class: 'badge warn', text: 'Request waiting for the artist to come online' });
   if (item.requested) return el('span', { class: 'badge warn', text: 'Access requested' });
   return el('span', { class: 'badge', text: 'No access' });
@@ -159,8 +161,11 @@ function trackActions(fileId, catalogueRow) {
       ['stream', 'Request streaming', 'btn'],
       ['perpetual-personal', 'Request licence', 'btn primary'],
     ]) {
-      if (item && item.requested === kind) continue; // pending/declined: no duplicate submit button
-      box.append(el('button', { class: klass, type: 'button', text: label,
+      if (item && item.requested === kind && (item.request_status === 'pending'
+          || item.request_status === 'declined' || !item.grant_kind)) continue;
+      const buttonText = item && item.grant_kind === 'stream' && kind === 'stream'
+        ? 'Renew streaming access' : label;
+      box.append(el('button', { class: klass, type: 'button', text: buttonText,
         onclick: () => request(kind) }));
     }
   }
