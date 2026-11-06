@@ -35,12 +35,14 @@ checksums are recorded outside the package (§6).
 | B7 | CI workflow `.github/workflows/v1-app.yml` never run | Needs permission to push |
 | B8 | No independent security review | External reviewer |
 | B9 | Stacked draft PRs #5–#22 and this branch unmerged | Merge plan + permission |
+| B10 | Acoustic seek latency not yet measured by ear/recording on the HP | Test 1b |
 
 ## 3. Evidence this session (2026-11-06)
 
 | Test | Result |
 |---|---|
-| Python suite, all non-opt-in tests (real S4 + MoQ binaries) | **PASS 276** (7 skipped = the two opt-in e2e suites below), 105 s |
+| Python suite, all non-opt-in tests (real S4 + MoQ binaries) | **PASS 283** after the seek fix (7 skipped = the two opt-in e2e suites below), 111 s |
+| Seek performance regression tests (5-minute WAV), 7 tests | **PASS**. 15 seeks: median 0.8 ms, p95 1.1 ms to first PCM (null output); whole file verified once per open; tamper-after-open caught; coalescing; monotonic status |
 | Two-conductor end-to-end flow (publish → discover → refused without grant → private request → private licence → stream + mid-download seek → download → no-network playback + export) | **PASS**, 145 s |
 | Three-agent grant security (artist, listener, attacker Mallory), 6 tests | **PASS**, 146 s. Malformed requests refused and not stored; provenance cannot be spoofed; forwarded genuine licence and forged grant import 0 and cannot play; duplicate delivery harmless; 21st message from one sender rate-limited and not mistaken for "offline"; request queued while the artist was fully offline delivered 20 s after restart |
 | Existing three-conductor Sweettests (prebuilt) against the current DNAs | catalogue+storage identity (2), S9, S16: **PASS**. Earlier today with the previous DNA revision: all 11 binaries / 13 tests PASS |
@@ -77,9 +79,61 @@ then 159–421 s).
 \* overlapped with another test on the same machine.
 
 In 3 of the 8 shipped-config trials the start-up flap occurred, and the
-unresponsive mark was pruned about 8 s later. Same machine, loopback relay:
+unresponsive mark was pruned about 8 s later.
+
+**Later observations with the shipped configuration** (not part of the
+controlled measurement): installed-package smoke tests 17 s and 71 s;
+end-to-end tests 46 s and **270 s**. The e2e figure includes waiting for the
+artist profile as well as the track, and no network logs were captured. Long
+delays are therefore **reduced but not eliminated**, and this remains an open
+risk (§8). Same machine, loopback relay:
 LAN behaviour must be confirmed in Test 2, with the diagnostic logging
 described in the hardware test plan.
+
+## 4a. Seek performance — measured before and after (video report, 2026-11-06)
+
+Method: `packaging/bench-seek.py` plays a 5:31, 44.1 kHz stereo licensed
+offline track through the real app path (`MusicApp` → `Player` → S11 player →
+`aplay -D null`). It makes 20 seeded seeks while playing and measures the
+time from the seek call to the first PCM block for the new position written
+into the output process. It samples the reported position every 50 ms.
+
+| | Before (`f5cc661`) | After (`852d0b7`) |
+|---|---|---|
+| Seek → first PCM written, median | **3250 ms** | **2.3 ms** |
+| p95 | 3837 ms | 2.7 ms |
+| max | 3845 ms | 2.7 ms |
+| First play of the track (open + verify) | 654 ms | 96–149 ms |
+| Reported position moved backwards while "playing" | 18 times | 0 |
+| Longest frozen position while "playing" | 2.96 s | 0 s |
+
+The "after" figure was measured twice, with the player's own metrics and
+with the baseline's independent write-timing method; both gave median 2.3 ms.
+
+Causes (from instrumenting the path):
+
+1. `AlsaOutput.abort` sent SIGTERM and waited up to 3 s; `aplay` does not exit
+   promptly, so each seek blocked about **3.0 s**. It is now killed at once
+   (aborted audio is discarded, not drained).
+2. Each seek re-resolved and re-opened the track: full-file SHA-256 twice plus
+   a decrypt of the whole file (about 270 ms). The track is now verified once
+   per open. Seeks reuse the opened reader, and each chunk played is still
+   SHA-256- and AES-GCM-checked before output.
+3. During that stop the state stayed "playing" while the position fell back to
+   the previous segment start (the backward jumps and frozen timeline).
+4. The UI applied poll responses in arrival order, so a poll in flight during a
+   seek could repaint the old position. Statuses now carry `seq`; older ones
+   are dropped and the seek target is shown until confirmed.
+
+Each seek still restarts the ALSA output. That is deliberate: it is the only
+way to discard audio already queued in `aplay` without a native ALSA binding.
+The restart now costs about 2 ms.
+
+**Not measured here: acoustic latency.** The figures above stop at the ALSA
+write. With the 200 ms device buffer and a 250 ms start burst, expect
+playback to start within the device's own period latency after the first
+write. In the UI, seek requests are deliberately coalesced for 120 ms.
+Measure on the HP with Test 1b.
 
 ## 5. Defects found and fixed this session
 
@@ -93,6 +147,10 @@ described in the hardware test plan.
 | D22 | Medium | Requests needed the artist's host online, so the outbox could never help. Requests now use only the DHT track record. |
 | D23 | Low | Host-outage test silently skipped with the faster release binary. Now rate-limited and asserting. |
 | D24 | Low | Bridge reader thread raced `stop()`. |
+| D25 | High | Each seek/track change blocked about 3 s on `aplay` SIGTERM (§4a). |
+| D26 | Medium | Each seek re-verified and fully decrypted the whole file (§4a). |
+| D27 | Medium | Position moved backwards and froze during seeks; status said "playing" before audio resumed (§4a). |
+| D28 | Medium | UI applied stale poll responses over newer seek state (§4a). |
 
 Earlier fixes D1–D16: see git history and `CHANGELOG.md`.
 
@@ -127,6 +185,8 @@ Keep the main `music-e2e/target` cache (17 GB). The Sweettests run from it.
 
 ## 8. Known limitations (shipping with the RC)
 
+- Catalogue discovery between fresh peers usually takes seconds but has been
+  observed at up to about 4.5 minutes after the mitigation (§4).
 - Private grants need a moment when both apps are online (the outbox retries
   for 7 days while the app runs). Request and grant volume and timing per
   agent is public metadata. The relay sees which peers talk.

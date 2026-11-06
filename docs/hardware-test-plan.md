@@ -70,6 +70,57 @@ clean shutdown Y/N   problems/notes: ____
 
 ---
 
+## Test 1b — seek latency on the real sound device
+
+Automated benchmark against the real ALSA device. It measures seek request →
+first PCM written to ALSA. Run it from the source tree (`/mnt/holochain/holochain-music-v1`)
+while nothing else is playing:
+
+```bash
+cd /mnt/holochain/holochain-music-v1
+PYTHONPATH=$PWD python3 packaging/bench-seek.py --device default --seeks 20 --json /tmp/seek-hw.json
+# expect: seek_ms_median and seek_ms_p95 well under 500, position_backwards_while_playing 0
+```
+
+Acoustic check (what you actually hear), with a phone recording the room:
+
+```bash
+# 5:31 test track: alternating 10 s silence / 10 s 880 Hz tone (generated, licensed test material)
+python3 - <<'PY'
+import math, struct, wave
+with wave.open("/tmp/hm-seek-acoustic.wav", "wb") as w:
+    w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+    tone = b"".join(struct.pack("<hh", s, s) for s in (int(9000*math.sin(2*math.pi*880*i/44100)) for i in range(44100)))
+    silence = b"\0" * (44100 * 4)
+    for block in range(33):
+        w.writeframes((silence if block % 2 == 0 else tone) * 10)
+    w.writeframes(silence)
+PY
+holochain-music start --audio alsa
+```
+
+1. Publish `/tmp/hm-seek-acoustic.wav` (Test 1 steps 1–2) and play it.
+2. Start the phone recording. While a **silent** block plays (0–10 s, 20–30 s,
+   …), press **→** (+10 s) on the keyboard. The tone should start almost at
+   once. Repeat 10 times at different points.
+3. In any audio editor, measure for each press the time from the key-click
+   sound to the start of the tone. Expect roughly 120 ms of deliberate UI
+   coalescing, plus a few ms in the app, plus the ALSA device buffer (at most
+   200 ms). Report the median and the worst.
+4. Also note: does the badge show **Seeking…** and then **Playing · offline
+   copy** only once sound is heard? Does the timeline ever move backwards or
+   stall while sound is playing?
+
+Evidence:
+
+```
+Test 1b — date: ____  bench seek_ms_median ____ p95 ____ backwards ____
+acoustic key->tone ms (10 presses): ____  median ____  worst ____
+status/timeline matches sound Y/N   notes: ____
+```
+
+---
+
 ## Test 2 — two physical computers on a private LAN
 
 Machines: **A** = artist + host (example `192.168.1.50`), **B** = listener
