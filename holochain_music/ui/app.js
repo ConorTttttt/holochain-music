@@ -542,6 +542,7 @@ const views = {
       let succeeded = 0;
       let queued = 0;
       let failed = 0;
+      let notificationFailures = 0;
       try {
         for (let i = 0; i < pending.length; i += 25) {
           const slice = pending.slice(i, i + 25);
@@ -552,10 +553,12 @@ const views = {
           succeeded += result.succeeded;
           queued += result.results.filter(x => x.ok && x.queued).length;
           failed += result.results.filter(x => !x.ok).length;
+          notificationFailures += result.results.filter(x => x.notification_error).length;
           // Do not retry automatically: a delivery may have succeeded before the HTTP reply failed.
         }
-        toast(`${succeeded} ${action === 'approve' ? 'accepted' : 'declined'}${queued ? ` (${queued} delivery queued)` : ''}${failed ? `; ${failed} failed` : ''}.`,
-          failed ? 'error' : 'info');
+        const warning = notificationFailures ? `; ${notificationFailures} notice(s) failed — use Resend decline notice` : '';
+        toast(`${succeeded} ${action === 'approve' ? 'accepted' : 'declined'}${queued ? ` (${queued} delivery queued)` : ''}${failed ? `; ${failed} failed` : ''}${warning}.`,
+          failed || notificationFailures ? 'error' : 'info');
       } catch (e) {
         toast(`Batch interrupted after ${succeeded} succeeded: ${e.message}. Refresh to see which remain.`);
       } finally {
