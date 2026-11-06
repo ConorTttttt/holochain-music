@@ -21,7 +21,7 @@ RETRY_SECONDS = 30
 EXPIRY_SECONDS = 7 * 24 * 3600
 MAX_ITEMS = 200
 RETRYABLE = ("unreachable", "busy", "timed out", "Timeout", "NetworkError", "not running")
-OPS = ("send_access_request", "send_grant")
+OPS = ("send_access_request", "send_grant", "send_decision")
 
 
 class OutboxError(RuntimeError):
