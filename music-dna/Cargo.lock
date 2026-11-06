@@ -655,9 +655,11 @@ dependencies = [
 name = "music_catalogue_integrity"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "hdi",
  "holochain_serialized_bytes",
  "serde",
+ "sha2",
 ]
 
 [[package]]
