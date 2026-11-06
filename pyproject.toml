@@ -3,14 +3,19 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "holochain-music-storage-prototype"
-version = "0.1.0"
-description = "File-type-independent encrypted full-replica storage protocol prototype for Holochain Music"
+name = "holochain-music"
+version = "1.0.0rc1"
+description = "Artist-first decentralised music player on Holochain with encrypted MoQ/QUIC streaming"
 requires-python = ">=3.10"
-dependencies = ["cryptography>=44,<48"]
+# Tested with cryptography 46 (Ubuntu 26.04 system) and 47 (venv); 41 is an untested floor.
+dependencies = ["cryptography>=41,<48"]
+
+[project.scripts]
+holochain-music = "holochain_music.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["holochain_storage*", "music_catalogue*"]
+include = ["holochain_storage*", "music_catalogue*", "holochain_music*"]
 
 [tool.setuptools.package-data]
 music_catalogue = ["ui/*.html", "ui/*.css", "ui/*.js"]
+holochain_music = ["ui/*.html", "ui/*.css", "ui/*.js", "ui/*.svg"]

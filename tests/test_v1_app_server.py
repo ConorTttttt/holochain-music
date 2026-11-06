@@ -169,6 +169,30 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((self.home / "Music" / "tone.wav").read_bytes(), self.canonical.read_bytes())
         self.assertEqual(self.req("POST", "/api/export", {"file_id": fid, "path": str(self.home / "Music" / "tone.wav")})[0], 400)
 
+    def test_backup_restore_into_new_data_dir_plays_offline(self):
+        from holochain_music.keys import export_backup, import_backup
+        root = Path(self.tmp.name)
+        out = export_backup(sources={"keys": self.app.paths.keys, "library": self.app.paths.library},
+                            destination=root / "b.hmb", passphrase="a long backup passphrase")
+        new = AppPaths(data=root / "restored" / "data", config=root / "restored" / "config")
+        restored = import_backup(source=out, passphrase="a long backup passphrase",
+                                 targets={"keys": new.keys, "library": new.library})
+        self.assertEqual(sorted(restored), ["keys", "library"])
+        other = MusicApp(new)
+        other.save_settings(audio_backend="null")
+        other.player.backend = "null"
+        other.start(offline=True)
+        try:
+            other.player.play(self.track.file_id)
+            deadline = time.monotonic() + 15
+            while other.player.status()["state"] not in ("finished", "error"):
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.05)
+            s = other.player.status()
+            self.assertEqual((s["state"], s["source"]), ("finished", "offline"), s)
+        finally:
+            other.stop()
+
     def test_settings_validation(self):
         self.assertEqual(self.req("POST", "/api/settings", {"bootstrap_url": "ftp://x"})[0], 400)
         self.assertEqual(self.req("POST", "/api/settings", {"pins": {}})[0], 400)

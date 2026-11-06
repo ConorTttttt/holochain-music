@@ -50,7 +50,7 @@ done
 install -m 0755 "$repo/packaging/holochain-music.sh" "$root/usr/bin/holochain-music"
 install -m 0644 "$repo/packaging/holochain-music.desktop" "$root/usr/share/applications/holochain-music.desktop"
 install -m 0644 "$repo/holochain_music/ui/icon.svg" "$root/usr/share/icons/hicolor/scalable/apps/holochain-music.svg"
-for doc in README.md docs/v1-release-readiness.md docs/security-model.md docs/user-guide.md docs/installation.md; do
+for doc in README.md CHANGELOG.md docs/v1-release-readiness.md docs/security-model.md docs/user-guide.md docs/installation.md packaging/smoke-test.py; do
   if [ -f "$repo/$doc" ]; then install -m 0644 "$repo/$doc" "$root/usr/share/doc/holochain-music/$(basename "$doc")"; fi
 done
 (cd "$root" && find usr -type f | sort | xargs sha256sum) > "$root/DEBIAN/md5sums.sha256"

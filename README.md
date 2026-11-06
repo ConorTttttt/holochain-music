@@ -1,34 +1,61 @@
 # Holochain Music
 
-A decentralised music app built on [Holochain MOQ](https://github.com/ConorTttttt/holochain-moq), with a **reusable, file-type-independent encrypted storage layer**.
+An artist-first decentralised music player. Artists publish encrypted tracks
+and decide who may listen; listeners discover music on Holochain, receive
+artist-signed licences privately, stream over certificate-pinned MoQ/QUIC, and
+keep licensed music for offline playback. Built on
+[Holochain MOQ](https://github.com/ConorTttttt/holochain-moq) and a reusable,
+file-type-independent encrypted storage layer.
 
-## Starting architecture: Model A — complete encrypted replicas
+**Status: v1.0.0 release candidate. Not released.** See
+[release readiness](docs/v1-release-readiness.md) for what has been verified
+and what is still open.
 
-An artist or file owner encrypts an arbitrary file locally, signs a manifest of its encrypted chunks, and sends **complete encrypted copies** to one or more storage nodes. Nodes verify the encrypted bytes against the owner's signed manifest and issue signed acceptance receipts. Nodes **do not** receive plaintext content keys.
+## What works (verified on Ubuntu 26.04, one computer)
 
-- **Holochain:** identities, artist/album/track metadata, rights/licence records, discovery, and storage receipts or commitments. Never bulk file bytes or unencrypted content keys.
-- **Generic storage:** opaque encrypted chunks, content hashes, full replicas, verification and later proof-of-retrievability audits.
-- **MoQ/QUIC:** eventual authenticated transfer of encrypted chunks. Existing live media streams are not a seekable on-demand file protocol.
-- **Music app:** music catalogue, player, licences, purchase settlement and user experience.
+- Desktop launcher, a local browser UI (loopback, token-protected) and a
+  reproducible `.deb`.
+- Holochain identity per installation and a managed conductor; catalogue
+  browse/search, artist and album pages.
+- Artist studio: profile, WAV → AES-256-GCM encrypted package, catalogue and
+  identity records, self-hosting over MoQ/QUIC with a stable pinned certificate.
+- Private access workflow: listener request → artist approval → signed
+  streaming grant (24 h) or perpetual personal-use licence, delivered peer to
+  peer and stored as private source-chain entries.
+- Streaming with per-chunk SHA-256 + AES-GCM verification, play/pause/stop,
+  seek during download (transfer restarts at the needed chunk), missing-chunk
+  recovery and host-outage resume, queue, playlists, history, volume.
+- Downloads, offline playback with no network services, WAV export under a
+  licence, and passphrase-encrypted backup/restore.
 
-## Purchases and true offline use
+## Not in v1.0.0
 
-A permanent music purchase is designed to deliver a **non-expiring personal-use licence** and the encrypted key material needed for a buyer to export a real, usable file. Once saved, a buyer can listen, transfer it among their devices and make permitted backups without the app, network, artist or storage node remaining online.
+Payments or purchases, copyright verification, public-internet hosting or NAT
+traversal, guaranteed availability, revocation of exported copies, FLAC/MP3
+input, remote-host upload, key rotation. Two-computer LAN operation is
+**experimental** until it is tested on two physical machines.
 
-This is **ownership of a usable copy under licence**, not ownership of the sound-recording or composition copyright. A purchase does not automatically grant redistribution, commercial usage, or resale rights.
+## Documentation
 
-## Status
+- [User guide](docs/user-guide.md) · [Installation, LAN and tests](docs/installation.md)
+- [Security model](docs/security-model.md) · [Release readiness](docs/v1-release-readiness.md) · [Changelog](CHANGELOG.md)
+- Design background: [encrypted storage](docs/encrypted-storage-v1.md), [ownership and purchases](docs/ownership-and-purchases.md), milestone notes `docs/s*.md`
 
-Design committed. The initial local prototype separately demonstrates AES-256-GCM file chunking, Ed25519-signed manifests and storage-node receipts, X25519-wrapped buyer keys, full replication, integrity verification, and offline file reconstruction. The prototype is **not** a deployed network, payment system, Holochain DNA, MoQ on-demand server or independent proof of long-term storage.
+## Architecture
 
-See [storage protocol](docs/encrypted-storage-v1.md) and [purchase model](docs/ownership-and-purchases.md).
+- **Holochain** (`music-dna/`, `dna/`): identity, catalogue metadata, key
+  bindings, file commitments, host claims and endpoints, private request/grant
+  inboxes. No audio, ciphertext or content keys.
+- **Hosts** (`crates/moq-music` `serve`): ciphertext, signed manifest and receipt
+  over MoQ/QUIC; subscribers choose the start chunk or specific objects.
+- **Player** (`holochain_music/`, `music_catalogue/`, `holochain_storage/`): the
+  only place keys are unwrapped and audio is decrypted, chunk by chunk, into a
+  bounded ALSA queue.
+- **Bridge** (`music-e2e/src/bin/music_app_bridge.rs`): one authenticated
+  app-websocket session to the local conductor with an allow-list of calls.
 
-## Security principles
+## Licence
 
-1. Keys must never appear in public manifests or storage receipts.
-2. Signatures are meaningful only when keys are pinned to an authenticated Holochain identity.
-3. A signed receipt demonstrates acceptance, **not proof of continuing custody**.
-4. Fully usable offline files cannot be cryptographically revoked after export.
-5. File-size limits, secure key backups, replay-safe storage challenges, abuse protection and payments need production design and review.
-
-No software licence has been selected yet.
+No software licence has been chosen yet. This must be decided before release.
+The bundled Holochain binaries carry their own licence terms, which must be
+reviewed before redistribution.
