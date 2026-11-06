@@ -105,6 +105,19 @@ class DecisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ArtistError, "already approved or declined"):
             self.artist.grant(request_hash="duplicate", kind="stream")
 
+    def test_stream_renewal_after_approved_request_is_a_new_pending_group(self):
+        old = request("old-grant", FILE_A, "stream") | {"request_id": "a" * 32}
+        renewed = request("renewed", FILE_A, "stream") | {"request_id": "b" * 32}
+        self.artist._inbox = lambda: [renewed, old]
+        self.artist.issued = lambda: [{
+            "listener_agent": "listener-one", "file_id": FILE_A,
+            "kind": "stream", "request_hash": "old-grant", "issued_at": 60,
+        }]
+        rows = self.artist.requests()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r["status"] for r in rows], ["pending", "approved"])
+        self.assertEqual(rows[0]["request_hash"], "renewed")
+
     def test_decline_queues_delivery_and_explicit_resend_recovers(self):
         calls = []
         def send(op, **kw):
