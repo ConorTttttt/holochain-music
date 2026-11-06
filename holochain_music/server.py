@@ -130,6 +130,11 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/requests"): online(noargs(lambda: {"requests": app.artist.requests()})),
         ("POST", "/api/artist/grant"): online(lambda d: app.artist.grant(
             request_hash=_text(_keys(d, {"request_hash", "kind"})["request_hash"], 80), kind=d["kind"])),
+        ("POST", "/api/artist/reject"): online(lambda d: app.artist.reject(
+            request_hash=_text(_keys(d, {"request_hash"})["request_hash"], 80))),
+        ("POST", "/api/artist/requests/bulk"): online(lambda d: app.artist.decide_batch(
+            request_hashes=_keys(d, {"request_hashes", "action"})["request_hashes"],
+            action=d["action"])),
         ("POST", "/api/settings"): settings,
     }
 
