@@ -3,10 +3,15 @@
 //! Rights declarations are self-attestations, not copyright verification.
 
 use hdi::prelude::*;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 pub const ARTIST_SCHEMA: &str = "holochain-music/artist/v1";
 pub const ALBUM_SCHEMA: &str = "holochain-music/album/v1";
 pub const TRACK_SCHEMA: &str = "holochain-music/track/v1";
+pub const ARTWORK_SCHEMA: &str = "holochain-music/artwork/v1";
+const MAX_ARTWORK_BYTES: usize = 32 * 1024;
 
 #[hdk_entry_helper]
 #[derive(Clone, PartialEq)]
@@ -31,6 +36,22 @@ pub struct Album {
     /// ISO calendar date YYYY-MM-DD; optional for unreleased albums.
     pub release_date: Option<String>,
     pub artwork_manifest_sha256: Option<String>,
+    #[serde(default)]
+    pub artwork_sha256: Option<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+#[hdk_entry_helper]
+#[derive(Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Artwork {
+    pub schema: String,
+    pub artist_agent: String,
+    pub mime_type: String,
+    pub sha256: String,
+    /// Small public cover; audio chunks and encryption keys remain off-DHT.
+    pub data_base64: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -59,6 +80,10 @@ pub struct Track {
     /// SHA-256 of the *complete signed S1 manifest*, not the audio plaintext.
     pub manifest_sha256: String,
     pub rights_basis: RightsBasis,
+    #[serde(default)]
+    pub artwork_sha256: Option<String>,
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 #[hdk_entry_types]
@@ -67,6 +92,7 @@ pub enum EntryTypes {
     ArtistProfile(ArtistProfile),
     Album(Album),
     Track(Track),
+    Artwork(Artwork),
 }
 
 #[hdk_link_types]
@@ -77,6 +103,7 @@ pub enum LinkTypes {
     AllArtists,
     AllTracks,
     Anchor,
+    AgentToArtwork,
 }
 
 #[hdk_extern]
@@ -102,6 +129,29 @@ fn biography_text(value: &str) -> bool {
 
 fn optional_manifest(value: &Option<String>) -> bool {
     value.as_ref().map_or(true, |v| is_lower_hex(v, 64))
+}
+
+fn valid_genres(genres: &[String]) -> bool {
+    if genres.len() > 6 { return false; }
+    let mut seen = HashSet::new();
+    genres.iter().all(|g| short_text(g, 32) && seen.insert(g.to_lowercase()))
+}
+
+fn valid_artwork(a: &Artwork) -> bool {
+    if a.schema != ARTWORK_SCHEMA || !is_lower_hex(&a.sha256, 64)
+        || !matches!(a.mime_type.as_str(), "image/jpeg" | "image/png" | "image/webp")
+        || a.data_base64.len() > ((MAX_ARTWORK_BYTES + 2) / 3) * 4 {
+        return false;
+    }
+    let Ok(data) = STANDARD.decode(&a.data_base64) else { return false };
+    if data.is_empty() || data.len() > MAX_ARTWORK_BYTES { return false; }
+    let signature_ok = match a.mime_type.as_str() {
+        "image/jpeg" => data.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/png" => data.starts_with(&[137, 80, 78, 71, 13, 10, 26, 10]),
+        "image/webp" => data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP",
+        _ => false,
+    };
+    signature_ok && format!("{:x}", Sha256::digest(&data)) == a.sha256
 }
 
 fn valid_date(value: &str) -> bool {
@@ -138,6 +188,7 @@ pub fn validate_claim(author: &str, entry: &EntryTypes) -> Result<(), String> {
             if a.artist_agent != author { return Err("album author mismatch".into()) }
             if a.schema != ALBUM_SCHEMA || !is_lower_hex(&a.album_id, 32)
                 || !short_text(&a.title, 200) || !optional_manifest(&a.artwork_manifest_sha256)
+                || !optional_manifest(&a.artwork_sha256) || !valid_genres(&a.genres)
                 || !a.release_date.as_ref().map_or(true, |d| valid_date(d)) {
                 return Err("invalid album metadata".into())
             }
@@ -151,9 +202,14 @@ pub fn validate_claim(author: &str, entry: &EntryTypes) -> Result<(), String> {
                 || !(1..=99).contains(&t.disc_number) || !(1..=999).contains(&t.track_number)
                 || !matches!(t.audio_format.as_str(), "audio/mpeg" | "audio/flac" | "audio/ogg" | "audio/mp4" | "audio/wav")
                 || !is_lower_hex(&t.file_id, 64)
-                || !is_lower_hex(&t.manifest_sha256, 64) {
+                || !is_lower_hex(&t.manifest_sha256, 64)
+                || !optional_manifest(&t.artwork_sha256) || !valid_genres(&t.genres) {
                 return Err("invalid track metadata".into())
             }
+        }
+        EntryTypes::Artwork(a) => {
+            if a.artist_agent != author { return Err("artwork author mismatch".into()); }
+            if !valid_artwork(a) { return Err("invalid public artwork".into()); }
         }
     }
     Ok(())
@@ -198,7 +254,7 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
         }
         FlatOp::CreateEntry(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => match link_type {
-            LinkTypes::AgentToProfile | LinkTypes::AgentToAlbum | LinkTypes::AgentToTrack => {
+            LinkTypes::AgentToProfile | LinkTypes::AgentToAlbum | LinkTypes::AgentToTrack | LinkTypes::AgentToArtwork => {
                 validate_agent_link(&action)
             }
             LinkTypes::AllArtists | LinkTypes::AllTracks => validate_owned_target(&action),
@@ -219,10 +275,10 @@ mod tests {
         ArtistProfile { schema: ARTIST_SCHEMA.into(), artist_agent: "alice".into(), display_name: "Alice".into(), biography: String::new(), artwork_manifest_sha256: None }
     }
     fn album() -> Album {
-        Album { schema: ALBUM_SCHEMA.into(), artist_agent: "alice".into(), album_id: "a".repeat(32), title: "Album".into(), release_date: Some("2024-02-29".into()), artwork_manifest_sha256: None }
+        Album { schema: ALBUM_SCHEMA.into(), artist_agent: "alice".into(), album_id: "a".repeat(32), title: "Album".into(), release_date: Some("2024-02-29".into()), artwork_manifest_sha256: None, artwork_sha256: None, genres: vec![] }
     }
     fn track() -> Track {
-        Track { schema: TRACK_SCHEMA.into(), artist_agent: "alice".into(), track_id: "a".repeat(32), album_id: Some("a".repeat(32)), title: "Song".into(), duration_ms: 120_000, disc_number: 1, track_number: 1, audio_format: "audio/flac".into(), file_id: "b".repeat(64), manifest_sha256: "c".repeat(64), rights_basis: RightsBasis::OriginalOwner }
+        Track { schema: TRACK_SCHEMA.into(), artist_agent: "alice".into(), track_id: "a".repeat(32), album_id: Some("a".repeat(32)), title: "Song".into(), duration_ms: 120_000, disc_number: 1, track_number: 1, audio_format: "audio/flac".into(), file_id: "b".repeat(64), manifest_sha256: "c".repeat(64), rights_basis: RightsBasis::OriginalOwner, artwork_sha256: None, genres: vec![] }
     }
     #[test]
     fn valid_artist_album_and_track() {
@@ -258,6 +314,25 @@ mod tests {
         assert!(validate_claim("alice", &EntryTypes::ArtistProfile(p)).is_err());
         let mut p = profile(); p.biography = "a".repeat(2049);
         assert!(validate_claim("alice", &EntryTypes::ArtistProfile(p)).is_err());
+    }
+    #[test]
+    fn rejects_invalid_genres_and_artwork_metadata() {
+        let mut t = track();
+        t.genres = vec!["Ambient".into(), "ambient".into()];
+        assert!(validate_claim("alice", &EntryTypes::Track(t)).is_err());
+        let mut t = track();
+        t.genres = vec!["Rock".into(), "Jazz".into()];
+        assert!(validate_claim("alice", &EntryTypes::Track(t)).is_ok());
+        let mut a = album(); a.artwork_sha256 = Some("bad".into());
+        assert!(validate_claim("alice", &EntryTypes::Album(a)).is_err());
+        let bytes = b"RIFF1234WEBPpublic-test";
+        let art = Artwork { schema: ARTWORK_SCHEMA.into(), artist_agent: "alice".into(),
+            mime_type: "image/webp".into(), sha256: format!("{:x}", Sha256::digest(bytes)),
+            data_base64: STANDARD.encode(bytes) };
+        assert!(validate_claim("alice", &EntryTypes::Artwork(art.clone())).is_ok());
+        let mut bad = art.clone(); bad.data_base64 = STANDARD.encode(b"RIFF1234WEBPmutated");
+        assert!(validate_claim("alice", &EntryTypes::Artwork(bad)).is_err());
+        assert!(validate_claim("bob", &EntryTypes::Artwork(art)).is_err());
     }
     #[test]
     fn impossible_media_metadata_is_rejected() {
