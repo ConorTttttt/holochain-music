@@ -212,7 +212,8 @@ pub fn search_tracks(input: SearchInput) -> ExternResult<Vec<AuthoredRecord<Trac
         .into_iter()
         .filter(|r| r.author == r.body.artist_agent
             && seen.insert((r.author.clone(), r.body.track_id.clone()))
-            && r.body.title.to_lowercase().contains(&needle))
+            && (r.body.title.to_lowercase().contains(&needle)
+                || r.body.genres.iter().any(|g| g.to_lowercase().contains(&needle))))
         .take(input.limit as usize)
         .collect())
 }
