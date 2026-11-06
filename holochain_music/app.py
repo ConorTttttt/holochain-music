@@ -349,13 +349,24 @@ class MusicApp:
                 raise AppError("this file belongs to a different artist")
             if existing is not None and existing.get("manifest_sha256") != digest:
                 raise AppError("the artist has changed this track's encrypted content")
+            grant = self.library.grant(file_id) if existing is not None else None
+            if grant is not None:
+                expiry = grant.get("body", {}).get("expires_at")
+                if existing.get("grant_kind") == "perpetual-personal" or (
+                        isinstance(expiry, int) and expiry > time.time()):
+                    raise AppError("you already have access to this track")
             if existing is not None and existing.get("requested") == kind:
                 if existing.get("request_status") == "declined":
                     raise AppError("the artist declined this access request")
-                if self.library.grant(file_id) is not None:
-                    raise AppError("you already have access to this track")
-                return {"requested": True, "file_id": file_id, "already_pending": True,
-                        "queued": bool(existing.get("request_queued"))}
+                # After a streaming grant has expired, a new request is a
+                # renewal, not a duplicate. A later pending renewal remains
+                # deduplicated even while the expired grant file still exists.
+                renewal_pending = (
+                    existing.get("request_status") == "pending"
+                    and existing.get("requested_at", 0) > existing.get("grant_received_at", 0))
+                if grant is None or renewal_pending:
+                    return {"requested": True, "file_id": file_id, "already_pending": True,
+                            "queued": bool(existing.get("request_queued"))}
             if existing is None:
                 profile = self.catalogue.profile(artist)
                 self.library.add_pending(file_id, {
