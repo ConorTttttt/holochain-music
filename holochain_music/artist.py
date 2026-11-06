@@ -324,7 +324,7 @@ class ArtistService:
         """
         with self._request_lock:
             mine = {t["file_id"]: t for t in self.my_tracks()}
-            issued = {(g["listener_agent"], g["file_id"], g["kind"]) for g in self.issued()}
+            issued = self.issued()
             decisions = self._decisions()
             grouped: dict[tuple, dict] = {}
             for b in self._inbox():
@@ -337,10 +337,20 @@ class ArtistService:
                 kind = b.get("kind")
                 if kind not in ("stream", "perpetual-personal"):
                     continue
+                # A new listener-generated ID represents a genuine new request
+                # generation, such as a stream renewal after its previous grant
+                # expired. Older messages with no ID are collapsed as legacy.
                 key = (b["listener_agent"], b["file_id"], b["manifest_sha256"],
-                       kind, b.get("x25519_public_hex"))
+                       kind, b.get("x25519_public_hex"), b.get("request_id"))
                 decision = decisions.get(h, {})
-                legacy_granted = (b["listener_agent"], b["file_id"], kind) in issued
+                legacy_granted = any(
+                    g.get("listener_agent") == b["listener_agent"]
+                    and g.get("file_id") == b["file_id"] and g.get("kind") == kind
+                    and (g.get("request_hash") == h or
+                         (not g.get("request_hash") and
+                          int(g.get("issued_at", b["received_at"])) >= b["received_at"]))
+                    for g in issued
+                )
                 status = ("approved" if legacy_granted or decision.get("status") == "approved"
                           else "declined" if decision.get("status") == "declined" else "pending")
                 if key not in grouped:
