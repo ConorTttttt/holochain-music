@@ -83,3 +83,5 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
   .player { grid-template-columns: 1fr; height: auto; padding: 8px 12px; gap: 6px; position: sticky; }
   .side { justify-content: space-between; }
 }
+.main:focus { outline: none; }
+a { color: var(--accent); }
