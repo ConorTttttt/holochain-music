@@ -25,6 +25,7 @@ let library = [];
 let libraryById = new Map();
 let view = 'browse';
 let viewArg = null;
+let requestFilters = { folder: 'all', kind: 'all', status: 'pending', search: '' };
 let dragging = false;
 
 function toast(message, kind = 'error') {
@@ -201,15 +202,118 @@ const views = {
   },
   async requests() {
     const { requests } = await api('/api/artist/requests', {});
-    return [el('h1', { text: 'Access requests' }), el('p', { class: 'sub', text: 'Requests arrive privately on your own chain. Approving signs a grant for that listener only and delivers it privately. A licence allows permanent offline use and export and cannot be revoked.' }),
-      list(requests.map(r => el('div', { class: 'row' },
-        el('div', { class: 'title' }, el('strong', { text: r.track_title }), el('span', { class: 'mono', text: r.listener_agent })),
-        el('div', {}, el('span', { class: 'badge', text: r.kind === 'stream' ? 'Wants streaming' : 'Wants licence' })),
-        el('div', { class: 'muted', text: r.note || '' }),
-        r.granted ? el('span', { class: 'badge ok', text: 'Granted' }) : el('div', { class: 'actions' },
-          el('button', { class: 'btn', type: 'button', text: 'Grant 24 h streaming', onclick: () => approve(r, 'stream') }),
-          el('button', { class: 'btn primary', type: 'button', text: 'Grant licence', onclick: () => approve(r, 'perpetual-personal') })))),
-      'No requests yet.')];
+    const filters = requestFilters;
+    let busy = false;
+    const folders = new Map(requests.map(r => [r.file_id, r.track_title]));
+    const select = (label, options, value, onChange) => {
+      const field = el('label', { class: 'request-filter' }, el('span', { text: label }));
+      const input = el('select', { 'aria-label': label }, ...options.map(([v, name]) =>
+        el('option', { value: v, text: name })));
+      input.value = value;
+      input.addEventListener('change', () => onChange(input.value));
+      field.append(input);
+      return field;
+    };
+    const statusFilter = select('Status', [['pending', 'Pending'], ['approved', 'Approved'],
+      ['declined', 'Declined'], ['all', 'All statuses']], filters.status, v => { filters.status = v; paint(); });
+    const kindFilter = select('Request type', [['all', 'All types'], ['stream', '24-hour streaming'],
+      ['perpetual-personal', 'Permanent personal licence']], filters.kind, v => { filters.kind = v; paint(); });
+    const folderFilter = select('Track folder', [['all', 'All folders'], ...[...folders]
+      .sort((a, b) => a[1].localeCompare(b[1])).map(([id, title]) => [id, title + ' · ' + id.slice(0, 8)])],
+      filters.folder, v => { filters.folder = v; paint(); });
+    const search = el('input', { type: 'search', maxlength: '120', value: filters.search,
+      placeholder: 'Search title, listener or message', 'aria-label': 'Search access requests' });
+    search.addEventListener('input', () => { filters.search = search.value; paint(); });
+    const searchField = el('label', { class: 'request-filter' }, el('span', { text: 'Search' }), search);
+    const summary = el('p', { class: 'sub', role: 'status' });
+    const rowsHost = el('div', { class: 'tracks' });
+    const progress = el('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
+    const acceptAll = el('button', { class: 'btn primary', type: 'button', text: 'Accept all pending' });
+    const acceptFiltered = el('button', { class: 'btn', type: 'button', text: 'Accept filtered' });
+    const declineFiltered = el('button', { class: 'btn danger', type: 'button', text: 'Decline all filtered' });
+
+    function matching() {
+      const term = filters.search.trim().toLocaleLowerCase();
+      return requests.filter(r => (filters.folder === 'all' || r.file_id === filters.folder)
+        && (filters.status === 'all' || r.status === filters.status)
+        && (filters.kind === 'all' || r.kind === filters.kind)
+        && (!term || [r.track_title, r.listener_agent, r.note, r.file_id]
+          .some(v => String(v || '').toLocaleLowerCase().includes(term))));
+    }
+    function paint() {
+      const visible = matching();
+      const pending = visible.filter(r => r.status === 'pending');
+      const total = requests.filter(r => r.status === 'pending').length;
+      summary.textContent = `${visible.length} shown · ${pending.length} pending in this view · ${total} pending overall`;
+      acceptAll.disabled = busy || !total;
+      acceptFiltered.disabled = declineFiltered.disabled = busy || !pending.length;
+      acceptFiltered.textContent = filters.folder === 'all' ? 'Accept all filtered' : 'Accept all in this folder';
+      const rows = visible.map(r => {
+        const kind = r.kind === 'stream' ? '24-hour streaming' : 'Permanent personal licence';
+        const badge = r.status === 'approved' ? 'badge ok' : r.status === 'declined' ? 'badge bad' : 'badge warn';
+        return el('div', { class: 'row request-row' },
+          el('div', { class: 'title' }, el('strong', { text: r.track_title }),
+            el('span', { class: 'mono', text: r.listener_agent }),
+            el('span', { class: 'muted', text: new Date(r.received_at * 1000).toLocaleString() })),
+          el('div', {}, el('span', { class: 'badge', text: kind }),
+            el('span', { class: badge, text: r.status[0].toUpperCase() + r.status.slice(1) })),
+          el('div', { class: 'request-note', text: r.note || 'No message' }),
+          r.status !== 'pending' ? el('div', { class: 'muted', text: 'Decision recorded' }) :
+            el('div', { class: 'actions' },
+              el('button', { class: 'btn primary', type: 'button', text: 'Accept',
+                disabled: busy, onclick: () => decide('approve', [r], false) }),
+              el('button', { class: 'btn danger', type: 'button', text: 'Decline',
+                disabled: busy, onclick: () => decide('decline', [r], false) })));
+      });
+      rowsHost.replaceChildren(...(rows.length ? rows :
+        [el('p', { class: 'empty', text: 'No requests match these filters.' })]));
+    }
+    async function decide(action, rows, bulk) {
+      if (busy) return;
+      const pending = rows.filter(r => r.status === 'pending');
+      if (!pending.length) return;
+      const permanent = pending.filter(r => r.kind === 'perpetual-personal').length;
+      const verb = action === 'approve' ? 'accept' : 'decline';
+      const irreversible = action === 'approve' && permanent
+        ? ` This includes ${permanent} permanent licences that cannot be revoked.` : '';
+      if ((bulk || irreversible) && !window.confirm(
+        `Really ${verb} ${pending.length} request(s)?${irreversible}\nOnly the listed pending requests will be affected.`)) return;
+      busy = true;
+      paint();
+      let succeeded = 0;
+      let queued = 0;
+      let failed = 0;
+      try {
+        for (let i = 0; i < pending.length; i += 25) {
+          const slice = pending.slice(i, i + 25);
+          progress.textContent = `Processing ${Math.min(i + 25, pending.length)} of ${pending.length}…`;
+          const result = await api('/api/artist/requests/bulk', {
+            action, request_hashes: slice.map(r => r.request_hash),
+          });
+          succeeded += result.succeeded;
+          queued += result.results.filter(x => x.ok && x.queued).length;
+          failed += result.results.filter(x => !x.ok).length;
+          // Do not retry automatically: a delivery may have succeeded before the HTTP reply failed.
+        }
+        toast(`${succeeded} ${action === 'approve' ? 'accepted' : 'declined'}${queued ? ` (${queued} delivery queued)` : ''}${failed ? `; ${failed} failed` : ''}.`,
+          failed ? 'error' : 'info');
+      } catch (e) {
+        toast(`Batch interrupted after ${succeeded} succeeded: ${e.message}. Refresh to see which remain.`);
+      } finally {
+        busy = false;
+        progress.textContent = '';
+        await render(); // refresh statuses from the artist's private ledger
+      }
+    }
+    acceptAll.addEventListener('click', () => decide('approve', requests, true));
+    acceptFiltered.addEventListener('click', () => decide('approve', matching(), true));
+    declineFiltered.addEventListener('click', () => decide('decline', matching(), true));
+    paint();
+    return [el('h1', { text: 'Access requests' }),
+      el('p', { class: 'sub', text: 'Accept or decline individual requests, or filter by track folder, type, status and listener. Accepting grants only the access requested. Permanent personal licences allow offline export and cannot be revoked. Declines are saved privately on this computer; listeners are not yet notified.' }),
+      el('div', { class: 'request-filters' }, folderFilter, kindFilter, statusFilter, searchField),
+      summary, el('div', { class: 'request-bulk actions' }, acceptAll, acceptFiltered, declineFiltered),
+      progress, rowsHost];
   },
   async settings() {
     const id = await api('/api/identity');
@@ -233,11 +337,6 @@ const views = {
   },
 };
 
-async function approve(request, kind) {
-  const r = await act('/api/artist/grant', { request_hash: request.request_hash, kind });
-  if (r) toast(r.queued ? 'Signed. The listener is offline; it will be delivered automatically when they are back.' : 'Delivered privately to the listener', 'info');
-  render();
-}
 async function exportWav(item) {
   const path = prompt('Save a playable WAV copy (personal use under your licence). Full path inside your home folder, ending in .wav:', '');
   if (path) await act('/api/export', { file_id: item.file_id, path }, 'Exported');
@@ -365,7 +464,7 @@ async function slowPoll() {
   ticks += 1;
   if (state.online && ticks % 3 === 0) {
     try { const r = await api('/api/grants/sync', {}); if (r.new_grants) { toast(`${r.new_grants} new grant(s) received`, 'info'); await refreshLibrary(); if (view === 'library' || view === 'browse') render(); } } catch (_) {}
-    try { const { requests } = await api('/api/artist/requests', {}); const open = requests.filter(r => !r.granted).length; const c = $('request-count'); c.hidden = !open; c.textContent = open; } catch (_) {}
+    try { const { requests } = await api('/api/artist/requests', {}); const open = requests.filter(r => r.status === 'pending').length; const c = $('request-count'); c.hidden = !open; c.textContent = open; } catch (_) {}
   }
   const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]));
   await refreshLibrary();
