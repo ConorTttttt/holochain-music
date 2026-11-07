@@ -33,6 +33,14 @@
   --teal: #E0A6E8; --field-border: #8E7BA5;
   --warn: #F6CA7C; --bad: #FFB3BE; --focus: #D6BAFF;
 }
+/* Amethyst Light: optional soft-lavender companion to Amethyst Night. */
+:root[data-theme="amethyst-light"] {
+  color-scheme: light;
+  --bg: #F8F4FD; --panel: #FFFFFF; --panel-2: #EFE5F8; --line: #D8C7E7;
+  --text: #30213E; --muted: #604F70; --accent: #7043AD; --accent-ink: #FFFFFF;
+  --teal: #77307D; --field-border: #756585;
+  --warn: #805000; --bad: #A32D47; --focus: #7043AD;
+}
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
