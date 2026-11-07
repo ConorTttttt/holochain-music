@@ -114,6 +114,7 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/access/request"): access_request,
         ("POST", "/api/grants/sync"): noargs(lambda: {"new_grants": app.sync_grants()}),
         ("POST", "/api/download"): lambda d: app.download(_keys(d, {"file_id"})["file_id"]),
+        ("POST", "/api/offline/verify"): lambda d: app.offline_readiness(_keys(d, {"file_id"})["file_id"]),
         ("POST", "/api/play"): lambda d: p.play(_keys(d, {"file_id"}, {"start_frame"})["file_id"], d.get("start_frame", 0)),
         ("POST", "/api/pause"): noargs(p.pause),
         ("POST", "/api/resume"): noargs(p.resume),
