@@ -388,11 +388,54 @@ class MusicApp:
         return d
 
     def download(self, file_id: str) -> dict:
+        """Explicit offline download: only permanent licences are supported.
+
+        Streaming playback can still fetch authenticated chunks through the
+        internal _ensure_download path without promising offline rental DRM.
+        """
         file_key(file_id)
-        if self.library.grant(file_id) is None:
+        grant = self.library.grant(file_id)
+        if grant is None:
             raise AppError("you need access from the artist before downloading")
+        if grant_kind(grant) != "perpetual-personal":
+            raise AppError("Download for Offline currently requires a permanent personal-use licence")
         d = self._ensure_download(file_id)
         return d.progress() if d else {"state": "complete"}
+
+    def offline_readiness(self, file_id: str) -> dict:
+        """On-demand offline verification; never return the content key.
+
+        Verification reads signed encrypted chunks and unwraps the grant key.
+        This can be disk-intensive, so it runs ONLY on an explicit UI request,
+        never from the frequent /api/library or playback-state polls.
+        """
+        file_key(file_id)
+        meta = self.library.meta(file_id)
+        if meta is None:
+            raise AppError("track is not in your library")
+        grant = self.library.grant(file_id)
+        if grant is None:
+            return {"state": "no_licence", "message": "No valid offline licence is recorded."}
+        try:
+            kind = grant_kind(grant)
+        except (StorageError, ValueError, KeyError, TypeError):
+            return {"state": "invalid_licence", "message": "The saved licence could not be validated."}
+        if kind != "perpetual-personal":
+            return {"state": "temporary_access", "message": "Temporary streaming access is not licensed for offline downloads in this version."}
+        try:
+            if not self.library.verify_complete(file_id):
+                return {"state": "incomplete", "message": "The full authenticated encrypted download is not available locally."}
+            key = unwrap_content_grant(
+                grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
+                recipient_private=self.keys.listener_x25519(),
+                signed_manifest=self.library.manifest(file_id))
+            del key
+        except (StorageError, ValueError, KeyError, TypeError):
+            return {"state": "missing_key", "message": "This licence or decryption key could not be verified. Check your identity backup."}
+        except OSError:
+            return {"state": "storage_error", "message": "Local encrypted files could not be read. Check disk space and permissions."}
+        return {"state": "ready", "message": "Encrypted content, licence and decryption key verified on this device. Playback still checks audio."}
 
     def _session_for(self, file_id: str) -> SessionSpec:
         file_key(file_id)

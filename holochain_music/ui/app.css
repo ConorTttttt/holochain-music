@@ -293,3 +293,20 @@ a { color: var(--accent); }
   .library-field { flex: 1 1 100%; max-width: none; }
   .playlist-item .row { grid-template-columns: minmax(0,1fr) auto; }
 }
+
+/* Unified Offline destination inside Your Library. Read-only storage copy. */
+.offline-dashboard { display: grid; gap: 18px; }
+.offline-group { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
+.offline-group h2 { margin: 0 0 8px; }
+.offline-track-list { display: grid; gap: 10px; }
+.offline-track-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--bg); min-width: 0; }
+.offline-track-heading { display: flex; gap: 12px; align-items: center; overflow-wrap: anywhere; }
+.offline-track-heading .muted { margin: 3px 0 0; }
+.offline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 0; }
+.offline-actions .btn { min-height: 44px; border-radius: 999px; }
+.offline-check-result { overflow-wrap: anywhere; }
+.offline-track-card progress { width: 100%; max-width: 340px; height: 14px; accent-color: var(--accent); display: block; }
+@media (max-width: 560px) {
+  .offline-group { padding: 12px; }
+  .offline-track-heading { align-items: flex-start; }
+}

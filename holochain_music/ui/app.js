@@ -72,7 +72,7 @@ function accessBadge(item) {
     return el('span', { class: 'badge warn', text: `Downloading ${pct}%` });
   }
   if (item.download && item.download.state === 'unavailable') return el('span', { class: 'badge bad', text: 'Unavailable' });
-  if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Offline ready' });
+  if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Downloaded · verify offline' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
   if (item.playable) return el('span', { class: 'badge ok', text: `Streaming access until ${new Date(item.grant_expires_at * 1000).toLocaleString()}` });
   if (item.grant_kind === 'stream') return el('span', { class: 'badge bad', text: 'Access expired' });
@@ -147,9 +147,16 @@ function trackActions(fileId, catalogueRow) {
       onclick: () => act('/api/play', { file_id: fileId }) }));
     box.append(el('button', { class: 'btn', type: 'button', text: 'Queue', 'aria-label': `Add ${item.title} to queue`,
       onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }));
-    if (!item.complete) box.append(el('button', { class: 'btn', type: 'button', text: 'Download',
-      onclick: () => act('/api/download', { file_id: fileId }, 'Download started') }));
-    if (item.offline_ready) box.append(el('button', { class: 'btn', type: 'button', text: 'Export WAV', onclick: () => exportWav(item) }));
+    if (item.grant_kind === 'perpetual-personal' && !item.offline_ready) {
+      const busy = item.download && ['downloading', 'retrying'].includes(item.download.state);
+      box.append(el('button', { class: 'btn', type: 'button',
+        text: busy ? 'Downloading…' : item.download && item.download.state === 'unavailable' ? 'Retry download' : 'Download for Offline',
+        disabled: busy || !state.online,
+        onclick: () => startOfflineDownload(fileId) }));
+    }
+    if (item.offline_ready && item.grant_kind === 'perpetual-personal')
+      box.append(el('button', { class: 'btn', type: 'button', text: 'Export licensed WAV',
+        onclick: () => exportWav(item) }));
     box.append(el('button', { class: 'btn', type: 'button', text: '+ Playlist', onclick: () => addToPlaylist(fileId) }));
   } else if (catalogueRow && catalogueRow.artist_agent !== state.agent) {
     const request = async kind => {
@@ -196,13 +203,14 @@ const libraryScopeNotes = {
   albums: 'Albums represented by local track metadata. Unavailable tracks remain listed.',
   licences: 'Permanent personal-use licences, including artist grants. This is not a verified purchase history.',
   temporary: 'Time-limited streaming access. Rental and subscription payments are not yet distinguished.',
-  offline: 'Locally marked offline-ready copies. Audio and keys are verified again when played.',
+  offline: 'App-managed downloads are separate from exported WAV files. Verify offline readiness explicitly; a stored Complete flag alone is not proof.',
   requests: 'Locally recorded access requests. Declined decisions are not yet synchronised into this view.'
 };
 function matchesLibraryScope(track, scope) {
   if (scope === 'licences') return track.grant_kind === 'perpetual-personal';
   if (scope === 'temporary') return track.grant_kind === 'stream';
-  if (scope === 'offline') return track.offline_ready === true;
+  if (scope === 'offline') return track.offline_ready === true ||
+    track.grant_kind === 'perpetual-personal' || Boolean(track.download);
   if (scope === 'requests') return Boolean(track.requested) && !track.playable;
   return true;
 }
@@ -233,6 +241,10 @@ function renderLibraryView() {
       String(a.artist_name || '').localeCompare(String(b.artist_name || '')) ||
       String(a.title || '').localeCompare(String(b.title || '')));
     count.textContent = rows.length + (rows.length === 1 ? ' track' : ' tracks');
+    if (libraryFilters.scope === 'offline') {
+      results.replaceChildren(renderOfflineDashboard(rows));
+      return;
+    }
     if (libraryFilters.scope !== 'albums') {
       results.replaceChildren(list(rows.map(t => trackRow(t, t.file_id, null)),
         q ? 'No tracks match your library search or collection filter.' :
@@ -263,6 +275,114 @@ function renderLibraryView() {
       el('label', { class: 'library-field' }, el('span', { text: 'Search your library' }), search),
       el('label', { class: 'library-field' }, el('span', { text: 'Sort by' }), sort)),
     note, count, results];
+}
+
+// Explicit on-demand crypto/integrity verification avoids expensive hashing on
+// every library poll. The browser receives only an enumerated status, never keys.
+const offlineChecks = new Map();
+async function verifyOfflineTrack(fileId) {
+  offlineChecks.set(fileId, { state: 'checking', message: 'Checking local encrypted data and licence…' });
+  if (view === 'library' && libraryFilters.scope === 'offline') render();
+  try {
+    const result = await api('/api/offline/verify', { file_id: fileId });
+    offlineChecks.set(fileId, { state: result.state, message: result.message,
+      checkedAt: new Date().toLocaleTimeString() });
+  } catch (e) {
+    offlineChecks.set(fileId, { state: 'error', message: 'Verification could not finish: ' + e.message });
+  }
+  if (view === 'library' && libraryFilters.scope === 'offline') render();
+}
+async function startOfflineDownload(fileId) {
+  try {
+    const result = await api('/api/download', { file_id: fileId });
+    if (result.state === 'complete') toast('Encrypted download present. Verify offline readiness before relying on it.', 'info');
+    else toast('Download ' + (result.state || 'requested') + '. Progress will update in Offline.', 'info');
+    await refreshLibrary();
+    if (view === 'library') render();
+  } catch (e) { toast('Download not started: ' + e.message); }
+}
+function downloadStateText(item) {
+  const transfer = item.download;
+  if (transfer) {
+    const found = Number(transfer.available_chunks);
+    const total = Number(transfer.total_chunks);
+    const progress = total > 0 && Number.isFinite(found) && Number.isFinite(total)
+      ? ' · ' + Math.round(100 * found / total) + '% of authenticated chunks received' : '';
+    if (transfer.state === 'unavailable') return 'Source unavailable — Retry when online.' + progress;
+    if (transfer.state === 'retrying') return 'Retrying an authenticated source…' + progress;
+    if (transfer.state === 'downloading') return 'Downloading encrypted audio…' + progress;
+    if (transfer.state === 'paused') return 'Transfer paused or interrupted. Restart is available when supported.' + progress;
+    if (transfer.state === 'complete') return 'Encrypted transfer complete; check offline licence and local keys.';
+    return 'Transfer status: ' + String(transfer.state || 'unknown') + progress;
+  }
+  if (item.offline_ready) return 'Full encrypted download was recorded earlier. Verify before offline use.';
+  if (item.grant_kind !== 'perpetual-personal')
+    return 'This version supports streaming access only for this grant; no offline rental promise.';
+  return 'Not downloaded for offline listening.';
+}
+function offlineTrackCard(item) {
+  const check = offlineChecks.get(item.file_id);
+  const card = el('article', { class: 'offline-track-card' },
+    el('div', { class: 'offline-track-heading' },
+      albumCoverThumb(item.album_id),
+      el('div', {}, el('strong', { text: item.title || 'Untitled' }),
+        el('p', { class: 'muted', text: item.artist_name || 'Unknown artist' }))),
+    el('p', { class: 'muted', text: downloadStateText(item) }));
+  if (item.download && Number(item.download.total_chunks) > 0) {
+    const progress = el('progress', { max: String(item.download.total_chunks),
+      value: String(Math.min(item.download.total_chunks, Math.max(0, item.download.available_chunks || 0))),
+      'aria-label': 'Verified download chunks for ' + (item.title || 'track') });
+    card.append(progress);
+  }
+  if (check) {
+    const note = check.state === 'ready'
+      ? 'Verified on this device at ' + check.checkedAt + ' · still checked when playing.'
+      : check.message;
+    card.append(el('p', { class: 'offline-check-result', role: 'status', text: note }));
+  }
+  const actions = el('div', { class: 'offline-actions' });
+  if (item.grant_kind === 'perpetual-personal' && item.offline_ready) {
+    actions.append(el('button', { class: 'btn', type: 'button',
+      disabled: check && check.state === 'checking',
+      text: check && check.state === 'ready' ? 'Verify again' : 'Verify offline readiness',
+      onclick: () => verifyOfflineTrack(item.file_id) }));
+    if (check && check.state === 'ready') {
+      actions.append(el('button', { class: 'btn primary', type: 'button', text: 'Play verified copy',
+        onclick: () => act('/api/play', { file_id: item.file_id }) }));
+      actions.append(el('button', { class: 'btn', type: 'button', text: 'Export licensed WAV',
+        onclick: () => exportWav(item) }));
+    }
+  } else if (item.grant_kind === 'perpetual-personal') {
+    const transfer = item.download;
+    const busy = transfer && ['downloading', 'retrying'].includes(transfer.state);
+    actions.append(el('button', { class: 'btn', type: 'button',
+      text: busy ? 'Downloading…' : transfer && transfer.state === 'unavailable' ? 'Retry download' : 'Download for Offline',
+      disabled: !state.online || Boolean(busy),
+      onclick: () => startOfflineDownload(item.file_id) }));
+  }
+  card.append(actions);
+  return card;
+}
+function renderOfflineDashboard(rows) {
+  const verified = rows.filter(t => offlineChecks.get(t.file_id)?.state === 'ready' && t.offline_ready);
+  const pending = rows.filter(t => !verified.includes(t));
+  const section = (heading, note, tracks, empty) => el('section', { class: 'offline-group' },
+    el('h2', { text: heading }), el('p', { class: 'sub', text: note }),
+    tracks.length ? el('div', { class: 'offline-track-list' }, ...tracks.map(offlineTrackCard)) :
+      el('p', { class: 'empty', text: empty }));
+  return el('div', { class: 'offline-dashboard' },
+    section('Ready to listen',
+      'Only tracks explicitly verified in this session appear here. Actual playback still checks audio and access.',
+      verified, 'No tracks verified yet. Choose Verify offline readiness on a recorded complete download.'),
+    section('Downloads',
+      'Transfers show authenticated chunk progress when known. Temporary streaming access is not an offline rental licence.',
+      pending, 'No downloads or offline-eligible music match your current filters.'),
+    el('section', { class: 'offline-group' }, el('h2', { text: 'Independent licensed exports' }),
+      el('p', { text: 'After verifying a permanent personal-use licence and local file, choose Export licensed WAV. The app can write a standard WAV under your home directory; export history and independent player testing are not tracked here.' }),
+      el('p', { class: 'muted', text: 'An exported file is yours to retain under its personal-use licence. It is not a transfer of copyright or proof of a payment.' })),
+    el('section', { class: 'offline-group' }, el('h2', { text: 'Storage and safety' }),
+      el('p', { text: 'Encrypted app-managed downloads remain in your private music library. Do not remove identity keys, licences or backups when cleaning storage.' }),
+      el('p', { class: 'muted', text: 'Storage totals, selected-download removal and safe cache clearing are not yet implemented. Independently exported WAV files will never be removed by future Clear Cache actions.' })));
 }
 
 // Read the latest saved playlists before modifying them; never change the
@@ -544,8 +664,18 @@ async function approve(request, kind) {
   render();
 }
 async function exportWav(item) {
-  const path = prompt('Save a playable WAV copy (personal use under your licence). Full path inside your home folder, ending in .wav:', '');
-  if (path) await act('/api/export', { file_id: item.file_id, path }, 'Exported');
+  if (!item || item.grant_kind !== 'perpetual-personal' || !item.offline_ready)
+    return toast('A complete local copy and permanent personal-use licence are needed for WAV export.');
+  // A native OS file picker is not exposed by the current loopback browser API.
+  // Never pretend to show a picker or claim file writes before the API confirms.
+  const path = prompt('Export licensed WAV for independent use. Enter an absolute .wav filename inside your home folder. Existing files are never overwritten:', '');
+  if (!path) return;
+  try {
+    const result = await api('/api/export', { file_id: item.file_id, path });
+    if (!result.exported) throw new Error('No completed export path was returned.');
+    toast('Export complete: WAV written to ' + result.exported +
+      '. Independent playback in another player has not been verified.', 'info');
+  } catch (e) { toast('Export failed: ' + e.message); }
 }
 async function addToPlaylist(fileId) {
   try {
@@ -719,9 +849,9 @@ async function slowPoll() {
     try { const r = await api('/api/grants/sync', {}); if (r.new_grants) { toast(`${r.new_grants} new grant(s) received`, 'info'); await refreshLibrary(); if (view === 'library' || view === 'browse') render(); } } catch (_) {}
     try { const { requests } = await api('/api/artist/requests', {}); const open = requests.filter(r => !r.granted).length; const c = $('request-count'); c.hidden = !open; c.textContent = open; } catch (_) {}
   }
-  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]));
+  const before = JSON.stringify(library.map(t => [t.file_id, t.download && t.download.state, t.download && t.download.available_chunks, t.playable, t.complete]));
   await refreshLibrary();
-  if (view === 'library' && before !== JSON.stringify(library.map(t => [t.file_id, t.download && t.download.available_chunks, t.playable, t.complete]))) render();
+  if (view === 'library' && before !== JSON.stringify(library.map(t => [t.file_id, t.download && t.download.state, t.download && t.download.available_chunks, t.playable, t.complete]))) render();
 }
 (async () => {
   if (!token) { toast('Open the private link printed by holochain-music in your terminal.'); return; }
