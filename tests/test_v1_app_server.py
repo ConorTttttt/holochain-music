@@ -95,6 +95,21 @@ class ApiTests(unittest.TestCase):
         except ValueError:
             return r.status, payload, r
 
+    def test_bundled_fonts_load_with_strict_csp(self):
+        for path in (
+            "/fonts/PlusJakartaSans-wght.ttf",
+            "/fonts/PlusJakartaSans-Italic-wght.ttf",
+        ):
+            with self.subTest(font=path):
+                status, data, headers = self.req("GET", path, token=False, origin=None)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers.getheader("Content-Type"), "font/ttf")
+                self.assertIn("font-src 'self'", headers.getheader("Content-Security-Policy"))
+                self.assertEqual(headers.getheader("X-Content-Type-Options"), "nosniff")
+                self.assertTrue(data.startswith(b"\\x00\\x01\\x00\\x00"))
+                self.assertGreater(len(data), 100_000)
+        self.assertEqual(self.req("GET", "/fonts/missing.ttf", token=False)[0], 404)
+
     def test_binds_loopback_only(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
 
