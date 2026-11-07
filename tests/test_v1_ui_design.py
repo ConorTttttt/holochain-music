@@ -61,6 +61,16 @@ class UiDesignTokenTests(unittest.TestCase):
                 self.assertIn(declaration, CSS)
         self.assertIn(":focus-visible { outline: 3px solid var(--focus);", CSS)
 
+    def test_compact_navigation_groups_do_not_stretch_active_pill(self):
+        # Regression from Ubuntu high-zoom/compact screencast: the row-style
+        # sidebar stretched the active nav pill and left large vertical gaps.
+        compact = CSS.split("@media (max-width: 860px)", 1)[1]
+        self.assertIn(".sidebar { flex-direction: column; align-items: stretch;", compact)
+        self.assertIn(".sidebar nav { display: flex; flex-wrap: wrap; align-content: flex-start;", compact)
+        self.assertIn("align-items: center; gap: 4px; width: 100%;", compact)
+        self.assertIn(".sidebar .nav { flex: 0 0 auto; align-self: flex-start;", compact)
+        self.assertNotIn(".sidebar { flex-direction: row; flex-wrap: wrap;", compact)
+
     def test_theme_override_and_native_select_contract(self):
         self.assertIn('<label for="appearance">Appearance</label>', HTML)
         self.assertIn('<select id="appearance" name="appearance">', HTML)
