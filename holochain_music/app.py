@@ -22,6 +22,7 @@ from music_catalogue.moq_host import MoqHost
 
 from . import binaries
 from .artist import ArtistError, ArtistService
+from .artwork import AlbumArtworkStore
 from .bridge import Bridge, BridgeError
 from .catalogue import Catalogue, ResolveError
 from .conductor import APP_ID, BootstrapServer, Conductor, ConductorError
@@ -65,6 +66,7 @@ class MusicApp:
         self.settings = self._load_settings()
         self.keys = KeyStore(self.paths.keys)
         self.library = Library(self.paths.library)
+        self.album_art = AlbumArtworkStore(self.paths.host / 'artwork')
         self.conductor: Conductor | None = None
         self.bootstrap: BootstrapServer | None = None
         self.bridge: Bridge | None = None
@@ -474,10 +476,16 @@ class MusicApp:
                                          signed_manifest=manifest, content_key=self.keys.content_key(file_id))
         track = json.loads((self.paths.host / "files" / file_id / "track.json").read_text(encoding="utf-8"))
         profile = self.catalogue.profile(self.agent) if self.catalogue else None
+        album_id = track.get("album_id")
+        album_title = None
+        if album_id and self.catalogue:
+            album_title = next((a["title"] for a in self.catalogue.albums(self.agent)
+                                if a["album_id"] == album_id), None)
         self.library.add(manifest=manifest, meta={
             "track_key": f"{self.agent}:{track_id}", "track_id": track_id, "title": track["title"],
             "artist_agent": self.agent, "artist_name": profile["display_name"] if profile else "You",
-            "album_id": None, "album_title": None, "duration_ms": track["duration_ms"], "track_number": 1,
+            "album_id": album_id, "album_title": album_title, "duration_ms": track["duration_ms"],
+            "track_number": track.get("track_number", 1),
             "manifest_sha256": manifest_digest(manifest), "artist_key_hex": artist_key.hex(),
             "listener_agent": self.agent, "hosts": []})
         self.library.set_grant(file_id, licence, "perpetual-personal")

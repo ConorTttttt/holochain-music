@@ -243,3 +243,26 @@ a { color: var(--accent); }
   .player .side .badge { max-width: 42vw; }
   .player .volume input { width: 20vw; min-width: 50px; }
 }
+
+/* Authenticated local album artwork; the decorative vinyl remains the fallback. */
+.player .art img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block; z-index: 2; border-radius: inherit;
+}
+.player .art img[hidden] { display: none; }
+.track-info { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.track-info .title { min-width: 0; }
+.track-info .title strong,
+.track-info .title span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.track-cover {
+  width: 44px; height: 44px; flex: none; display: grid; place-items: center;
+  color: var(--accent); border: 1px solid var(--line);
+  border-radius: 9px; position: relative; overflow: hidden;
+  background: var(--panel-2);
+}
+.track-cover .icon { width: 25px; height: 25px; }
+.track-cover img { position: absolute; inset: 0; height: 100%; width: 100%; object-fit: cover; }
+@media (max-width: 420px) {
+  .track-info { gap: 8px; }
+  .track-cover { width: 38px; height: 38px; }
+}

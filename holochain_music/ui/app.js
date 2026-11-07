@@ -81,6 +81,64 @@ function accessBadge(item) {
   return el('span', { class: 'badge', text: 'No access' });
 }
 
+// Local album cover images are token-authorised binary responses, then converted
+// to short-lived blob: URLs. No bearer token is placed in an img src or query.
+const albumArtwork = new Map();
+const validAlbumId = id => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
+async function albumArtworkUrl(albumId) {
+  if (!token || !validAlbumId(albumId)) return null;
+  if (albumArtwork.has(albumId)) return albumArtwork.get(albumId);
+  const request = (async () => {
+    try {
+      const response = await fetch(`/api/artwork/${albumId}`, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store'
+      });
+      if (!response.ok || response.headers.get('Content-Type') !== 'image/png') return null;
+      if (Number(response.headers.get('Content-Length')) > 768 * 1024) return null;
+      const image = await response.blob();
+      if (image.size > 768 * 1024 || image.type !== 'image/png') return null;
+      return URL.createObjectURL(image);
+    } catch (_) { return null; }
+  })();
+  albumArtwork.set(albumId, request);
+  return request;
+}
+window.addEventListener('pagehide', () => {
+  for (const request of albumArtwork.values()) {
+    Promise.resolve(request).then(url => { if (url) URL.revokeObjectURL(url); });
+  }
+});
+function albumCoverThumb(albumId) {
+  const thumb = el('span', { class: 'track-cover', 'aria-hidden': 'true' });
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'icon');
+  icon.setAttribute('viewBox', '0 0 256 256');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#ph-vinyl-record');
+  icon.append(use);
+  thumb.append(icon);
+  if (validAlbumId(albumId)) albumArtworkUrl(albumId).then(url => {
+    if (url) thumb.append(el('img', { src: url, alt: '' }));
+  });
+  return thumb;
+}
+let shownArtworkAlbumId = undefined;
+function showPlayerArtwork(item) {
+  const albumId = item && validAlbumId(item.album_id) ? item.album_id : null;
+  if (albumId === shownArtworkAlbumId) return;
+  shownArtworkAlbumId = albumId;
+  const image = $('now-art-image');
+  image.hidden = true;
+  image.removeAttribute('src');
+  if (!albumId) return;
+  albumArtworkUrl(albumId).then(url => {
+    if (shownArtworkAlbumId === albumId && url) {
+      image.src = url;
+      image.hidden = false;
+    }
+  });
+}
+
 function trackActions(fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const box = el('div', { class: 'actions' });
@@ -109,9 +167,10 @@ function trackRow(t, fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const active = state.player && state.player.track_key === fileId;
   return el('div', { class: `row${active ? ' active' : ''}` },
-    el('div', { class: 'title' }, el('strong', { text: t.title || 'Untitled' }),
-      el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
-        onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist'))),
+    el('div', { class: 'track-info' }, albumCoverThumb(t.album_id),
+      el('div', { class: 'title' }, el('strong', { text: t.title || 'Untitled' }),
+        el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
+          onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist')))),
     el('div', { class: 'album' }, accessBadge(item)),
     el('div', { class: 'dur muted', text: fmt(t.duration_ms) }),
     trackActions(fileId, catalogueRow));
@@ -201,14 +260,47 @@ const views = {
     const profile = el('form', { class: 'stack', onsubmit: async e => { e.preventDefault();
       await act('/api/artist/profile', { display_name: name.value, biography: bio.value }, 'Artist profile published'); } },
       f('Artist name', name), f('Biography', bio), el('button', { class: 'btn', type: 'submit', text: 'Save profile' }));
-    form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title), f('Rights declaration', rights),
+
+    // The Holochain album record is public; its optional local cover is not
+    // distributed to listeners until signed artwork transport is implemented.
+    const albumName = el('input', { required: true, maxlength: '200', placeholder: 'Album or EP title' });
+    const coverPath = el('input', { maxlength: '1024', placeholder: '/home/you/Pictures/cover.png', autocomplete: 'off' });
+    const albumSelect = el('select', {}, el('option', { value: '', text: 'Single (no album)' }));
+    try {
+      const { albums } = await api('/api/artist/albums', {});
+      for (const a of albums) if (validAlbumId(a.album_id)) {
+        albumSelect.append(el('option', { value: a.album_id, text: a.title + (a.local_artwork ? ' · local cover' : '') }));
+      }
+    } catch (_) { /* New or offline artist: the selection can stay empty. */ }
+    const albumForm = el('form', { class: 'stack', onsubmit: async e => {
+      e.preventDefault();
+      const submit = albumForm.querySelector('button[type=submit]');
+      submit.disabled = true;
+      const result = await act('/api/artist/album', { title: albumName.value,
+        artwork_path: coverPath.value.trim() || null }, 'Album created');
+      submit.disabled = false;
+      if (result && validAlbumId(result.album_id)) {
+        albumSelect.append(el('option', { value: result.album_id, text: albumName.value +
+          (result.local_artwork ? ' · local cover' : '') }));
+        albumSelect.value = result.album_id;
+        albumName.value = ''; coverPath.value = '';
+      }
+    } },
+      f('Album or EP title', albumName), f('Optional PNG cover file path on this computer (RGB/RGBA, up to 1200px and 768 KiB)', coverPath),
+      el('p', { class: 'muted', text: 'Local PNG artwork is scrubbed of embedded metadata. It appears on this device only until peer-to-peer artwork delivery is implemented.' }),
+      el('button', { class: 'btn', type: 'submit', text: 'Create album' }));
+
+    form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title),
+      f('Add track to album (optional)', albumSelect), f('Rights declaration', rights),
       el('p', { class: 'muted', text: 'The file is encrypted locally (AES-256-GCM). Only ciphertext is hosted; the content key never leaves this computer. Your declaration is not a copyright verification.' }),
       el('button', { class: 'btn primary', type: 'submit', text: 'Encrypt & publish' }));
     form.addEventListener('submit', async e => { e.preventDefault(); const b = form.querySelector('button[type=submit]'); b.disabled = true; b.textContent = 'Encrypting & publishing…';
-      const r = await act('/api/artist/publish', { path: path.value, title: title.value, rights_basis: rights.value }, 'Track published and hosted');
+      const r = await act('/api/artist/publish', { path: path.value, title: title.value,
+        album_id: albumSelect.value || null, rights_basis: rights.value }, 'Track published and hosted');
       b.disabled = false; b.textContent = 'Encrypt & publish'; if (r) show('mytracks'); });
     return [el('h1', { text: 'Artist studio' }), el('h2', { text: '1. Your profile' }), el('div', { class: 'card' }, profile),
-      el('h2', { text: '2. Publish a track' }), el('div', { class: 'card' }, form)];
+      el('h2', { text: '2. Create an album (optional)' }), el('div', { class: 'card' }, albumForm),
+      el('h2', { text: '3. Publish a track' }), el('div', { class: 'card' }, form)];
   },
   async mytracks() {
     const { tracks } = await api('/api/artist/tracks', {});
@@ -340,6 +432,7 @@ function renderPlayer() {
   $('now-artist').textContent = artist;
   $('now-title').title = title;
   $('now-artist').title = artist;
+  showPlayerArtwork(item);
   // "Playing" only once PCM for the current position has actually been written.
   const playingLabel = !p.output_active ? 'Starting…' : p.source === 'offline' ? 'Playing · offline copy' : 'Streaming';
   const labels = { idle: 'Idle', loading: 'Opening · verifying…', seeking: 'Seeking…', playing: playingLabel,

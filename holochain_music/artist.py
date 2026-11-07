@@ -33,6 +33,7 @@ from holochain_storage.package import (
 from music_catalogue.content_grants import issue_content_grant, issue_personal_licence
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 
+from .artwork import AlbumArtworkStore, load_cover
 from .bridge import Bridge
 from .keys import KeyStore
 from .library import _atomic_json, _read_json, file_key
@@ -83,6 +84,7 @@ class ArtistService:
         self.root = Path(host_root)
         self.cas = self.root / "cas"
         self.files = self.root / "files"
+        self.album_art = AlbumArtworkStore(self.root / 'artwork')
         for d in (self.root, self.cas, self.files):
             d.mkdir(parents=True, exist_ok=True)
             d.chmod(0o700)
@@ -115,12 +117,43 @@ class ArtistService:
             "display_name": display_name.strip(), "biography": biography.strip(),
             "artwork_manifest_sha256": None})
 
-    def create_album(self, title: str, release_date: str | None) -> dict:
+    def create_album(self, title: str, release_date: str | None, *,
+                     artwork_path: Path | None = None) -> dict:
+        """Create a public album entry; cover stays local until a verified
+        cross-peer artwork distribution protocol is available."""
+        cover = load_cover(artwork_path) if artwork_path is not None else None
         album_id = secrets.token_hex(16)
-        self.bridge.call("publish_album", entry={
-            "schema": "holochain-music/album/v1", "artist_agent": self.me, "album_id": album_id,
-            "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None})
-        return {"album_id": album_id}
+        if cover is not None:
+            self.album_art.save(album_id, cover)
+        try:
+            # Do not put a bare PNG digest in artwork_manifest_sha256: that
+            # catalogue field expects a signed artwork manifest, not file bytes.
+            self.bridge.call("publish_album", entry={
+                "schema": "holochain-music/album/v1", "artist_agent": self.me, "album_id": album_id,
+                "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None})
+        except BaseException:
+            if cover is not None:
+                self.album_art.delete(album_id)
+            raise
+        return {"album_id": album_id, "local_artwork": cover is not None}
+
+    def my_albums(self) -> list[dict]:
+        """Verified authored album records with a local-only art availability flag."""
+        seen: set[str] = set()
+        albums = []
+        for record in self.bridge.records("list_albums", artist=self.me):
+            body = record.body
+            album_id = body.get("album_id")
+            if (record.author != self.me or body.get("artist_agent") != self.me
+                    or body.get("schema") != "holochain-music/album/v1"
+                    or not isinstance(album_id, str) or len(album_id) != 32
+                    or any(c not in "0123456789abcdef" for c in album_id)
+                    or album_id in seen):
+                continue
+            seen.add(album_id)
+            albums.append({"album_id": album_id, "title": str(body.get("title", ""))[:200],
+                           "local_artwork": self.album_art.has(album_id)})
+        return albums
 
     def publish_track(self, *, wav: Path, title: str, album_id: str | None = None,
                       track_number: int = 1, disc_number: int = 1,
@@ -157,6 +190,7 @@ class ArtistService:
             "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis})
         self.host_file(manifest, owner_agent=self.me, artist_key=public_key_bytes(artist_key))
         _atomic_json(d / "track.json", {"track_id": track_id, "title": title.strip(), "file_id": file_id,
+                                        "album_id": album_id or None, "track_number": track_number,
                                         "manifest_sha256": digest, "owner_agent": self.me,
                                         "published_at": int(time.time()), **info})
         return {"track_id": track_id, "file_id": file_id, "manifest_sha256": digest, **info}
