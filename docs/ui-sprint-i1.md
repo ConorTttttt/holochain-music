@@ -19,6 +19,7 @@ The base is the shared `feat/v1-app-integration` line. The Windows branch (`feat
 ## Validation / definition of done
 
 - Run `python -m unittest discover -s tests -p 'test_v1_ui_design.py' -v` (structural guards only).
+- Run `python -m unittest discover -s tests -p 'test_v1_app_server.py' -v` to check the local token-protected API. This fixture normally uses `/tmp` to keep Holochain keystore paths short. If `/tmp` is quota-limited, check `df -h /tmp "$HOME"`, `df -i /tmp "$HOME"` and optionally `quota -s`, then use a **short path on a writable filesystem with free space**, e.g. `mkdir -p "$HOME/hm-tmp" && HOLOCHAIN_MUSIC_TEST_TMPDIR="$HOME/hm-tmp" python -m unittest discover -s tests -p 'test_v1_app_server.py' -v`. Avoid deleting arbitrary system `/tmp` files. This override affects **only the test fixture** and does not change application data or keys.
 - Run existing full Python/Rust/JS and integration tests in the proper environment before merge.
 - Inspect dark/light screens, zoom, keyboard focus, player controls and forms on Linux/Windows.
 - Check that resizes/seek/track-switches remain smooth, particularly Windows physical speaker quality.
