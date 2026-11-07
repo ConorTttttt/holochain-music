@@ -126,6 +126,31 @@ class OceanSignalThemeTests(unittest.TestCase):
             with self.subTest(foreground=fg, background=bg):
                 self.assertGreaterEqual(contrast(theme[fg], theme[bg]), minimum)
 
+    def test_amethyst_light_is_selectable_and_persistent(self):
+        self.assertIn("'amethyst-light'", JS)
+        self.assertIn("el('option', { value: 'amethyst-light', text: 'Amethyst Light' })", JS)
+        self.assertIn("localStorage.setItem(APPEARANCE_KEY, mode)", JS)
+        self.assertIn(':root[data-theme="amethyst-light"]', CSS)
+
+    def test_amethyst_light_text_and_control_contrast(self):
+        match = re.search(re.escape(':root[data-theme="amethyst-light"]') + r'\s*\{([^{}]*)\}', CSS, re.S)
+        self.assertIsNotNone(match)
+        theme = tokens(match.group(1))
+        self.assertEqual(theme["bg"], "#F8F4FD")
+        self.assertEqual(theme["accent"], "#7043AD")
+        self.assertIn("color-scheme: light", match.group(1))
+        for fg, bg, minimum in (
+            ("text", "bg", 4.5), ("text", "panel", 4.5), ("text", "panel-2", 4.5),
+            ("muted", "bg", 4.5), ("muted", "panel", 4.5), ("muted", "panel-2", 4.5),
+            ("accent", "bg", 4.5), ("accent-ink", "accent", 4.5),
+            ("teal", "panel", 4.5), ("teal", "panel-2", 4.5),
+            ("warn", "panel-2", 4.5), ("bad", "panel-2", 4.5),
+            ("field-border", "panel", 3), ("field-border", "panel-2", 3),
+            ("focus", "panel", 3), ("focus", "panel-2", 3),
+        ):
+            with self.subTest(foreground=fg, background=bg):
+                self.assertGreaterEqual(contrast(theme[fg], theme[bg]), minimum)
+
     def test_preserves_borderless_icons_and_round_play_pause(self):
         self.assertIn(".player button { width: 40px; height: 40px; border: 0; border-radius: 0; background: transparent;", CSS)
         self.assertIn(".player .primary { width: 46px; height: 46px; border-radius: 50%;", CSS)
