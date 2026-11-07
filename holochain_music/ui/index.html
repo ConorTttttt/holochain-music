@@ -35,6 +35,14 @@
     </aside>
     <main id="main" class="main" tabindex="-1">
       <header class="topbar">
+        <div class="appearance-control">
+          <label for="appearance">Appearance</label>
+          <select id="appearance" name="appearance">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
         <form id="search-form" role="search" class="search">
           <label for="search" class="sr-only">Search tracks</label>
           <input id="search" type="search" placeholder="Search tracks (press /)" minlength="2" maxlength="80" autocomplete="off">

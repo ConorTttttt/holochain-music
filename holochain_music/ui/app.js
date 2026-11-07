@@ -7,6 +7,22 @@ if (urlToken) { sessionStorage.setItem('hm_token', urlToken); history.replaceSta
 const token = sessionStorage.getItem('hm_token');
 
 const $ = id => document.getElementById(id);
+
+// UI-only preference; no session tokens, keys or account data are stored here.
+// System removes the override so CSS follows prefers-color-scheme automatically.
+const appearanceKey = 'hm_ui_appearance';
+function setAppearance(mode) {
+  const chosen = ['system', 'light', 'dark'].includes(mode) ? mode : 'system';
+  if (chosen === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', chosen);
+  $('appearance').value = chosen;
+  try { localStorage.setItem(appearanceKey, chosen); } catch (_) { /* private storage disabled */ }
+}
+let savedAppearance = 'system';
+try { savedAppearance = localStorage.getItem(appearanceKey) || 'system'; } catch (_) { /* blocked storage */ }
+setAppearance(savedAppearance);
+$('appearance').addEventListener('change', e => setAppearance(e.target.value));
+
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
