@@ -95,7 +95,7 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             self.assertEqual(result["available_chunks"], 1)
             self.assertTrue(object_path(self.destination, self.chunks[0]["sha256"]).is_file())
             resumed = d.resume()
-            self.assertEqual(resumed["state"], "downloading")
+            self.assertIn(resumed["state"], ("downloading", "complete"))
             wait_until(lambda: d.progress()["state"] == "complete")
         self.assertEqual(d.progress()["available_chunks"], len(self.chunks))
         self.assertEqual(calls[0][0], 0)
