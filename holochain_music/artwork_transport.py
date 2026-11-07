@@ -127,8 +127,10 @@ class VerifiedArtworkCache:
     is rechecked against the saved bytes. Cache does not mint new trust.
     """
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, cas: Path):
         self.root = Path(root)
+        # Retain the verified S1 ciphertext for offline re-verification.
+        self.cas = Path(cas)
 
     def _directory(self, artist_agent: str, album_id: str) -> Path:
         _identity(artist_agent, album_id)
@@ -170,6 +172,12 @@ class VerifiedArtworkCache:
             image = AlbumArtworkStore(directory).read(album_id)
             if image is None or sha256(image) != record["image_sha256"]:
                 return None
-            return image
+            # Even offline, tie the displayed bytes back to the cached
+            # artist-signed ciphertext instead of trusting mutable JSON alone.
+            recovered = recover_public_artwork(
+                record["manifest"], store=self.cas, artist_agent=artist_agent,
+                album_id=album_id, trusted_artist=key,
+                expected_digest=record["manifest_sha256"])
+            return image if image == recovered else None
         except (OSError, ValueError, TypeError, KeyError, StorageError, ArtworkError):
             return None
