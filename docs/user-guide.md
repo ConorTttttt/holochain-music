@@ -62,6 +62,17 @@ In **Identity & settings → Appearance**, choose:
 
 Changes are immediate and do **not** restart playback, Holochain, or your audio output. The preference is stored locally **in this browser** (not in the Holochain identity or encrypted backups); another browser or profile may use a different choice. If browser storage is blocked, the choice applies for the current page but may not persist. The Ocean Signal brand palette remains adjustable separately from this appearance setting.
 
+## Typography
+
+In **Identity & settings → Typography → Font style**, choose:
+
+- **Balanced — Inter** (default): Inter for navigation, controls, headings, song titles and artist information.
+- **Expressive — Inter + Space Grotesk**: Inter remains the body/UI typeface while Space Grotesk is used for page titles and the application name.
+
+Both styles work with **every Ocean Signal and Amethyst theme**. Changes apply immediately and are saved only in this browser, independently of the colour theme. They do not change audio, network settings or licence permissions.
+
+Fonts are bundled as WOFF2 files and served from this computer; no Google Fonts/CDN request is needed. The bundled webfonts are Latin subsets; the CSS uses a platform font fallback for unsupported glyphs. The included fonts are distributed under the SIL Open Font License 1.1. Their full licences are in `holochain_music/ui/fonts/Inter-OFL.txt` and `holochain_music/ui/fonts/SpaceGrotesk-OFL.txt`.
+
 ## Back up your identity and music
 
 Without a backup, losing this computer means losing your licences and, if you
