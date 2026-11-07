@@ -22,6 +22,7 @@ from music_catalogue.moq_host import MoqHost
 
 from . import binaries
 from .artist import ArtistError, ArtistService
+from .artwork import AlbumArtworkStore
 from .bridge import Bridge, BridgeError
 from .catalogue import Catalogue, ResolveError
 from .conductor import APP_ID, BootstrapServer, Conductor, ConductorError
@@ -65,6 +66,7 @@ class MusicApp:
         self.settings = self._load_settings()
         self.keys = KeyStore(self.paths.keys)
         self.library = Library(self.paths.library)
+        self.album_art = AlbumArtworkStore(self.paths.host / 'artwork')
         self.conductor: Conductor | None = None
         self.bootstrap: BootstrapServer | None = None
         self.bridge: Bridge | None = None
