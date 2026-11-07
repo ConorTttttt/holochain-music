@@ -62,6 +62,20 @@ In **Identity & settings → Appearance**, choose:
 
 Changes are immediate and do **not** restart playback, Holochain, or your audio output. The preference is stored locally **in this browser** (not in the Holochain identity or encrypted backups); another browser or profile may use a different choice. If browser storage is blocked, the choice applies for the current page but may not persist. The Ocean Signal brand palette remains adjustable separately from this appearance setting.
 
+## Typography
+
+Holochain Music uses **Inter** for its interface, navigation, page headings, track names and playback controls. The UI has a consistent type scale and tabular time labels, with a system-font fallback for glyphs missing from the bundled Latin subset.
+
+To preview Inter across all four colour palettes **without launching the Holochain backend**, run from the repository root:
+
+```bash
+python3 -m http.server 8766 --bind 127.0.0.1 --directory holochain_music/ui
+```
+
+Open `http://127.0.0.1:8766/typography-preview.html`; switch between Ocean Signal and Amethyst colours. This is a noninteractive specimen, not the music player. Stop the preview with Ctrl+C.
+
+Inter is included as local WOFF2 files in four weights (400, 500, 600, 700). No Google Fonts/CDN request is required, and the app works offline. The font is distributed under **SIL Open Font License 1.1**, included at `holochain_music/ui/fonts/Inter-OFL.txt`.
+
 ## Back up your identity and music
 
 Without a backup, losing this computer means losing your licences and, if you

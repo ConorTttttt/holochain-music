@@ -41,9 +41,19 @@
   --teal: #77307D; --field-border: #756585;
   --warn: #805000; --bad: #A32D47; --focus: #7043AD;
 }
+/* Self-hosted WOFF2 files (SIL OFL 1.1); Latin subset with platform fallback. */
+@font-face { font-family: "Inter"; src: url("/fonts/inter-latin-400-normal.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/inter-latin-500-normal.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/inter-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("/fonts/inter-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+
+/* Inter is the sole app typeface; system fonts cover unsupported glyphs. */
+:root { --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+        --font-display: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
-body { background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+body { background: var(--bg); color: var(--text); font: 15px/1.5 var(--font-ui); }
 button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -61,8 +71,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .main { padding: 18px 28px 40px; overflow: auto; }
 .topbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
 .search input { width: min(380px, 70vw); background: var(--panel); border: 1px solid var(--field-border); border-radius: 999px; padding: 8px 14px; }
-h1 { font-size: 26px; margin: 4px 0 4px; }
-h2 { font-size: 18px; margin: 22px 0 8px; }
+h1, h2, .brand strong { font-family: var(--font-display); font-weight: 700; letter-spacing: -.025em; }
+h1 { font-size: 29px; line-height: 1.2; margin: 4px 0 8px; }
+h2 { font-size: 20px; line-height: 1.3; margin: 24px 0 10px; }
+.brand strong { display: block; font-size: 17px; line-height: 1.2; }
+.nav { font-weight: 500; }
+.row .title strong, .tile strong, .now-text strong { font-weight: 600; letter-spacing: -.012em; line-height: 1.35; }
+.timeline, .dur, .mono { font-variant-numeric: tabular-nums; }
 .sub { color: var(--muted); margin: 0 0 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
 .tracks { display: flex; flex-direction: column; gap: 4px; }

@@ -21,8 +21,12 @@ UI = Path(__file__).with_name("ui")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8"),
-          "/icon.svg": ("icon.svg", "image/svg+xml")}
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
+          "/icon.svg": ("icon.svg", "image/svg+xml"),
+          "/fonts/inter-latin-400-normal.woff2": ("fonts/inter-latin-400-normal.woff2", "font/woff2"),
+          "/fonts/inter-latin-500-normal.woff2": ("fonts/inter-latin-500-normal.woff2", "font/woff2"),
+          "/fonts/inter-latin-600-normal.woff2": ("fonts/inter-latin-600-normal.woff2", "font/woff2"),
+          "/fonts/inter-latin-700-normal.woff2": ("fonts/inter-latin-700-normal.woff2", "font/woff2")
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
