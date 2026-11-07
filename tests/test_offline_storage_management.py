@@ -181,12 +181,19 @@ class OfflineStorageManagementTests(unittest.TestCase):
             pass
         self.assertEqual(app._storage_readers, 0)
 
-    def test_successful_app_remove_invalidates_downloader_cache_without_stopping_audio(self):
-        first, manifest = self.add_track("FIRST")
+    def test_successful_app_remove_invalidates_only_selected_downloader_cache(self):
+        first, _ = self.add_track("FIRST")
         app = self.fake_app()
+        unrelated = app.downloads["example"]
+        selected = MagicMock()
+        selected.is_running.return_value = False
+        app.downloads[first] = selected
+
         result = app.remove_download(first)
         self.assertGreater(result["removed_bytes"], 0)
-        self.assertEqual(app.downloads, {})
+        self.assertNotIn(first, app.downloads)
+        self.assertIs(app.downloads["example"], unrelated)
+        self.assertEqual(len(app.downloads), 1)
         app.player.shutdown.assert_not_called()
         self.assertFalse(self.library.meta(first)["complete"])
 
