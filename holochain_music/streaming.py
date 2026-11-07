@@ -85,6 +85,39 @@ class Download:
             self._thread = threading.Thread(target=self._run, name="hm-download", daemon=True)
             self._thread.start()
 
+    def pause(self) -> dict:
+        """Cooperatively interrupt an active transfer, keeping verified CAS data.
+
+        Cancellation is shared with the existing seek restart mechanism. The
+        worker owns final state: 'pausing' remains visible until it has stopped,
+        so callers must not assume removal is safe while it is still alive.
+        """
+        with self._cv:
+            if self.state == "complete":
+                return self.progress()
+            if self.state == "paused" and not (self._thread and self._thread.is_alive()):
+                return self.progress()
+            worker = self._thread
+            if worker is None or not worker.is_alive():
+                raise TrackUnavailable("no active download to pause")
+            self.state = "pausing"
+            self._stop.set()
+            self._restart.set()
+            self._cv.notify_all()
+        if worker is not threading.current_thread():
+            worker.join(timeout=10)
+        return self.progress()
+
+    def resume(self) -> dict:
+        """Resume explicitly from remaining authenticated chunks."""
+        with self._cv:
+            if self.state == "complete":
+                return self.progress()
+            if self.state != "paused" or (self._thread and self._thread.is_alive()):
+                raise TrackUnavailable("download has not finished pausing")
+        self.start()
+        return self.progress()
+
     def replace_hosts(self, hosts) -> None:
         """Use freshly resolved Holochain host endpoints (e.g. after a host moved)."""
         if not hosts:
@@ -114,6 +147,8 @@ class Download:
             self._restart.set()
         # An `unavailable` download is NOT silently retried here: the caller
         # must re-resolve hosts and call start() explicitly (user retry).
+        # A deliberate Play action can resume a paused background transfer
+        # if it needs a missing chunk; the UI explains this behaviour.
         if self.state in ("idle", "paused"):
             self.start()
 
