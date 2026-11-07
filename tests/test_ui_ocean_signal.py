@@ -113,7 +113,7 @@ class OceanSignalThemeTests(unittest.TestCase):
         self.assertIn(':root[data-theme="amethyst-night"]', CSS)
 
     def test_amethyst_night_text_and_control_contrast(self):
-        match = re.search(r':root\\[data-theme="amethyst-night"\\]\\s*\\{([^{}]*)\\}', CSS, re.S)
+        match = re.search(re.escape(':root[data-theme="amethyst-night"]') + r'\s*\{([^{}]*)\}', CSS, re.S)
         self.assertIsNotNone(match)
         theme = tokens(match.group(1))
         self.assertEqual(theme["bg"], "#151020")
