@@ -69,6 +69,14 @@ In **Identity & settings → Typography → Font style**, choose:
 - **Balanced — Inter** (default): Inter for navigation, controls, headings, song titles and artist information.
 - **Expressive — Inter + Space Grotesk**: Inter remains the body/UI typeface while Space Grotesk is used for page titles and the application name.
 
+To compare both styles **without launching Holochain Music**, run from the repository root:
+
+```bash
+python3 -m http.server 8766 --bind 127.0.0.1 --directory holochain_music/ui
+```
+
+Then open `http://127.0.0.1:8766/typography-preview.html`. This is a standalone specimen, not a music player; colour changes here are for visual comparison only. Stop the preview server with Ctrl+C.
+
 Both styles work with **every Ocean Signal and Amethyst theme**. Changes apply immediately and are saved only in this browser, independently of the colour theme. They do not change audio, network settings or licence permissions.
 
 Fonts are bundled as WOFF2 files and served from this computer; no Google Fonts/CDN request is needed. The bundled webfonts are Latin subsets; the CSS uses a platform font fallback for unsupported glyphs. The included fonts are distributed under the SIL Open Font License 1.1. Their full licences are in `holochain_music/ui/fonts/Inter-OFL.txt` and `holochain_music/ui/fonts/SpaceGrotesk-OFL.txt`.
