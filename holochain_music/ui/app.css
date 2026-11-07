@@ -332,3 +332,8 @@ a { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   .now-panel, .now-expanded { animation: none; transition: none; }
 }
+
+/* The entire non-interactive player surface expands Now Playing when clicked. */
+footer.player { cursor: pointer; }
+footer.player:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+footer.player button:disabled, footer.player input:disabled { cursor: not-allowed; }
