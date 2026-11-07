@@ -71,6 +71,15 @@ class UiDesignTokenTests(unittest.TestCase):
         self.assertIn(".sidebar .nav { flex: 0 0 auto; align-self: flex-start;", compact)
         self.assertNotIn(".sidebar { flex-direction: row; flex-wrap: wrap;", compact)
 
+    def test_compact_shell_gives_navigation_content_height(self):
+        # At high zoom the two implicit auto grid rows split spare height,
+        # creating a large empty block below the stacked navigation.
+        compact = CSS.split("@media (max-width: 860px)", 1)[1]
+        self.assertIn(
+            ".shell { grid-template-columns: 1fr; grid-template-rows: max-content auto; }",
+            compact,
+        )
+
     def test_theme_override_and_native_select_contract(self):
         self.assertIn('<label for="appearance">Appearance</label>', HTML)
         self.assertIn('<select id="appearance" name="appearance">', HTML)
