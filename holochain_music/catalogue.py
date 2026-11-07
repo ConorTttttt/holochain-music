@@ -28,6 +28,7 @@ from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA, _bound_local_url
 from music_catalogue.moq_host import MoqFetchError, fetch_document
 
 from .bridge import Bridge, BridgeError
+from .artwork_transport import public_artwork_file_id, verify_public_artwork_manifest
 
 ARTIST_SCHEMA = "holochain-music/artist/v1"
 ALBUM_SCHEMA = "holochain-music/album/v1"
@@ -50,6 +51,16 @@ class HostCandidate:
 class TrustedTrack:
     artist_agent: str
     track: dict
+    artist_key: bytes
+    manifest: dict
+    digest: str
+    hosts: list[HostCandidate] = field(default_factory=list)
+
+
+@dataclass
+class TrustedArtwork:
+    artist_agent: str
+    album_id: str
     artist_key: bytes
     manifest: dict
     digest: str
@@ -147,8 +158,103 @@ class Catalogue:
             b = r.body
             if r.author == agent and b.get("artist_agent") == agent and b.get("schema") == ALBUM_SCHEMA:
                 out.append({"album_id": b.get("album_id"), "title": str(b.get("title", ""))[:200],
-                            "release_date": b.get("release_date"), "artist_agent": agent})
+                            "release_date": b.get("release_date"), "artist_agent": agent,
+                            "artwork_manifest_sha256": b.get("artwork_manifest_sha256")})
         return out
+
+    # ---- public album-cover discovery, separate from audio grants ----------
+    def resolve_artwork(self, artist_agent: str, album_id: str) -> TrustedArtwork:
+        """Resolve an immutable v1 album pin through S2/host receipt trust.
+
+        No unverified remote URL or local cache entry authenticates its own
+        author. The local validating conductor supplies the album author.
+        """
+        file_id = public_artwork_file_id(artist_agent, album_id)
+        records = self.bridge.records("list_albums", artist=artist_agent)
+        album = next((r for r in records if r.author == artist_agent
+                      and r.body.get("artist_agent") == artist_agent
+                      and r.body.get("schema") == ALBUM_SCHEMA
+                      and r.body.get("album_id") == album_id), None)
+        if album is None:
+            raise ResolveError("album not found in authenticated catalogue")
+        digest = album.body.get("artwork_manifest_sha256")
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ResolveError("album does not reference a signed public cover")
+        owner_bindings = self.bridge.records("get_signing_keys", agent=artist_agent)
+        artist_key = _unique_key(owner_bindings, artist_agent, OWNER_PURPOSE)
+        owner_binding = _binding_record(owner_bindings, artist_agent, OWNER_PURPOSE, artist_key)
+        commitments = [c for c in self.bridge.records("get_file_commitments", agent=artist_agent)
+                       if c.author == artist_agent and c.body.get("owner_agent") == artist_agent
+                       and c.body.get("file_id") == file_id
+                       and c.body.get("manifest_sha256") == digest]
+        if not commitments:
+            raise ResolveError("artist has not committed to this cover file")
+        commitment = commitments[0]
+        claims = self.bridge.records("get_replica_claims", owner_agent=artist_agent, file_id=file_id)
+        trusted: TrustedArtwork | None = None
+        errors = []
+        tried = 0
+        for claim in reversed(claims):
+            node = claim.author
+            if (claim.body.get("node_agent") != node
+                    or claim.body.get("owner_agent") != artist_agent
+                    or claim.body.get("file_id") != file_id
+                    or claim.body.get("manifest_sha256") != digest):
+                continue
+            if tried >= MAX_HOSTS_TRIED:
+                break
+            tried += 1
+            try:
+                host_bindings = self.bridge.records("get_signing_keys", agent=node)
+                node_key = _unique_key(host_bindings, node, HOST_PURPOSE)
+                node_binding = _binding_record(host_bindings, node, HOST_PURPOSE, node_key)
+                endpoints = []
+                for endpoint in reversed(self.bridge.records("get_moq_endpoints", host=node)):
+                    body = endpoint.body
+                    if (endpoint.author != node or body.get("schema") != MOQ_ENDPOINT_SCHEMA
+                            or body.get("node_agent") != node
+                            or body.get("owner_agent") != artist_agent
+                            or body.get("file_id") != file_id
+                            or body.get("manifest_sha256") != digest):
+                        continue
+                    try:
+                        url = _bound_local_url(body.get("url"), allow_lan=self.allow_lan)
+                    except ValueError:
+                        continue
+                    candidate = HostCandidate(node, node_key, url, body.get("cert_fingerprint_hex"))
+                    if (candidate.url, candidate.fingerprint) not in [(e.url, e.fingerprint) for e in endpoints]:
+                        endpoints.append(candidate)
+                for candidate in endpoints[:3]:
+                    try:
+                        if trusted is None:
+                            manifest = fetch_document(
+                                moq_binary=self.moq_binary, url=candidate.url,
+                                cert_fingerprint_hex=candidate.fingerprint,
+                                file_id=file_id, document="manifest", allow_lan=self.allow_lan)
+                            verify_public_artwork_manifest(
+                                manifest, artist_agent=artist_agent, album_id=album_id,
+                                trusted_artist=artist_key, expected_digest=digest)
+                            verify_owned_manifest(manifest, artist_agent, owner_binding, commitment)
+                        else:
+                            manifest = trusted.manifest
+                        receipt = fetch_document(
+                            moq_binary=self.moq_binary, url=candidate.url,
+                            cert_fingerprint_hex=candidate.fingerprint,
+                            file_id=file_id, document="receipt", allow_lan=self.allow_lan)
+                        verify_replica_claim(receipt, manifest, artist_agent, node, owner_binding,
+                                             node_binding, commitment, claim)
+                        if trusted is None:
+                            trusted = TrustedArtwork(artist_agent, album_id, artist_key, manifest, digest)
+                        trusted.hosts.append(candidate)
+                        break
+                    except (MoqFetchError, StorageError, ResolveError, ValueError) as exc:
+                        errors.append(f"{type(exc).__name__}: {exc}")
+            except (BridgeError, ResolveError, StorageError) as exc:
+                errors.append(f"{type(exc).__name__}: {exc}")
+        if trusted is None or not trusted.hosts:
+            detail = errors[-1] if errors else "no authenticated artwork host is available"
+            raise ResolveError(f"album cover unavailable: {detail}"[:240])
+        return trusted
 
     # ---- trust resolution for playback --------------------------------
     def resolve(self, artist_agent: str, track_id: str) -> TrustedTrack:
