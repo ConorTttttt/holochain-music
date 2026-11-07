@@ -312,7 +312,9 @@ function playlistItem(playlist, id, index) {
       'aria-label': 'Move ' + (item.title || 'track') + ' earlier in ' + playlist.name, onclick: () =>
         savePlaylistChange(rows => {
           const p = rows.find(x => x.id === playlist.id);
-          if (!p || index < 1 || index >= p.tracks.length) return null;
+          if (!p || index < 1 || index >= p.tracks.length || p.tracks[index] !== id) {
+            throw new Error('Playlist changed since it was displayed. Try again.');
+          }
           [p.tracks[index - 1], p.tracks[index]] = [p.tracks[index], p.tracks[index - 1]];
           return rows;
         }, 'Track moved earlier', playlist.id) }),
@@ -320,7 +322,9 @@ function playlistItem(playlist, id, index) {
       'aria-label': 'Move ' + (item.title || 'track') + ' later in ' + playlist.name, onclick: () =>
         savePlaylistChange(rows => {
           const p = rows.find(x => x.id === playlist.id);
-          if (!p || index < 0 || index >= p.tracks.length - 1) return null;
+          if (!p || index < 0 || index >= p.tracks.length - 1 || p.tracks[index] !== id) {
+            throw new Error('Playlist changed since it was displayed. Try again.');
+          }
           [p.tracks[index], p.tracks[index + 1]] = [p.tracks[index + 1], p.tracks[index]];
           return rows;
         }, 'Track moved later', playlist.id) }),
@@ -328,7 +332,9 @@ function playlistItem(playlist, id, index) {
       'aria-label': 'Remove ' + (item.title || 'track') + ' from ' + playlist.name, onclick: () =>
         savePlaylistChange(rows => {
           const p = rows.find(x => x.id === playlist.id);
-          if (!p || index >= p.tracks.length) return null;
+          if (!p || index >= p.tracks.length || p.tracks[index] !== id) {
+            throw new Error('Playlist changed since it was displayed. Try again.');
+          }
           p.tracks.splice(index, 1);
           return rows;
         }, 'Removed from playlist only · music and licences unchanged', playlist.id) }));
@@ -561,12 +567,27 @@ async function addToPlaylist(fileId) {
 }
 
 async function render() {
+  const active = document.activeElement;
+  const searchActive = active && active.classList.contains('library-search') && view === 'library';
+  const selectionStart = searchActive ? active.selectionStart : null;
+  const selectionEnd = searchActive ? active.selectionEnd : null;
   document.querySelectorAll('.nav').forEach(b => {
     if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const host = $('view');
   try { host.replaceChildren(...(await views[view](viewArg)).filter(Boolean)); }
   catch (e) { host.replaceChildren(el('h1', { text: 'Something went wrong' }), el('p', { class: 'empty', text: e.message })); }
+  // Slow library metadata refreshes must not interrupt a listener typing
+  // into the scoped search field or relocate their cursor.
+  if (searchActive && view === 'library') {
+    const replacement = host.querySelector('.library-search');
+    if (replacement) {
+      replacement.focus();
+      if (selectionStart !== null && selectionEnd !== null) {
+        replacement.setSelectionRange(selectionStart, selectionEnd);
+      }
+    }
+  }
 }
 function show(name, arg = null) { view = name; viewArg = arg; render(); $('main').focus(); }
 
