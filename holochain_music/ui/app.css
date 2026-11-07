@@ -266,3 +266,95 @@ a { color: var(--accent); }
   .track-info { gap: 8px; }
   .track-cover { width: 38px; height: 38px; }
 }
+
+/* Layered Player: changes layout only; never remounts the audio session. */
+.shell { grid-template-columns: 240px minmax(0,1fr); }
+.shell.panel-open { grid-template-columns: 240px minmax(0,1fr); }
+.now-panel[hidden] { display: none; }
+.now-panel {
+  position: fixed; z-index: 13; top: 12px; right: 0; bottom: 122px;
+  width: min(340px, calc(100vw - 28px)); min-width: 0; padding: 20px;
+  background: var(--panel); border: 1px solid var(--line); border-right: none;
+  border-radius: 14px 0 0 14px; overflow-y: auto;
+  box-shadow: -12px 8px 32px rgba(0, 0, 0, .24);
+}
+.now-panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.now-panel-head h2 { font-size: 20px; margin: 0; }
+.now-panel h3, .expanded-info h3 { overflow-wrap: anywhere; }
+.now-panel button, .now-expanded button { min-height: 40px; }
+.player #btn-now-panel { flex: none; border: 1px solid var(--line); border-radius: 50%; }
+.player #btn-now-panel[aria-expanded="true"] { border-color: var(--accent); color: var(--accent); }
+.layer-art {
+  position: relative; display: grid; place-items: center; overflow: hidden;
+  width: min(100%, 320px); aspect-ratio: 1; margin: 18px auto;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px;
+}
+.layer-art .icon { width: 44%; height: 44%; color: var(--accent); }
+.layer-art img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.layer-art img[hidden] { display: none; }
+.layer-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0 24px; }
+.layer-queue { padding-left: 25px; overflow-wrap: anywhere; }
+.layer-queue li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.layer-queue span { display: block; color: var(--muted); font-size: 13px; }
+.now-expanded {
+  box-sizing: border-box; width: min(760px, calc(100vw - 32px)); max-width: 760px;
+  max-height: calc(100dvh - 32px); padding: clamp(16px, 3vw, 30px);
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: 18px;
+}
+.now-expanded::backdrop { background: rgba(0, 0, 0, .73); }
+.now-expanded[open] { display: grid; gap: 14px; }
+.expanded-art { width: min(100%, 300px); margin: 0 auto; }
+.expanded-info { text-align: center; }
+.expanded-info h3 { font-size: clamp(22px, 3vw, 30px); margin: 0; }
+.expanded-info p { margin: 6px 0; }
+.expanded-seek-row { display: grid; grid-template-columns: 48px minmax(0,1fr) 48px; align-items: center; gap: 8px; }
+.expanded-seek-row span { font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+.expanded-seek-row input { width: 100%; accent-color: var(--accent); }
+.expanded-actions, .expanded-extras { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center; }
+.expanded-actions button { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; }
+.expanded-actions .primary { width: 64px; height: 64px; }
+.expanded-actions .icon { width: 26px; height: 26px; }
+.expanded-actions .primary .icon { width: 30px; height: 30px; }
+.expanded-extras label { display: flex; gap: 10px; align-items: center; }
+.expanded-extras input { width: min(130px, 24vw); accent-color: var(--accent); }
+@media (max-width: 1100px) {
+  .now-panel { width: min(320px, calc(100vw - 28px)); }
+}
+@media (max-width: 860px) {
+  .shell.panel-open { grid-template-columns: minmax(0,1fr); }
+  .now-panel { top: 0; bottom: 0; max-height: 100dvh; border-radius: 12px 0 0 12px; }
+  .now-edge-tab { top: 35%; }
+}
+@media (max-width: 420px) {
+  .player #btn-now-panel { width: 40px; height: 40px; }
+  .now-expanded { padding: 16px; }
+  .expanded-seek-row { grid-template-columns: 40px minmax(0,1fr) 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .now-panel, .now-expanded { animation: none; transition: none; }
+}
+
+/* The entire non-interactive player surface expands Now Playing when clicked. */
+footer.player { cursor: pointer; }
+footer.player:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+footer.player button:disabled, footer.player input:disabled { cursor: not-allowed; }
+
+/* Discoverable narrow right-edge handle. The side panel is an overlay, not
+   another playback view or an extra column that shrinks browsing space. */
+.now-edge-tab {
+  position: fixed; z-index: 12; right: 0; top: 38%;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  width: 44px; min-height: 142px; padding: 12px 7px;
+  border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px;
+  background: var(--panel-2); color: var(--text); box-shadow: -5px 4px 18px rgba(0, 0, 0, .15);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.now-edge-tab .icon { width: 22px; height: 22px; color: var(--accent); flex: none; }
+.now-edge-tab span { writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .035em; }
+.now-edge-tab:hover { background: var(--panel); border-color: var(--accent); }
+.now-edge-tab:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.now-edge-tab[hidden] { display: none; }
+@media (max-width: 860px) {
+  .now-edge-tab { top: 35%; }
+}

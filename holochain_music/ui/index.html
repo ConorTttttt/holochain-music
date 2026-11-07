@@ -84,14 +84,29 @@
       </header>
       <section id="view" aria-live="polite"></section>
     </main>
+    <aside id="now-panel" class="now-panel" aria-labelledby="now-panel-title" tabindex="-1" hidden>
+      <div class="now-panel-head"><h2 id="now-panel-title">Now Playing</h2><button id="panel-close" class="btn" type="button">Close</button></div>
+      <div class="layer-art" aria-hidden="true"><svg class="icon" viewBox="0 0 256 256"><use href="#ph-vinyl-record"></use></svg><img id="panel-art-image" alt="" hidden></div>
+      <h3 id="panel-track">Nothing playing</h3><p id="panel-artist" class="muted">Choose a track</p>
+      <p id="panel-status" class="badge" role="status">Idle</p>
+      <div class="layer-buttons"><button id="panel-play" class="btn primary" type="button">Play</button><button id="panel-expand" class="btn" type="button" aria-haspopup="dialog">Expand player</button></div>
+      <h3>Coming up</h3><ol id="panel-queue" class="layer-queue"></ol>
+      <button id="panel-manage-queue" class="btn" type="button">Manage queue</button>
+    </aside>
   </div>
-  <footer class="player" aria-label="Player">
+  <button id="now-edge-tab" class="now-edge-tab" type="button" aria-controls="now-panel" aria-expanded="false" aria-label="Open Now Playing side panel" title="Open Now Playing side panel">
+    <svg class="icon" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><use href="#ph-vinyl-record"></use></svg>
+    <span>Now Playing</span>
+  </button>
+  <footer class="player" aria-label="Player" tabindex="0" aria-describedby="player-expand-hint" title="Click the player bar to expand Now Playing">
+    <span id="player-expand-hint" class="sr-only">Click an unused area of the player bar, or focus the bar and press Enter, to open expanded Now Playing.</span>
     <div class="now">
       <div class="art" aria-hidden="true" title="Album artwork">
         <svg class="icon" viewBox="0 0 256 256" focusable="false"><use href="#ph-vinyl-record"></use></svg>
         <img id="now-art-image" alt="" hidden>
       </div>
       <div class="now-text"><strong id="now-title">Nothing playing</strong><span id="now-artist">Choose a track</span></div>
+      <button id="btn-now-panel" type="button" aria-label="Open Now Playing" aria-expanded="false" aria-controls="now-panel" title="Now Playing"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true"><use href="#ph-vinyl-record"></use></svg></button>
     </div>
     <div class="transport">
       <div class="buttons">
@@ -113,6 +128,18 @@
       <label class="volume"><span class="sr-only">Volume</span><svg class="icon" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><use href="#ph-speaker-high"></use></svg><input id="volume" type="range" min="0" max="100" value="100" aria-label="Volume"></label>
     </div>
   </footer>
+  <dialog id="now-expanded" class="now-expanded" aria-labelledby="expanded-heading">
+    <div class="now-panel-head"><h2 id="expanded-heading">Now Playing</h2><button id="expanded-close" class="btn" type="button">Close expanded player</button></div>
+    <div class="layer-art expanded-art" aria-hidden="true"><svg class="icon" viewBox="0 0 256 256"><use href="#ph-vinyl-record"></use></svg><img id="expanded-art-image" alt="" hidden></div>
+    <div class="expanded-info"><h3 id="expanded-track">Nothing playing</h3><p id="expanded-artist" class="muted">Choose a track</p><p id="expanded-status" class="badge" role="status">Idle</p></div>
+    <div class="expanded-seek-row"><span id="expanded-elapsed">0:00</span><input id="expanded-seek" type="range" min="0" max="1000" value="0" aria-label="Expanded playback position" disabled><span id="expanded-duration">0:00</span></div>
+    <div class="expanded-actions">
+      <button id="expanded-back" class="btn" type="button" aria-label="Back 10 seconds"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true"><use href="#ph-rewind"></use></svg></button>
+      <button id="expanded-play" class="btn primary" type="button" aria-label="Play"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true"><use href="#ph-play-fill"></use></svg></button>
+      <button id="expanded-next" class="btn" type="button" aria-label="Next in queue"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true"><use href="#ph-skip-forward"></use></svg></button>
+    </div>
+    <div class="expanded-extras"><label>Volume <input id="expanded-volume" type="range" min="0" max="100" value="100" aria-label="Expanded player volume"></label><button id="expanded-queue" class="btn" type="button">View queue</button></div>
+  </dialog>
   <div id="toast" class="toast" role="alert" hidden></div>
 </body>
 </html>

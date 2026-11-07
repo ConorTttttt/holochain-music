@@ -381,6 +381,126 @@ async function render() {
 }
 function show(name, arg = null) { view = name; viewArg = arg; render(); $('main').focus(); }
 
+// ---- Now Playing layers: one canonical engine/player/queue, presentation-only ----
+let layerOrigin = null, expandedOrigin = null, expandedDragging = false, layerQueueSignature = '';
+function setLayerPanel(open, focusBack = true) {
+  const panel = $('now-panel');
+  if (open && panel.hidden) layerOrigin = document.activeElement;
+  panel.hidden = !open;
+  document.querySelector('.shell').classList.toggle('panel-open', open);
+  $('btn-now-panel').setAttribute('aria-expanded', String(open));
+  $('btn-now-panel').setAttribute('aria-label', open ? 'Close Now Playing' : 'Open Now Playing');
+  $('now-edge-tab').setAttribute('aria-expanded', String(open));
+  $('now-edge-tab').hidden = open;
+  if (open) { layerQueueSignature = ''; renderLayers(); panel.focus(); }
+  else if (focusBack && layerOrigin && layerOrigin.isConnected) layerOrigin.focus();
+}
+function renderLayers() {
+  const p = state.player;
+  if (!p) return;
+  const item = libraryById.get(p.track_key);
+  const title = item ? (item.title || 'Untitled') : 'Nothing playing';
+  const artist = item ? (item.artist_name || 'Unknown artist') : 'Choose a track';
+  for (const [titleId, artistId] of [['panel-track','panel-artist'],['expanded-track','expanded-artist']]) {
+    $(titleId).textContent = title; $(artistId).textContent = artist;
+  }
+  for (const id of ['panel-status','expanded-status']) {
+    $(id).textContent = $('state-badge').textContent;
+    $(id).className = $('state-badge').className;
+  }
+  const art = $('now-art-image');
+  for (const id of ['panel-art-image','expanded-art-image']) {
+    const image = $(id);
+    const src = !art.hidden && art.getAttribute('src');
+    if (src) { if (image.getAttribute('src') !== src) image.src = src; image.hidden = false; }
+    else { image.hidden = true; image.removeAttribute('src'); }
+  }
+  $('panel-play').textContent = $('btn-play').getAttribute('aria-label');
+  $('panel-play').disabled = $('btn-play').disabled;
+  $('expanded-play').setAttribute('aria-label', $('btn-play').getAttribute('aria-label'));
+  $('expanded-play').querySelector('use').setAttribute('href', $('btn-play').querySelector('use').getAttribute('href'));
+  $('expanded-play').disabled = $('btn-play').disabled;
+  $('expanded-back').disabled = $('btn-back').disabled;
+  $('expanded-next').disabled = $('btn-next').disabled;
+  $('expanded-seek').disabled = $('seek').disabled;
+  $('expanded-duration').textContent = $('duration').textContent;
+  if (!expandedDragging) {
+    $('expanded-seek').value = $('seek').value;
+    $('expanded-elapsed').textContent = $('elapsed').textContent;
+  }
+  $('expanded-seek').setAttribute('aria-valuetext', $('expanded-elapsed').textContent + ' of ' + $('expanded-duration').textContent);
+  $('expanded-volume').value = $('volume').value;
+  if (!$('now-panel').hidden) {
+    const signature = JSON.stringify(state.queue.map(id => {
+      const t = libraryById.get(id); return [id, t && t.title, t && t.artist_name];
+    }));
+    if (signature !== layerQueueSignature) {
+      layerQueueSignature = signature;
+      const queue = $('panel-queue'); queue.replaceChildren();
+      if (!state.queue.length) queue.append(el('li', { text: 'Nothing queued' }));
+      for (const id of state.queue) {
+        const t = libraryById.get(id);
+        queue.append(el('li', {}, el('strong', { text: t && t.title ? t.title : 'Unknown track' }),
+          el('span', { text: t && t.artist_name ? t.artist_name : '' })));
+      }
+    }
+  }
+}
+$('btn-now-panel').addEventListener('click', () => setLayerPanel($('now-panel').hidden));
+$('now-edge-tab').addEventListener('click', () => setLayerPanel(true));
+$('panel-close').addEventListener('click', () => setLayerPanel(false));
+$('panel-play').addEventListener('click', () => $('btn-play').click());
+$('panel-manage-queue').addEventListener('click', () => { setLayerPanel(false, false); show('queue'); });
+function openExpandedPlayer(origin) {
+  const dialog = $('now-expanded');
+  if (dialog.open) return;
+  expandedOrigin = origin;
+  dialog.showModal();
+  $('expanded-close').focus();
+}
+$('panel-expand').addEventListener('click', e => openExpandedPlayer(e.currentTarget));
+// Clicking the non-interactive surface of the persistent bar opens the large
+// Now Playing view. Buttons, seek/volume sliders and labels must not bubble
+// into another player action. All controls keep using the sole audio session.
+const playerBar = document.querySelector('footer.player');
+const playerControlSelector = 'button, input, select, textarea, a, label, [role="button"], [role="slider"], [contenteditable="true"]';
+playerBar.addEventListener('click', event => {
+  if (event.target.closest(playerControlSelector)) return;
+  openExpandedPlayer(playerBar);
+});
+playerBar.addEventListener('keydown', event => {
+  if (event.target !== playerBar || event.key !== 'Enter' || event.repeat) return;
+  event.preventDefault();
+  openExpandedPlayer(playerBar);
+});
+$('expanded-close').addEventListener('click', () => $('now-expanded').close());
+$('now-expanded').addEventListener('close', () => { if (expandedOrigin && expandedOrigin.isConnected) expandedOrigin.focus(); });
+$('expanded-play').addEventListener('click', () => $('btn-play').click());
+$('expanded-back').addEventListener('click', () => $('btn-back').click());
+$('expanded-next').addEventListener('click', () => $('btn-next').click());
+$('expanded-queue').addEventListener('click', () => { $('now-expanded').close(); show('queue'); });
+$('expanded-volume').addEventListener('input', () => {
+  $('volume').value = $('expanded-volume').value; $('volume').dispatchEvent(new Event('input'));
+});
+$('expanded-seek').addEventListener('pointerdown', () => { expandedDragging = true; });
+$('expanded-seek').addEventListener('input', () => {
+  expandedDragging = true;
+  const p = state.player;
+  if (p && p.total_frames && p.sample_rate) {
+    $('expanded-elapsed').textContent = fmt(1000 * $('expanded-seek').value * p.total_frames / (1000 * p.sample_rate));
+    $('expanded-seek').setAttribute('aria-valuetext', $('expanded-elapsed').textContent + ' of ' + $('expanded-duration').textContent);
+  }
+});
+$('expanded-seek').addEventListener('change', () => {
+  expandedDragging = false;
+  const p = state.player; if (p && p.total_frames) requestSeek($('expanded-seek').value * p.total_frames / 1000);
+});
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('now-expanded').open && !$('now-panel').hidden) {
+    e.preventDefault(); setLayerPanel(false);
+  }
+});
+
 // ---- player bar ------------------------------------------------------
 // ---- player state: ordered, with optimistic seeks ----------------------
 // Every server status carries a monotonically increasing `seq`. Responses
@@ -461,6 +581,7 @@ function renderPlayer() {
   paintSeekProgress();
   $('seek').setAttribute('aria-valuetext', `${$('elapsed').textContent} of ${$('duration').textContent}`);
   const qc = $('queue-count'); qc.hidden = !state.queue.length; qc.textContent = state.queue.length;
+  renderLayers();
 }
 // ±10 s presses accumulate from the pending target, not the stale position.
 const nudge = secs => { const p = state.player; if (p && p.total_frames) requestSeek(displayedFrame(p) + secs * p.sample_rate); };
@@ -478,7 +599,8 @@ let volTimer; $('volume').addEventListener('input', () => { clearTimeout(volTime
 document.querySelectorAll('.nav').forEach(b => b.addEventListener('click', () => show(b.dataset.view)));
 $('search-form').addEventListener('submit', e => { e.preventDefault(); const q = $('search').value.trim(); if (q.length >= 2) show('search', q); });
 window.addEventListener('keydown', e => {
-  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+  const active = document.activeElement;
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(active.tagName) || active.isContentEditable || active.getAttribute('role') === 'slider';
   if (e.key === '/' && !typing) { e.preventDefault(); $('search').focus(); return; }
   if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.code === 'Space' && document.activeElement.tagName !== 'BUTTON') { e.preventDefault(); $('btn-play').click(); }
