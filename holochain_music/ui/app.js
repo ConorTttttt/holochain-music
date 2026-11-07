@@ -448,8 +448,27 @@ $('btn-now-panel').addEventListener('click', () => setLayerPanel($('now-panel').
 $('panel-close').addEventListener('click', () => setLayerPanel(false));
 $('panel-play').addEventListener('click', () => $('btn-play').click());
 $('panel-manage-queue').addEventListener('click', () => { setLayerPanel(false, false); show('queue'); });
-$('panel-expand').addEventListener('click', e => {
-  expandedOrigin = e.currentTarget; $('now-expanded').showModal(); $('expanded-close').focus();
+function openExpandedPlayer(origin) {
+  const dialog = $('now-expanded');
+  if (dialog.open) return;
+  expandedOrigin = origin;
+  dialog.showModal();
+  $('expanded-close').focus();
+}
+$('panel-expand').addEventListener('click', e => openExpandedPlayer(e.currentTarget));
+// Clicking the non-interactive surface of the persistent bar opens the large
+// Now Playing view. Buttons, seek/volume sliders and labels must not bubble
+// into another player action. All controls keep using the sole audio session.
+const playerBar = document.querySelector('footer.player');
+const playerControlSelector = 'button, input, select, textarea, a, label, [role="button"], [role="slider"], [contenteditable="true"]';
+playerBar.addEventListener('click', event => {
+  if (event.target.closest(playerControlSelector)) return;
+  openExpandedPlayer(playerBar);
+});
+playerBar.addEventListener('keydown', event => {
+  if (event.target !== playerBar || event.key !== 'Enter' || event.repeat) return;
+  event.preventDefault();
+  openExpandedPlayer(playerBar);
 });
 $('expanded-close').addEventListener('click', () => $('now-expanded').close());
 $('now-expanded').addEventListener('close', () => { if (expandedOrigin && expandedOrigin.isConnected) expandedOrigin.focus(); });
