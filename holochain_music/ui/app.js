@@ -109,9 +109,14 @@ window.addEventListener('pagehide', () => {
   }
 });
 function albumCoverThumb(albumId) {
-  const thumb = el('span', { class: 'track-cover', 'aria-hidden': 'true' },
-    el('svg', { class: 'icon', viewBox: '0 0 256 256', focusable: 'false' },
-      el('use', { href: '#ph-vinyl-record' })));
+  const thumb = el('span', { class: 'track-cover', 'aria-hidden': 'true' });
+  const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  icon.setAttribute('class', 'icon');
+  icon.setAttribute('viewBox', '0 0 256 256');
+  const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', '#ph-vinyl-record');
+  icon.append(use);
+  thumb.append(icon);
   if (validAlbumId(albumId)) albumArtworkUrl(albumId).then(url => {
     if (url) thumb.append(el('img', { src: url, alt: '' }));
   });
