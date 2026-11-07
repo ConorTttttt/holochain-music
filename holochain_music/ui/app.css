@@ -4,6 +4,7 @@
  * Replace only role values when the palette is approved.
  */
 :root {
+  color-scheme: dark;
   --color-bg-app: #0f1720;
   --color-bg-surface: #16212d;
   --color-bg-raised: #1d2b3a;
@@ -45,8 +46,10 @@
   --focus: var(--color-focus-ring);
   --radius: var(--radius-panel);
 }
+/* Automatic system scheme applies only when no manual override exists. */
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: light;
     --color-bg-app: #f4f7fa;
     --color-bg-surface: #ffffff;
     --color-bg-raised: #eef3f7;
@@ -60,6 +63,22 @@
     --color-status-error: #b3261e;
     --color-focus-ring: #0b62a8;
   }
+}
+/* Explicit Light must work even when the computer is set to Dark. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg-app: #f4f7fa;
+  --color-bg-surface: #ffffff;
+  --color-bg-raised: #eef3f7;
+  --color-border-decorative: #d5dee7;
+  --color-border-control: #536576;
+  --color-text-primary: #13212e;
+  --color-text-secondary: #536576;
+  --color-action-primary-bg: #138a5e;
+  --color-action-primary-fg: #ffffff;
+  --color-status-warning: #8a5d00;
+  --color-status-error: #b3261e;
+  --color-focus-ring: #0b62a8;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -79,7 +98,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .nav[aria-current="page"] { background: var(--panel-2); color: var(--accent); font-weight: 600; }
 .pill { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; padding: 0 7px; }
 .main { padding: 18px 28px 40px; overflow: auto; }
-.topbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+.topbar { display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.appearance-control { display: flex; align-items: center; gap: 8px; }
+.appearance-control label { color: var(--muted); font-size: 13px; }
+.appearance-control select { min-height: var(--control-height); border: 1px solid var(--border-control); border-radius: var(--radius-pill); padding: 6px 12px; background: var(--panel); color: var(--text); cursor: pointer; }
+
 .search input { width: min(380px, 70vw); min-height: var(--control-icon-hit); background: var(--panel); border: 1px solid var(--border-control); border-radius: var(--radius-pill); padding: 8px 14px; }
 h1 { font-size: 26px; margin: 4px 0 4px; }
 h2 { font-size: 18px; margin: 22px 0 8px; }
@@ -132,6 +155,9 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
   .nav { width: auto; }
   .nav-head { display: none; }
   .main { padding: 14px 16px 120px; }
+  .topbar { justify-content: flex-start; }
+  .search { flex: 1 1 200px; }
+  .search input { width: 100%; }
   .row { grid-template-columns: 1fr auto; }
   .row .album, .row .dur { display: none; }
   .player { grid-template-columns: 1fr; height: auto; padding: 8px 12px; gap: 6px; position: sticky; }
