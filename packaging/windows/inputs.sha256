@@ -1,0 +1,19 @@
+# Third-party inputs of the Windows installer, pinned by SHA-256.
+# build-windows.sh refuses to package anything that does not match.
+#
+# Holochain 0.7.0 official release (github.com/holochain/holochain, tag
+# holochain-0.7.0, built by github.com/holochain/binaries with default
+# features, the same feature set as the Linux `cargo install` build).
+# Digests match those GitHub records for the release assets.
+5d9bd8cf28c45645158d56198cfec38d04ac4cf620ba89ca37db2f7c46d7b3d2  holochain-x86_64-pc-windows-msvc.exe
+643ed26e84a7ae72a454bd78b9427b50883fb1306406ba7b5fa4857c61c6b322  hc-x86_64-pc-windows-msvc.exe
+5c9c4b9d45f5045b517da877f0ba2237b2afc28e8f5a1f3ca659ef2d9cad1e6c  kitsune2-bootstrap-srv-x86_64-pc-windows-msvc.exe
+# CPython 3.14.10 Windows embeddable package (python.org). Digest matches
+# the messageDigest in python.org's .sigstore bundle (signer hugo@python.org).
+90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159  python-3.14.10-embed-amd64.zip
+# Wheels (PyPI, win_amd64 / cp314). cryptography is the version the Linux
+# suite was validated with.
+f5c3296dab66202f1b18a91fa266be93d6aa0c2806ea3d67762c69f60adc71aa  cryptography-47.0.0-cp311-abi3-win_amd64.whl
+3222ba5d678f80a030e6afbcc33dc1ae5cb45facabb61cee2c7016b8432fde48  cffi-2.1.1-cp314-cp314-win_amd64.whl
+a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e  pycparser-3.12-py3-none-any.whl
+7f4162f514f007b0bf25a3ccfed3f1705bc2ec311888a90232729eec4f57a4f4  sounddevice-0.5.6-py3-none-win_amd64.whl

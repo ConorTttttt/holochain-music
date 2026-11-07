@@ -1,0 +1,14 @@
+Package: holochain-music
+Version: @VERSION@
+Architecture: amd64
+Maintainer: Holochain Music maintainers <noreply@example.invalid>
+Depends: python3 (>= 3.12), python3-cryptography (>= 41), alsa-utils
+Recommends: xdg-utils
+Section: sound
+Priority: optional
+Installed-Size: @SIZE@
+Description: Artist-first decentralised music player (release candidate)
+ Discover music published on a Holochain network, request free artist-issued
+ licences, stream encrypted audio over certificate-pinned MoQ/QUIC, and play
+ licensed downloads offline. Includes artist publishing and self-hosting.
+ This release candidate bundles Holochain 0.7.0 binaries built for Ubuntu 26.04.

@@ -1,0 +1,13 @@
+[package]
+name = "music_catalogue_integrity"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "music_catalogue_integrity"
+
+[dependencies]
+hdi = { workspace = true }
+serde = { workspace = true }
+holochain_serialized_bytes = { workspace = true }

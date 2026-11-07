@@ -1,0 +1,15 @@
+---
+manifest_version: "0"
+name: music_catalogue
+integrity:
+  network_seed: ~
+  properties: ~
+  zomes:
+    - name: music_catalogue_integrity
+      path: ../target/wasm32-unknown-unknown/release/music_catalogue_integrity.wasm
+coordinator:
+  zomes:
+    - name: music_catalogue
+      path: ../target/wasm32-unknown-unknown/release/music_catalogue.wasm
+      dependencies:
+        - name: music_catalogue_integrity

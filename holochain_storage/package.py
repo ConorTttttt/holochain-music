@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey,
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from holochain_storage import portable
+
 SCHEMA = "holochain-storage/encrypted-package/v1"
 RECEIPT_SCHEMA = "holochain-storage/replica-receipt/v1"
 CHUNK_BYTES = 256 * 1024
@@ -89,7 +91,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp, path)
+        portable.replace(temp, path)
         temp = None
     finally:
         if temp:
@@ -311,7 +313,7 @@ def decrypt_package(package: dict[str, Any], store: str | Path, output: str | Pa
                 f.write(plain)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temp, destination)
+        portable.replace(temp, destination)
         temp = None
     finally:
         if temp:

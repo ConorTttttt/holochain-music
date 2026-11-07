@@ -14,3 +14,17 @@ local-library/
 *.flac
 *.m4a
 *.wav
+
+# Generated Holochain DNA/hApp bundles and Rust build outputs
+music-dna/target/
+music-dna/workdir/*.dna
+music-dna/workdir/*.happ
+music-e2e/target/
+# v1: all Rust target dirs and packed bundles are generated
+dna/target/
+dna/workdir/*.dna
+crates/*/target/
+integration/workdir/*.dna
+integration/workdir/*.happ
+# Windows cross-build target (packaging/windows)
+music-e2e/target-*/

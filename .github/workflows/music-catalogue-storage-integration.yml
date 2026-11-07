@@ -1,0 +1,90 @@
+name: Music catalogue identity and storage integration
+
+on:
+  pull_request:
+    paths:
+      - 'music-dna/**'
+      - 'dna/**'
+      - 'music-e2e/**'
+      - 'music_catalogue/**'
+      - 'holochain_storage/**'
+      - 'crates/storage-node/**'
+      - 'crates/moq-music/**'
+      - 'tests/**'
+      - '.github/workflows/music-catalogue-storage-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-rust-node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build and test the real encrypted HTTP node
+        run: |
+          cargo test --manifest-path crates/storage-node/Cargo.toml
+          cargo build --manifest-path crates/storage-node/Cargo.toml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python storage/catalogue contracts
+        run: python -m pip install -e .
+      - name: Verify S1 S2 S4 S5 across live Rust node
+        env:
+          HOLOCHAIN_STORAGE_NODE_BIN: ${{ github.workspace }}/crates/storage-node/target/debug/holochain-storage-node
+        run: python -m unittest discover -s tests -v
+
+  real-conductors:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python S7 fixture/client dependencies
+        run: python -m pip install -e .
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build real S4 Rust storage node for S7
+        run: cargo build --manifest-path crates/storage-node/Cargo.toml
+      - name: Test MoQ TLS pin and S17 explicit RFC1918 LAN endpoint rules
+        run: cargo test --manifest-path crates/moq-music/Cargo.toml
+      - name: Build real MoQ/QUIC publisher/subscriber for S9
+        run: cargo build --manifest-path crates/moq-music/Cargo.toml
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Build Holochain DNAs and test S6 WebSocket and full S7 retrieval
+        run: |
+          export HOLOCHAIN_MUSIC_PYTHON="$(command -v python)"
+          export HOLOCHAIN_STORAGE_NODE_BIN="$PWD/crates/storage-node/target/debug/holochain-storage-node"
+          export HOLOCHAIN_MOQ_BIN="$PWD/crates/moq-music/target/debug/holochain-music-moq"
+          export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+          nix develop ./music-e2e --command bash -euc '
+            cd music-dna
+            cargo build --release --target wasm32-unknown-unknown
+            hc dna pack workdir
+            cd ../dna
+            cargo build --release --target wasm32-unknown-unknown
+            hc dna pack workdir
+            cd ..
+            cp music-dna/workdir/music_catalogue.dna integration/workdir/
+            cp dna/workdir/music_storage.dna integration/workdir/
+            hc app pack integration/workdir
+            cd music-e2e
+            cargo test --test catalogue_storage_identity_sweettest -- --nocapture
+            cargo test --test s7_live_verified_retrieval_sweettest -- --nocapture
+            cargo test --test s9_holochain_moq_sweettest -- --nocapture
+            cargo test --test s10_granted_moq_playback_sweettest -- --nocapture
+            cargo test --test s11_buffered_granted_moq_sweettest -- --nocapture
+            cargo test --test s12_overlapping_moq_playback_sweettest -- --nocapture
+            cargo test --test s13_adaptive_moq_playback_sweettest -- --nocapture
+            cargo test --test s14_verified_seek_repair_sweettest -- --nocapture
+            cargo test --test s15_selective_moq_repair_sweettest -- --nocapture
+            cargo test --test s16_inflight_moq_seek_sweettest -- --nocapture
+          '

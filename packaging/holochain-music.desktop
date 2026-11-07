@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Holochain Music
+Comment=Artist-first decentralised music player
+Exec=holochain-music start
+Icon=holochain-music
+Terminal=true
+Categories=AudioVideo;Audio;Player;

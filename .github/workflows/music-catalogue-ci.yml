@@ -1,0 +1,60 @@
+name: Music catalogue tests
+
+on:
+  pull_request:
+    paths:
+      - 'music-dna/**'
+      - 'music_catalogue/**'
+      - 'tests/test_music_catalogue.py'
+      - 'tests/test_s18_local_player.py'
+      - '.github/workflows/music-catalogue-ci.yml'
+  push:
+    paths:
+      - 'music-dna/**'
+      - 'music_catalogue/**'
+      - 'tests/test_music_catalogue.py'
+      - 'tests/test_s18_local_player.py'
+      - '.github/workflows/music-catalogue-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  zome:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Typecheck catalogue zomes
+        working-directory: music-dna
+        run: cargo check --target wasm32-unknown-unknown
+      - name: Integrity validation unit tests
+        working-directory: music-dna
+        run: cargo test -p music_catalogue_integrity --lib
+
+  manifest-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install S1 storage library
+        run: python -m pip install -e .
+      - name: Run S5 contract tests
+        run: python -m unittest discover -s tests -p 'test_music_catalogue.py' -v
+
+  s18-local-player:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install signed music playback package
+        run: python -m pip install -e .
+      - name: Verify S18 authorised local playback and loopback HTTP security
+        run: python -m unittest discover -s tests -p 'test_s18_local_player.py' -v

@@ -1,0 +1,27 @@
+---
+manifest_version: "0"
+name: holochain_music
+description: Holochain Music catalogue plus shared-agent encrypted-storage metadata
+roles:
+  - name: music_catalogue
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: ./music_catalogue.dna
+      modifiers:
+        network_seed: ~
+        properties: ~
+      installed_hash: ~
+      clone_limit: 0
+  - name: music_storage
+    provisioning:
+      strategy: create
+      deferred: false
+    dna:
+      path: ./music_storage.dna
+      modifiers:
+        network_seed: ~
+        properties: ~
+      installed_hash: ~
+      clone_limit: 0
