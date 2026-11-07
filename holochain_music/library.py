@@ -180,7 +180,7 @@ class Library:
         Sizes describe allocated file content, not deduplicated disk blocks,
         filesystem quota or permission to remove those files.
         """
-        def count_files(root: Path, *, objects_only: bool = False) -> tuple[int, int>:
+        def count_files(root: Path, *, objects_only: bool = False) -> tuple[int, int]:
             total, count = 0, 0
             if not root.is_dir() or root.is_symlink():
                 return total, count
