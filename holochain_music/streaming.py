@@ -266,7 +266,7 @@ class Download:
                         return
                     self.state = "retrying"
                 if self._restart.wait(min(backoff, MAX_BACKOFF)) and self._stop.is_set():
-                    return
+                    break  # reach the common state update so 'pausing' becomes 'paused'
                 backoff *= 2
                 with self._cv:
                     if self.state == "retrying":
