@@ -23,22 +23,6 @@ function setAppearance(value) {
 }
 setAppearance(getAppearance());
 
-// Typography is local-only and separate from Ocean Signal / Amethyst theme colours.
-const TYPOGRAPHY_KEY = 'holochain_music_typography';
-const TYPOGRAPHY_MODES = new Set(['balanced', 'expressive']);
-function getTypography() {
-  try { const value = localStorage.getItem(TYPOGRAPHY_KEY); return TYPOGRAPHY_MODES.has(value) ? value : 'balanced'; }
-  catch (_) { return 'balanced'; }
-}
-function setTypography(value) {
-  const mode = TYPOGRAPHY_MODES.has(value) ? value : 'balanced';
-  if (mode === 'balanced') document.documentElement.removeAttribute('data-typography');
-  else document.documentElement.setAttribute('data-typography', mode);
-  try { localStorage.setItem(TYPOGRAPHY_KEY, mode); } catch (_) { /* storage may be blocked */ }
-  return mode;
-}
-setTypography(getTypography());
-
 const $ = id => document.getElementById(id);
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -254,10 +238,6 @@ const views = {
       el('option', { value: 'amethyst-night', text: 'Amethyst Night' }),
       el('option', { value: 'amethyst-light', text: 'Amethyst Light' }));
     appearance.value = getAppearance();
-    const typography = el('select', { id: 'typography', onchange: e => setTypography(e.target.value) },
-      el('option', { value: 'balanced', text: 'Balanced — Inter' }),
-      el('option', { value: 'expressive', text: 'Expressive — Inter + Space Grotesk' }));
-    typography.value = getTypography();
     const boot = el('input', { value: s.bootstrap_url }); const relay = el('input', { value: s.relay_url });
     const lan = el('input', { type: 'checkbox', checked: s.allow_lan }); const advertise = el('input', { value: s.host_advertise_ip || '', placeholder: 'e.g. 192.168.1.50 (empty = this computer only)' });
     const bind = el('input', { value: s.host_bind });
@@ -277,10 +257,6 @@ const views = {
       el('div', { class: 'card' },
         el('div', { class: 'appearance-field' }, el('label', { for: 'appearance', text: 'Theme' }), appearance),
         el('p', { class: 'muted', text: 'Changes apply immediately. System follows your device, including future changes. Saved in this browser.' })),
-      el('h2', { text: 'Typography' }),
-      el('div', { class: 'card' },
-        el('div', { class: 'typography-field' }, el('label', { for: 'typography', text: 'Font style' }), typography),
-        el('p', { class: 'muted', text: 'Balanced uses Inter throughout. Expressive keeps readable Inter controls and uses Space Grotesk for headings. Fonts are bundled for offline use and this choice is saved in this browser.' })),
       el('h2', { text: 'Network' }), el('div', { class: 'card' }, form)];
   },
 };
