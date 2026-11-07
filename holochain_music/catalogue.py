@@ -201,7 +201,7 @@ class Catalogue:
                     or claim.body.get("file_id") != file_id
                     or claim.body.get("manifest_sha256") != digest):
                 continue
-            if tried >= MAX_HOSTS_TRIED:
+            if tried >= min(MAX_HOSTS_TRIED, 3):
                 break
             tried += 1
             try:
@@ -224,13 +224,13 @@ class Catalogue:
                     candidate = HostCandidate(node, node_key, url, body.get("cert_fingerprint_hex"))
                     if (candidate.url, candidate.fingerprint) not in [(e.url, e.fingerprint) for e in endpoints]:
                         endpoints.append(candidate)
-                for candidate in endpoints[:3]:
+                for candidate in endpoints[:2]:
                     try:
                         if trusted is None:
                             manifest = fetch_document(
                                 moq_binary=self.moq_binary, url=candidate.url,
                                 cert_fingerprint_hex=candidate.fingerprint,
-                                file_id=file_id, document="manifest", allow_lan=self.allow_lan)
+                                file_id=file_id, document="manifest", allow_lan=self.allow_lan, timeout=10)
                             verify_public_artwork_manifest(
                                 manifest, artist_agent=artist_agent, album_id=album_id,
                                 trusted_artist=artist_key, expected_digest=digest)
@@ -240,7 +240,7 @@ class Catalogue:
                         receipt = fetch_document(
                             moq_binary=self.moq_binary, url=candidate.url,
                             cert_fingerprint_hex=candidate.fingerprint,
-                            file_id=file_id, document="receipt", allow_lan=self.allow_lan)
+                            file_id=file_id, document="receipt", allow_lan=self.allow_lan, timeout=10)
                         verify_replica_claim(receipt, manifest, artist_agent, node, owner_binding,
                                              node_binding, commitment, claim)
                         if trusted is None:
