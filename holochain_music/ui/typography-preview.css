@@ -21,6 +21,7 @@
 .preview-track-label span { display: block; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .preview-track time { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
 .preview-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.preview-actions .btn { display: inline-flex; align-items: center; min-height: 36px; cursor: default; }
 .preview-footnote, .preview-footer { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .preview-footer { margin: 20px 0 0; }
 @media (max-width: 760px) {
