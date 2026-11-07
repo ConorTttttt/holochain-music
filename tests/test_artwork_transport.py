@@ -77,14 +77,14 @@ class PublicArtworkTransportTests(unittest.TestCase):
             self.manifest, store=self.bob_store, artist_agent=ARTIST, album_id=ALBUM,
             trusted_artist=self.trusted, expected_digest=self.pin)
         self.assertEqual(received, self.png)
-        cache = VerifiedArtworkCache(self.root / "bob" / "artwork")
+        cache = VerifiedArtworkCache(self.root / "bob" / "artwork", cas=self.bob_store)
         cache.save(artist_agent=ARTIST, album_id=ALBUM, manifest=self.manifest,
                    trusted_artist=self.trusted, expected_digest=self.pin,
                    image=received, store=self.bob_store)
         self.assertEqual(cache.read(ARTIST, ALBUM), self.png)
         self.assertIsNone(cache.read("otherArtist", ALBUM))
         del cache
-        self.assertEqual(VerifiedArtworkCache(self.root / "bob" / "artwork").read(ARTIST, ALBUM), self.png)
+        self.assertEqual(VerifiedArtworkCache(self.root / "bob" / "artwork", cas=self.bob_store).read(ARTIST, ALBUM), self.png)
 
     def test_swapped_album_or_artist_is_rejected(self):
         for identity in ({"album_id": "b" * 32}, {"artist_agent": "anotherArtist"}):
@@ -119,7 +119,7 @@ class PublicArtworkTransportTests(unittest.TestCase):
 
     def test_cache_rejects_unrelated_clean_png(self):
         self.copy_chunks()
-        cache = VerifiedArtworkCache(self.root / "cache")
+        cache = VerifiedArtworkCache(self.root / "cache", cas=self.bob_store)
         other = sample_png(width=5)
         with self.assertRaises(ArtworkError):
             cache.save(artist_agent=ARTIST, album_id=ALBUM, manifest=self.manifest,
@@ -129,7 +129,7 @@ class PublicArtworkTransportTests(unittest.TestCase):
 
     def test_cache_rejects_disk_tampering(self):
         self.copy_chunks()
-        cache = VerifiedArtworkCache(self.root / "cache")
+        cache = VerifiedArtworkCache(self.root / "cache", cas=self.bob_store)
         cache.save(artist_agent=ARTIST, album_id=ALBUM, manifest=self.manifest,
                    trusted_artist=self.trusted, expected_digest=self.pin,
                    image=self.png, store=self.bob_store)
@@ -146,7 +146,7 @@ class PublicArtworkTransportTests(unittest.TestCase):
 
     def test_cache_manifest_replacement_detected_offline(self):
         self.copy_chunks()
-        cache = VerifiedArtworkCache(self.root / "cache")
+        cache = VerifiedArtworkCache(self.root / "cache", cas=self.bob_store)
         cache.save(artist_agent=ARTIST, album_id=ALBUM, manifest=self.manifest,
                    trusted_artist=self.trusted, expected_digest=self.pin,
                    image=self.png, store=self.bob_store)
