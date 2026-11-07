@@ -1,6 +1,7 @@
 """Holochain Music application core: one object the UI and CLI talk to."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -81,6 +82,7 @@ class MusicApp:
         self._lock_fd = None
         self._sync_lock = threading.Lock()
         self._storage_lock = threading.RLock()
+        self._storage_readers = 0
         self.shutdown_requested = threading.Event()
         self.player = Player(backend=self.settings["audio_backend"], device=self.settings["audio_device"],
                              resolve=self._session_for, on_finished=self._advance,
@@ -423,13 +425,35 @@ class MusicApp:
                 raise AppError("Stop playback before removing an offline download.")
             if any(download.is_running() for download in self.downloads.values()):
                 raise AppError("A download is still active. Finish downloads or restart offline before removal.")
+            if self._storage_readers:
+                raise AppError("Offline verification or WAV export is active. Try removal after it completes.")
             result = self.library.remove_offline_copy(file_id)
             # Discard cached completed/failed Download state so it cannot
             # falsely announce already-present objects after their deletion.
             self.downloads.pop(file_id, None)
             return result
 
+    @contextmanager
+    def _offline_storage_reader(self):
+        """Prevent removal while verification or an export is reading CAS data."""
+        lock = getattr(self, "_storage_lock", None)
+        if lock is None:
+            # Compatible with isolated backend unit fixtures using __new__.
+            yield
+            return
+        with lock:
+            self._storage_readers += 1
+        try:
+            yield
+        finally:
+            with lock:
+                self._storage_readers -= 1
+
     def offline_readiness(self, file_id: str) -> dict:
+        with self._offline_storage_reader():
+            return self._offline_readiness_impl(file_id)
+
+    def _offline_readiness_impl(self, file_id: str) -> dict:
         """On-demand offline verification; never return the content key.
 
         Verification reads signed encrypted chunks and unwraps the grant key.
@@ -507,6 +531,10 @@ class MusicApp:
 
     # ---- export (licence permitting) ------------------------------------
     def export_wav(self, file_id: str, destination: Path) -> Path:
+        with self._offline_storage_reader():
+            return self._export_wav_impl(file_id, destination)
+
+    def _export_wav_impl(self, file_id: str, destination: Path) -> Path:
         """Write a playable WAV for a perpetual personal-use licence only.
 
         The exported file is plaintext by design and cannot be revoked."""
