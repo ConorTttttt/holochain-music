@@ -21,9 +21,11 @@ UI = Path(__file__).with_name("ui")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8"),
-          "/icon.svg": ("icon.svg", "image/svg+xml")}
+          "/icon.svg": ("icon.svg", "image/svg+xml"),
+          "/fonts/PlusJakartaSans-wght.ttf": ("fonts/PlusJakartaSans-wght.ttf", "font/ttf"),
+          "/fonts/PlusJakartaSans-Italic-wght.ttf": ("fonts/PlusJakartaSans-Italic-wght.ttf", "font/ttf")}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "
-       "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+       "font-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
 def _keys(data: dict, required: set, optional: set = frozenset()) -> dict:
