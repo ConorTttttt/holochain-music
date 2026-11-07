@@ -77,12 +77,18 @@
         <span class="badge ok">Offline ready</span>
       </div>
     </section>
-    <p class="preview-note">The artwork tile uses a local vinyl placeholder, not actual album artwork. Track cover uploads and secure artwork delivery would be a separate feature.</p>
+    <div class="preview-upload">
+      <label for="preview-artwork-file">Try your own local PNG cover</label>
+      <input id="preview-artwork-file" type="file" accept="image/png">
+      <p id="preview-artwork-status" class="muted">Your image stays in this browser tab and is never uploaded. The production album importer also checks dimensions and strips embedded metadata.</p>
+    </div>
+    <p class="preview-note">This is a browser-only design sample. In Holochain Music, the cover is stored on the artist's device until peer-to-peer artwork delivery is implemented.</p>
   </main>
   <footer class="player" aria-label="Player interface sample" inert>
     <div class="now">
-      <div class="art" aria-hidden="true" title="Artwork placeholder">
+      <div class="art" aria-hidden="true" title="Album artwork preview">
         <svg class="icon" viewBox="0 0 256 256" focusable="false"><use href="#ph-vinyl-record"></use></svg>
+        <img id="now-art-image" alt="" hidden>
       </div>
       <div class="now-text"><strong id="now-title" title="Midnight Signals">Midnight Signals</strong><span id="now-artist" title="Demo artist">Demo artist</span></div>
     </div>
