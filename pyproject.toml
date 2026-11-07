@@ -18,4 +18,4 @@ include = ["holochain_storage*", "music_catalogue*", "holochain_music*"]
 
 [tool.setuptools.package-data]
 music_catalogue = ["ui/*.html", "ui/*.css", "ui/*.js"]
-holochain_music = ["ui/*.html", "ui/*.css", "ui/*.js", "ui/*.svg"]
+holochain_music = ["ui/*.html", "ui/*.css", "ui/*.js", "ui/*.svg", "ui/fonts/*.ttf", "ui/fonts/*.txt"]
