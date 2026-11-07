@@ -36,6 +36,20 @@ about a minute. The status under the logo shows **Online · Holochain** or
    licence covers personal use only.
 8. Use **Queue**, **Playlists** and **Recently played** to organise listening.
 
+## Player interface
+
+The fixed player now uses a more prominent **local vinyl artwork placeholder**, clearer track/artist labels, and a styled progress bar whose fill follows playback position or your pending seek. **Actual album cover uploads and artwork delivery are not yet supported**; the placeholder is not a real album image.
+
+Controls are unchanged: Stop, 10-second rewind/forward, Play/Pause, Next in queue, Queue, and Volume. The existing playback status badge reports streaming, buffering, offline playback and audio interruptions. Hover over a truncated track name or status badge to see the full text. On narrow screens the player stacks the track details, transport/progress and queue/volume controls so they remain reachable.
+
+To **preview the design without starting Holochain Music**, from the repository root run:
+
+```bash
+python3 -m http.server 8766 --bind 127.0.0.1 --directory holochain_music/ui
+```
+
+Open `http://127.0.0.1:8766/player-preview.html`. Switch between Ocean Signal and Amethyst colour palettes or resize the browser to check the responsive layout. This page uses **demo track details** and is not a functioning music player; no playback requests are made and no identity or licence settings are changed. Press Ctrl+C to stop the preview server.
+
 ## Publishing (artist studio)
 
 1. **Publish a track → Your profile**: set the artist name listeners will see.
