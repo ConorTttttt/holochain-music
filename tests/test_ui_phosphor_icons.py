@@ -91,6 +91,15 @@ class PhosphorIconsTest(unittest.TestCase):
         self.assertIn("icon-sprite", self.html)
         self.assertNotIn("https://cdn", self.html)
 
+    def test_secondary_player_icons_have_no_circles_or_fills(self):
+        self.assertIn(
+            ".player button { width: 40px; height: 40px; border: 0; border-radius: 0; background: transparent;",
+            self.css,
+        )
+        self.assertIn(".player .primary { width: 46px; height: 46px; border-radius: 50%;", self.css)
+        self.assertIn(".btn.primary, .player .primary { background: var(--accent);", self.css)
+        self.assertIn("outline: 3px solid var(--focus)", self.css)
+
     def test_unsupported_controls_not_faked(self):
         for name in ("btn-shuffle", "btn-repeat", "btn-output"):
             self.assertNotIn('id="' + name + '"', self.html)
