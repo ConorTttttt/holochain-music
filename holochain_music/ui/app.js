@@ -313,7 +313,8 @@ function renderPlayer() {
   if (p.state === 'error' && p.error && renderPlayer.lastError !== p.error) toast(p.error);
   renderPlayer.lastError = p.error;
   const playing = ['playing', 'buffering', 'seeking'].includes(p.state);
-  $('btn-play').textContent = playing ? '❚❚' : '▶'; $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  $('btn-play').querySelector('use').setAttribute('href', playing ? '#ph-pause-fill' : '#ph-play-fill');
+  $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   $('btn-play').disabled = !p.track_key || p.state === 'loading';
   $('btn-stop').disabled = !['playing', 'paused', 'buffering', 'loading', 'seeking'].includes(p.state);
   const ready = p.total_frames > 0 && p.sample_rate > 0 && p.state !== 'loading';
@@ -334,6 +335,7 @@ $('btn-stop').addEventListener('click', () => act('/api/stop'));
 $('btn-back').addEventListener('click', () => nudge(-10));
 $('btn-fwd').addEventListener('click', () => nudge(10));
 $('btn-next').addEventListener('click', () => act('/api/next'));
+$('btn-queue').addEventListener('click', () => show('queue'));
 $('seek').addEventListener('pointerdown', () => { dragging = true; });
 $('seek').addEventListener('change', () => { dragging = false; const p = state.player; if (p && p.total_frames) requestSeek($('seek').value * p.total_frames / 1000); });
 let volTimer; $('volume').addEventListener('input', () => { clearTimeout(volTimer); volTimer = setTimeout(() => act('/api/volume', { volume: $('volume').value / 100 }), 120); });
