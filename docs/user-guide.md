@@ -38,7 +38,7 @@ about a minute. The status under the logo shows **Online · Holochain** or
 
 ## Player interface
 
-The fixed player uses a more prominent vinyl artwork placeholder, clearer track/artist labels, and a styled progress bar whose fill follows playback position or your pending seek. On the artist's own device, published album tracks now show the corresponding local PNG cover. Artwork transport to other peers is still pending.
+The fixed player shows album covers when a verified one is available, with the vinyl icon as a fallback. It also has clearer track/artist labels and a progress bar that follows playback position or the pending seek. For newly published albums, the player can download artist-signed public artwork from an authenticated MoQ host; verified covers are cached for offline use.
 
 Controls are unchanged: Stop, 10-second rewind/forward, Play/Pause, Next in queue, Queue, and Volume. The existing playback status badge reports streaming, buffering, offline playback and audio interruptions. Hover over a truncated track name or status badge to see the full text. On narrow screens the player stacks the track details, transport/progress and queue/volume controls so they remain reachable.
 
@@ -67,15 +67,29 @@ Open `http://127.0.0.1:8766/player-preview.html`. Switch between Ocean Signal an
 5. **Access requests**: grant **24 h streaming** or a **licence**. A licence is
    permanent and cannot be withdrawn.
 
-**Artwork availability (phase 1):** Covers are stored **only on the artist's
-computer** and displayed on that computer's own album tracks and player, even
-if the player is offline. The listener-side player currently continues to show
-the vinyl placeholder for peer tracks because authenticated, content-addressed
-cover delivery across the Holochain/MoQ network is **not implemented**. We do
-not embed an unverified remote URL or falsely set `artwork_manifest_sha256`
-to a PNG file hash. On the artist computer the album image is served only to
-the local browser using a token-authenticated route; the token never appears in
-an image URL. JPEG, SVG, GIF and remote image URLs are not accepted.
+**Artwork availability (new albums):** A cover is **public content**. When the
+artist creates a new album with a PNG cover, Holochain stores the SHA-256 pin
+of an artist-signed public artwork manifest. The artist's MoQ/QUIC host makes
+the corresponding image ciphertext chunks available, but the wrapping key is
+**publicly derived**, so this is *not confidential encryption*. Listeners can
+verify the artist's signing key and Holochain album record, verify the host
+receipt and pinned certificate, fetch the image and cache it for offline
+display. A music playback licence is not required just to see a cover.
+
+The artist must host the artwork and both computers must have working
+Holochain/MoQ connectivity; private-LAN access must be explicitly enabled
+where needed. If a host is unreachable or verification fails, the player keeps
+the vinyl placeholder and audio playback remains independent.
+
+**Existing albums:** Albums previously published with
+`artwork_manifest_sha256: null` remain local-cover-only; their v1 metadata
+cannot be safely amended by republishing the same album ID. A future
+versioned album-update workflow/migration is required for those albums.
+
+Covers are PNG only (8-bit RGB/RGBA, no EXIF metadata, up to 1200px and
+768 KiB), and public artwork does not grant access to audio. Images are served
+to each local browser through a token-authenticated endpoint, without tokens
+in URLs.
 
 To try the cover layout without starting Holochain, use the static player
 preview (`player-preview.html`) and choose a PNG from your computer. This
