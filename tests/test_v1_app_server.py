@@ -28,7 +28,8 @@ from v1_fixtures import Track, write_tone
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory(prefix="hm-api-", dir="/tmp")
+        cls.tmp = tempfile.TemporaryDirectory(
+            prefix="hm-api-", dir=os.environ.get("HOLOCHAIN_MUSIC_TEST_TMPDIR", "/tmp"))
         root = Path(cls.tmp.name)
         cls.home = root / "home"
         cls.home.mkdir()
