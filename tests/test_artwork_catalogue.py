@@ -30,15 +30,6 @@ def record(author, body):
     return AuthoredRecord(author=author, action_hash="action-" + author, body=body)
 
 
-def png():
-    ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 6, 0, 0, 0)
-    def chunk(tag, content):
-        return struct.pack(">I", len(content)) + tag + content + struct.pack(
-            ">I", zlib.crc32(tag + content) & 0xFFFFFFFF)
-    return (SIG + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(b"\x00" + b"\0" * 8) * 2) +
-            chunk(b"IEND", b""))
-
-
 class Bridge:
     def __init__(self, values):
         self.values = values
