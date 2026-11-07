@@ -25,6 +25,10 @@ import sys
 import tempfile
 import wave
 
+# Also work when executed as 'python3 tests/manual_offline_storage_fixture.py'
+# from a source checkout without an editable pip installation.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from holochain_music.keys import KeyStore
 from holochain_music.library import Library
 from holochain_music.paths import AppPaths
