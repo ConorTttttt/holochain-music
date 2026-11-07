@@ -12,6 +12,9 @@ CSS = (UI / "app.css").read_text(encoding="utf-8")
 JS = (UI / "app.js").read_text(encoding="utf-8")
 SERVER = (ROOT / "holochain_music" / "server.py").read_text(encoding="utf-8")
 PYPROJECT = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+PREVIEW_HTML = (UI / "typography-preview.html").read_text(encoding="utf-8")
+PREVIEW_CSS = (UI / "typography-preview.css").read_text(encoding="utf-8")
+PREVIEW_JS = (UI / "typography-preview.js").read_text(encoding="utf-8")
 FONTS = (
     "inter-latin-400-normal.woff2",
     "inter-latin-500-normal.woff2",
@@ -91,6 +94,18 @@ class UITypographyTests(unittest.TestCase):
     def test_installers_include_fonts_and_licenses(self):
         self.assertIn('"ui/fonts/*.woff2"', PYPROJECT)
         self.assertIn('"ui/fonts/*.txt"', PYPROJECT)
+
+    def test_standalone_preview_is_offline_and_without_backend(self):
+        self.assertIn('href="/app.css"', PREVIEW_HTML)
+        self.assertIn('href="/typography-preview.css"', PREVIEW_HTML)
+        self.assertIn('src="/typography-preview.js"', PREVIEW_HTML)
+        self.assertIn("Inter throughout", PREVIEW_HTML)
+        self.assertIn("Inter + Space Grotesk", PREVIEW_HTML)
+        self.assertIn(".preview-expressive { --font-display:", PREVIEW_CSS)
+        self.assertIn("data-theme", PREVIEW_JS)
+        self.assertNotIn("/api/", PREVIEW_JS)
+        self.assertNotIn("localStorage", PREVIEW_JS)
+        self.assertNotIn('"/typography-preview.html":', SERVER)
 
     def test_phosphor_player_style_is_untouched(self):
         self.assertIn(".player button { width: 40px; height: 40px; border: 0; border-radius: 0; background: transparent;", CSS)
