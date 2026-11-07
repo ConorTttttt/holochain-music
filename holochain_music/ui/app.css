@@ -9,13 +9,21 @@
   --warn: #F6C56E; --bad: #FFAAA8; --focus: #93BEFF; --radius: 10px;
 }
 @media (prefers-color-scheme: light) {
-  :root {
+  :root:not([data-theme]) {
     color-scheme: light;
     --bg: #F5FAFC; --panel: #FFFFFF; --panel-2: #EAF2F7; --line: #CADCE6;
     --text: #152D3B; --muted: #506779; --accent: #1959B8; --accent-ink: #FFFFFF;
     --teal: #08766F; --field-border: #6F8390;
     --warn: #895700; --bad: #AF3427; --focus: #1959B8;
   }
+}
+/* Explicit light overrides the operating system preference. */
+:root[data-theme="light"] {
+    color-scheme: light;
+    --bg: #F5FAFC; --panel: #FFFFFF; --panel-2: #EAF2F7; --line: #CADCE6;
+    --text: #152D3B; --muted: #506779; --accent: #1959B8; --accent-ink: #FFFFFF;
+    --teal: #08766F; --field-border: #6F8390;
+    --warn: #895700; --bad: #AF3427; --focus: #1959B8;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -95,6 +103,11 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
 }
 .main:focus { outline: none; }
 a { color: var(--accent); }
+
+/* Appearance settings use the same accessible semantic colours as the rest of the UI. */
+.appearance-field { display: grid; gap: 8px; max-width: 360px; }
+.appearance-field label { font-weight: 600; }
+.appearance-field select { width: 100%; min-height: 44px; border: 1px solid var(--field-border); border-radius: 999px; background: var(--panel-2); color: var(--text); padding: 8px 14px; cursor: pointer; }
 
 /* Phosphor SVG controls: same-origin assets, semantic accent retained. */
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }

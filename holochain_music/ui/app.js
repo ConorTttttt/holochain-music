@@ -6,6 +6,23 @@ const urlToken = new URLSearchParams(location.hash.slice(1)).get('token');
 if (urlToken) { sessionStorage.setItem('hm_token', urlToken); history.replaceState(null, '', '/'); }
 const token = sessionStorage.getItem('hm_token');
 
+// UI-only preference: no key material, permissions, network config or audio state.
+// Leaving data-theme unset makes CSS follow the OS, including live OS changes.
+const APPEARANCE_KEY = 'holochain_music_appearance';
+const APPEARANCE_MODES = new Set(['system', 'light', 'dark']);
+function getAppearance() {
+  try { const value = localStorage.getItem(APPEARANCE_KEY); return APPEARANCE_MODES.has(value) ? value : 'system'; }
+  catch (_) { return 'system'; }
+}
+function setAppearance(value) {
+  const mode = APPEARANCE_MODES.has(value) ? value : 'system';
+  if (mode === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', mode);
+  try { localStorage.setItem(APPEARANCE_KEY, mode); } catch (_) { /* private browsing or blocked storage */ }
+  return mode;
+}
+setAppearance(getAppearance());
+
 const $ = id => document.getElementById(id);
 const el = (tag, attrs = {}, ...kids) => {
   const n = document.createElement(tag);
@@ -214,6 +231,11 @@ const views = {
   async settings() {
     const id = await api('/api/identity');
     const s = id.settings;
+    const appearance = el('select', { id: 'appearance', onchange: e => setAppearance(e.target.value) },
+      el('option', { value: 'system', text: 'System (follow device)' }),
+      el('option', { value: 'light', text: 'Light' }),
+      el('option', { value: 'dark', text: 'Dark' }));
+    appearance.value = getAppearance();
     const boot = el('input', { value: s.bootstrap_url }); const relay = el('input', { value: s.relay_url });
     const lan = el('input', { type: 'checkbox', checked: s.allow_lan }); const advertise = el('input', { value: s.host_advertise_ip || '', placeholder: 'e.g. 192.168.1.50 (empty = this computer only)' });
     const bind = el('input', { value: s.host_bind });
@@ -229,6 +251,10 @@ const views = {
       el('p', {}, 'Status: ', el('span', { text: id.status })),
       el('p', {}, 'Hosting: ', el('code', { text: id.host ? `${id.host.url} · ${id.host.fingerprint}` : 'not hosting' })),
       el('p', { class: 'muted', text: 'Back up your keys and library with: holochain-music backup export FILE (keep the passphrase safe; without the backup a lost computer means lost licences).' })),
+      el('h2', { text: 'Appearance' }),
+      el('div', { class: 'card' },
+        el('div', { class: 'appearance-field' }, el('label', { for: 'appearance', text: 'Theme' }), appearance),
+        el('p', { class: 'muted', text: 'Changes apply immediately. System follows your device, including future changes. Saved in this browser.' })),
       el('h2', { text: 'Network' }), el('div', { class: 'card' }, form)];
   },
 };

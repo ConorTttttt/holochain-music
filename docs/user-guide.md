@@ -50,6 +50,16 @@ about a minute. The status under the logo shows **Online · Holochain** or
 Not supported in v1: payments, FLAC/MP3 input, publishing to a remote host,
 key rotation.
 
+## Appearance
+
+In **Identity & settings → Appearance**, choose:
+
+- **System (follow device)** — automatically uses the operating system's light/dark preference, including later changes.
+- **Light** — always use the Ocean Signal light theme.
+- **Dark** — always use the Ocean Signal dark theme.
+
+Changes are immediate and do **not** restart playback, Holochain, or your audio output. The preference is stored locally **in this browser** (not in the Holochain identity or encrypted backups); another browser or profile may use a different choice. If browser storage is blocked, the choice applies for the current page but may not persist. The Ocean Signal brand palette remains adjustable separately from this appearance setting.
+
 ## Back up your identity and music
 
 Without a backup, losing this computer means losing your licences and, if you
