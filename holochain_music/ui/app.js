@@ -346,9 +346,12 @@ function offlineTrackCard(item) {
       disabled: check && check.state === 'checking',
       text: check && check.state === 'ready' ? 'Verify again' : 'Verify offline readiness',
       onclick: () => verifyOfflineTrack(item.file_id) }));
-    if (check && check.state === 'ready') actions.append(el('button', {
-      class: 'btn primary', type: 'button', text: 'Export licensed WAV',
-      onclick: () => exportWav(item) }));
+    if (check && check.state === 'ready') {
+      actions.append(el('button', { class: 'btn primary', type: 'button', text: 'Play verified copy',
+        onclick: () => act('/api/play', { file_id: item.file_id }) }));
+      actions.append(el('button', { class: 'btn', type: 'button', text: 'Export licensed WAV',
+        onclick: () => exportWav(item) }));
+    }
   } else if (item.grant_kind === 'perpetual-personal') {
     const transfer = item.download;
     const busy = transfer && ['downloading', 'retrying'].includes(transfer.state);
