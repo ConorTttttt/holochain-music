@@ -57,6 +57,8 @@ In **Identity & settings → Appearance**, choose:
 - **System (follow device)** — automatically uses the operating system's light/dark preference, including later changes.
 - **Light** — always use the Ocean Signal light theme.
 - **Dark** — always use the Ocean Signal dark theme.
+- **Amethyst Night** — a dark violet alternative with lavender accents.
+- **Amethyst Light** — a pale lavender alternative with rich-purple accents.
 
 Changes are immediate and do **not** restart playback, Holochain, or your audio output. The preference is stored locally **in this browser** (not in the Holochain identity or encrypted backups); another browser or profile may use a different choice. If browser storage is blocked, the choice applies for the current page but may not persist. The Ocean Signal brand palette remains adjustable separately from this appearance setting.
 
