@@ -38,7 +38,7 @@ about a minute. The status under the logo shows **Online · Holochain** or
 
 ## Player interface
 
-The fixed player now uses a more prominent **local vinyl artwork placeholder**, clearer track/artist labels, and a styled progress bar whose fill follows playback position or your pending seek. **Actual album cover uploads and artwork delivery are not yet supported**; the placeholder is not a real album image.
+The fixed player uses a more prominent vinyl artwork placeholder, clearer track/artist labels, and a styled progress bar whose fill follows playback position or your pending seek. On the artist's own device, published album tracks now show the corresponding local PNG cover. Artwork transport to other peers is still pending.
 
 Controls are unchanged: Stop, 10-second rewind/forward, Play/Pause, Next in queue, Queue, and Volume. The existing playback status badge reports streaming, buffering, offline playback and audio interruptions. Hover over a truncated track name or status badge to see the full text. On narrow screens the player stacks the track details, transport/progress and queue/volume controls so they remain reachable.
 
@@ -53,13 +53,33 @@ Open `http://127.0.0.1:8766/player-preview.html`. Switch between Ocean Signal an
 ## Publishing (artist studio)
 
 1. **Publish a track → Your profile**: set the artist name listeners will see.
-2. Choose a 16-bit PCM WAV (mono or stereo, 8–48 kHz), give it a title and
-   declare your rights. The file is encrypted on this computer. Only ciphertext
-   is hosted, and the content key stays in your key store.
-3. While the app is running, this computer hosts your tracks over pinned
+2. **Create an album (optional)**: enter an album or EP title. For a cover, enter
+   the absolute path to a local **PNG** file, e.g. `/home/you/Pictures/cover.png`.
+   The first-stage importer supports 8-bit RGB/RGBA PNGs up to 1200 pixels
+   per side and 768 KiB. It strips embedded metadata, including location-bearing
+   text/EXIF chunks, before storing the cover.
+3. **Publish a track**: choose the album from the dropdown, then select a 16-bit
+   PCM WAV (mono/stereo, 8–48 kHz), give it a title and declare your rights.
+   The audio is encrypted on this computer; only ciphertext is hosted and the
+   content key stays in your local key store. Singles can have no album.
+4. While the app is running, this computer hosts your tracks over pinned
    MoQ/QUIC. Listeners can only play after you approve them.
-4. **Access requests**: grant **24 h streaming** or a **licence**. A licence is
+5. **Access requests**: grant **24 h streaming** or a **licence**. A licence is
    permanent and cannot be withdrawn.
+
+**Artwork availability (phase 1):** Covers are stored **only on the artist's
+computer** and displayed on that computer's own album tracks and player, even
+if the player is offline. The listener-side player currently continues to show
+the vinyl placeholder for peer tracks because authenticated, content-addressed
+cover delivery across the Holochain/MoQ network is **not implemented**. We do
+not embed an unverified remote URL or falsely set `artwork_manifest_sha256`
+to a PNG file hash. On the artist computer the album image is served only to
+the local browser using a token-authenticated route; the token never appears in
+an image URL. JPEG, SVG, GIF and remote image URLs are not accepted.
+
+To try the cover layout without starting Holochain, use the static player
+preview (`player-preview.html`) and choose a PNG from your computer. This
+never uploads it or saves it outside the browser tab.
 
 Not supported in v1: payments, FLAC/MP3 input, publishing to a remote host,
 key rotation.
