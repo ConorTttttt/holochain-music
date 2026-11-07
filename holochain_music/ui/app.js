@@ -9,7 +9,7 @@ const token = sessionStorage.getItem('hm_token');
 // UI-only preference: no key material, permissions, network config or audio state.
 // Leaving data-theme unset makes CSS follow the OS, including live OS changes.
 const APPEARANCE_KEY = 'holochain_music_appearance';
-const APPEARANCE_MODES = new Set(['system', 'light', 'dark']);
+const APPEARANCE_MODES = new Set(['system', 'light', 'dark', 'amethyst-night']);
 function getAppearance() {
   try { const value = localStorage.getItem(APPEARANCE_KEY); return APPEARANCE_MODES.has(value) ? value : 'system'; }
   catch (_) { return 'system'; }
@@ -234,7 +234,8 @@ const views = {
     const appearance = el('select', { id: 'appearance', onchange: e => setAppearance(e.target.value) },
       el('option', { value: 'system', text: 'System (follow device)' }),
       el('option', { value: 'light', text: 'Light' }),
-      el('option', { value: 'dark', text: 'Dark' }));
+      el('option', { value: 'dark', text: 'Dark' }),
+      el('option', { value: 'amethyst-night', text: 'Amethyst Night' }));
     appearance.value = getAppearance();
     const boot = el('input', { value: s.bootstrap_url }); const relay = el('input', { value: s.relay_url });
     const lan = el('input', { type: 'checkbox', checked: s.allow_lan }); const advertise = el('input', { value: s.host_advertise_ip || '', placeholder: 'e.g. 192.168.1.50 (empty = this computer only)' });
