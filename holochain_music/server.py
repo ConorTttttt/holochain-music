@@ -22,6 +22,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/app.css": ("app.css", "text/css; charset=utf-8"),
           "/icon.svg": ("icon.svg", "image/svg+xml"),
+          "/icons.svg": ("icons.svg", "image/svg+xml"),
           "/fonts/PlusJakartaSans-wght.ttf": ("fonts/PlusJakartaSans-wght.ttf", "font/ttf"),
           "/fonts/PlusJakartaSans-Italic-wght.ttf": ("fonts/PlusJakartaSans-Italic-wght.ttf", "font/ttf")}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; "

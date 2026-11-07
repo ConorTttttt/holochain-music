@@ -121,7 +121,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .brand strong { font-weight: var(--type-weight-bold); }
 .brand small { display: block; color: var(--muted); font-size: var(--type-size-caption); }
 .nav-head { margin: 6px 8px 4px; color: var(--muted); font-size: var(--type-size-micro); letter-spacing: .08em; text-transform: uppercase; }
-.nav { display: flex; width: 100%; min-height: var(--control-height); justify-content: space-between; align-items: center; text-align: left; background: none; border: 0; border-radius: var(--radius-pill); padding: 8px 10px; cursor: pointer; }
+.ph-icon { display: inline-block; width: 20px; height: 20px; flex: none; fill: currentColor; color: inherit; vertical-align: middle; pointer-events: none; }
+.nav { display: flex; gap: 10px; width: 100%; min-height: var(--control-height); justify-content: flex-start; align-items: center; text-align: left; background: none; border: 0; border-radius: var(--radius-pill); padding: 8px 10px; cursor: pointer; }
+.nav .pill { margin-left: auto; }
 .nav:hover { background: var(--panel-2); }
 .nav[aria-current="page"] { background: var(--panel-2); color: var(--accent); font-weight: var(--type-weight-semibold); }
 .pill { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; padding: 0 7px; }
@@ -142,7 +144,8 @@ h2 { font-size: var(--type-size-section); line-height: var(--type-leading-headin
 .row .title strong { display: block; }
 .row .title span, .muted { color: var(--muted); font-size: var(--type-size-label); }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.btn { min-height: var(--control-height); background: var(--panel-2); border: 1px solid var(--border-control); border-radius: var(--radius-pill); padding: 6px 12px; cursor: pointer; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: var(--control-height); background: var(--panel-2); border: 1px solid var(--border-control); border-radius: var(--radius-pill); padding: 6px 12px; cursor: pointer; }
+.btn .ph-icon { width: 18px; height: 18px; }
 .btn:hover { border-color: var(--accent); }
 .btn.primary, .player .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn:disabled, .player button:disabled { opacity: .45; cursor: not-allowed; }
@@ -167,12 +170,15 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
 .now-text span { color: var(--muted); font-size: var(--type-size-label); }
 .transport { display: grid; gap: 4px; justify-items: center; }
 .buttons { display: flex; gap: 8px; }
-.player button { width: var(--control-icon-hit); height: var(--control-icon-hit); border-radius: 50%; border: 1px solid var(--border-control); background: var(--panel-2); cursor: pointer; }
+.player button { display: grid; place-items: center; width: var(--control-icon-hit); height: var(--control-icon-hit); border-radius: 50%; border: 1px solid var(--border-control); background: var(--panel-2); cursor: pointer; }
+.player button .ph-icon { width: 22px; height: 22px; }
+.player .primary .ph-icon { width: 26px; height: 26px; }
 .player .primary { width: var(--control-play-size); height: var(--control-play-size); font-size: 18px; }
 .timeline { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 8px; width: 100%; font-size: var(--type-size-caption); color: var(--muted); }
 .timeline input { width: 100%; accent-color: var(--accent); }
 .side { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
 .volume { display: flex; align-items: center; gap: 6px; }
+.volume .ph-icon { width: 20px; height: 20px; }
 .volume input { width: 100px; accent-color: var(--accent); }
 .toast { position: fixed; right: 18px; bottom: 104px; max-width: 420px; background: var(--panel-2); border: 1px solid var(--bad); border-radius: var(--radius-panel); padding: 10px 14px; z-index: 20; }
 .toast.info { border-color: var(--accent); }

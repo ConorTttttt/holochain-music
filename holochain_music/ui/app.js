@@ -34,6 +34,25 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const kid of kids) if (kid !== null && kid !== undefined) n.append(kid);
   return n;
 };
+// Static, reviewed icon names only. Never assemble sprite IDs from catalogue text.
+const PHOSPHOR_IDS = new Set([
+  'play-regular', 'play-fill', 'pause-fill', 'list-dashes-regular',
+  'download-simple-regular', 'export-regular', 'plus-regular',
+  'handshake-regular', 'queue-regular',
+]);
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function icon(name) {
+  if (!PHOSPHOR_IDS.has(name)) throw new Error('Unknown UI icon');
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', 'ph-icon');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const use = document.createElementNS(SVG_NS, 'use');
+  use.setAttribute('href', `/icons.svg#${name}`);
+  svg.appendChild(use);
+  return svg;
+}
+
 const fmt = ms => { const s = Math.max(0, Math.floor((ms || 0) / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 let state = { player: null, online: false, agent: null, queue: [] };
@@ -84,22 +103,25 @@ function trackActions(fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const box = el('div', { class: 'actions' });
   if (item && item.playable) {
-    box.append(el('button', { class: 'btn primary', type: 'button', 'aria-label': `Play ${item.title}`, text: 'Play',
-      onclick: () => act('/api/play', { file_id: fileId }) }));
-    box.append(el('button', { class: 'btn', type: 'button', text: 'Queue', 'aria-label': `Add ${item.title} to queue`,
-      onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }));
-    if (!item.complete) box.append(el('button', { class: 'btn', type: 'button', text: 'Download',
-      onclick: () => act('/api/download', { file_id: fileId }, 'Download started') }));
-    if (item.offline_ready) box.append(el('button', { class: 'btn', type: 'button', text: 'Export WAV', onclick: () => exportWav(item) }));
-    box.append(el('button', { class: 'btn', type: 'button', text: '+ Playlist', onclick: () => addToPlaylist(fileId) }));
+    box.append(el('button', { class: 'btn primary', type: 'button', 'aria-label': `Play ${item.title}`, onclick: () => act('/api/play', { file_id: fileId }) }, icon('play-regular'), 'Play'));
+    box.append(el('button', { class: 'btn', type: 'button', 'aria-label': `Add ${item.title} to queue`,
+      onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }, icon('list-dashes-regular'), 'Queue'));
+    if (!item.complete) box.append(el('button', { class: 'btn', type: 'button',
+      onclick: () => act('/api/download', { file_id: fileId }, 'Download started') }, icon('download-simple-regular'), 'Download'));
+    if (item.offline_ready) box.append(el('button', { class: 'btn', type: 'button',
+      onclick: () => exportWav(item) }, icon('export-regular'), 'Export WAV'));
+    box.append(el('button', { class: 'btn', type: 'button', onclick: () => addToPlaylist(fileId) },
+      icon('plus-regular'), 'Playlist'));
   } else if (catalogueRow && catalogueRow.artist_agent !== state.agent) {
     const request = async kind => {
       const r = await act('/api/access/request', { track_key: catalogueRow.key, kind });
       if (r) toast(r.queued ? 'The artist is offline. Your private request will be delivered automatically when they are back (up to 7 days, while this app runs).' : 'Private request sent to the artist', 'info');
       render();
     };
-    box.append(el('button', { class: 'btn', type: 'button', text: 'Request streaming', onclick: () => request('stream') }));
-    box.append(el('button', { class: 'btn primary', type: 'button', text: 'Request licence', onclick: () => request('perpetual-personal') }));
+    box.append(el('button', { class: 'btn', type: 'button', onclick: () => request('stream') },
+      icon('handshake-regular'), 'Request streaming'));
+    box.append(el('button', { class: 'btn primary', type: 'button', onclick: () => request('perpetual-personal') },
+      icon('handshake-regular'), 'Request licence'));
   }
   return box;
 }
@@ -269,7 +291,13 @@ async function addToPlaylist(fileId) {
 
 async function render() {
   document.querySelectorAll('.nav').forEach(b => {
-    if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    const selected = b.dataset.view === view;
+    if (selected) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    // Regular for inactive navigation, Fill for active navigation.
+    // Only mutate the reference when selection changes; avoid polling churn.
+    const use = b.querySelector('.ph-icon use');
+    const desired = `/icons.svg#${b.dataset.icon}-${selected ? 'fill' : 'regular'}`;
+    if (use && use.getAttribute('href') !== desired) use.setAttribute('href', desired);
   });
   const host = $('view');
   try { host.replaceChildren(...(await views[view](viewArg)).filter(Boolean)); }
@@ -325,7 +353,10 @@ function renderPlayer() {
   if (p.state === 'error' && p.error && renderPlayer.lastError !== p.error) toast(p.error);
   renderPlayer.lastError = p.error;
   const playing = ['playing', 'buffering', 'seeking'].includes(p.state);
-  $('btn-play').textContent = playing ? '❚❚' : '▶'; $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  const playIconUse = $('btn-play').querySelector('.ph-icon use');
+  const playIconHref = playing ? '/icons.svg#pause-fill' : '/icons.svg#play-fill';
+  if (playIconUse && playIconUse.getAttribute('href') !== playIconHref) playIconUse.setAttribute('href', playIconHref);
+  $('btn-play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
   $('btn-play').disabled = !p.track_key || p.state === 'loading';
   $('btn-stop').disabled = !['playing', 'paused', 'buffering', 'loading', 'seeking'].includes(p.state);
   const ready = p.total_frames > 0 && p.sample_rate > 0 && p.state !== 'loading';
