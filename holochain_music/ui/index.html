@@ -86,7 +86,12 @@
     </main>
   </div>
   <footer class="player" aria-label="Player">
-    <div class="now"><div class="art" aria-hidden="true">♪</div><div class="now-text"><strong id="now-title">Nothing playing</strong><span id="now-artist">Choose a track</span></div></div>
+    <div class="now">
+      <div class="art" aria-hidden="true" title="Artwork placeholder">
+        <svg class="icon" viewBox="0 0 256 256" focusable="false"><use href="#ph-vinyl-record"></use></svg>
+      </div>
+      <div class="now-text"><strong id="now-title">Nothing playing</strong><span id="now-artist">Choose a track</span></div>
+    </div>
     <div class="transport">
       <div class="buttons">
         <button id="btn-stop" type="button" aria-label="Stop" title="Stop"><svg class="icon" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><use href="#ph-stop"></use></svg></button>
