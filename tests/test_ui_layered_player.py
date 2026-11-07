@@ -3,6 +3,7 @@
 Run: python3 -m unittest discover -s tests -p 'test_ui_layered_player.py' -v
 These checks do not replace manual browser, speaker or screen-reader testing.
 """
+import ast
 from html.parser import HTMLParser
 from pathlib import Path
 import unittest
@@ -32,6 +33,11 @@ class LayeredPlayerTests(unittest.TestCase):
     def setUpClass(cls):
         cls.markup = Markup()
         cls.markup.feed(HTML)
+
+    def test_server_python_syntax_is_valid(self):
+        # A UI-only test run must still catch a broken server import.
+        source = (ROOT / "holochain_music" / "server.py").read_text(encoding="utf-8")
+        ast.parse(source, filename="holochain_music/server.py")
 
     def test_existing_persistent_player_stays_singleton(self):
         self.assertEqual(HTML.count('class="player" aria-label="Player"'), 1)
