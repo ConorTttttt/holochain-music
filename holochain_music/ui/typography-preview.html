@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>Holochain Music — Typography comparison</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/typography-preview.css">
+  <script src="/typography-preview.js" defer></script>
+</head>
+<body>
+  <main class="preview-page">
+    <header class="preview-header">
+      <p class="preview-eyebrow">Holochain Music · typography lab</p>
+      <h1>Find the right type</h1>
+      <p class="sub">Compare two font combinations side by side. This static preview works without the music backend and changes no saved preferences.</p>
+      <div class="preview-theme-control">
+        <label for="preview-theme">Colour theme</label>
+        <select id="preview-theme">
+          <option value="system">System (Ocean Signal)</option>
+          <option value="light">Ocean Signal Light</option>
+          <option value="dark">Ocean Signal Dark</option>
+          <option value="amethyst-light">Amethyst Light</option>
+          <option value="amethyst-night">Amethyst Night</option>
+        </select>
+      </div>
+    </header>
+    <div class="preview-comparison">
+      <section class="preview-specimen" aria-labelledby="balanced-title">
+        <p class="preview-eyebrow">Option A · Balanced</p>
+        <h2 id="balanced-title">Inter throughout</h2>
+        <div class="preview-brand">Holochain Music</div>
+        <div class="preview-sample">
+          <h1>Sounds like home.</h1>
+          <p class="sub">Discover new artists, build your library, and take licensed music offline.</p>
+          <div class="preview-track">
+            <div class="preview-record" aria-hidden="true">♫</div>
+            <div class="preview-track-label">
+              <strong>Midnight Signals</strong>
+              <span>Artist Name · First Light EP</span>
+            </div>
+            <time datetime="PT3M42S">3:42</time>
+          </div>
+          <div class="preview-actions">
+            <button class="btn primary" type="button">Play preview</button>
+            <button class="btn" type="button">Add to playlist</button>
+          </div>
+        </div>
+        <p class="preview-footnote">Clean, consistent and understated. All titles and controls use Inter.</p>
+      </section>
+      <section class="preview-specimen preview-expressive" aria-labelledby="expressive-title">
+        <p class="preview-eyebrow">Option B · Expressive</p>
+        <h2 id="expressive-title">Inter + Space Grotesk</h2>
+        <div class="preview-brand">Holochain Music</div>
+        <div class="preview-sample">
+          <h1>Sounds like home.</h1>
+          <p class="sub">Discover new artists, build your library, and take licensed music offline.</p>
+          <div class="preview-track">
+            <div class="preview-record" aria-hidden="true">♫</div>
+            <div class="preview-track-label">
+              <strong>Midnight Signals</strong>
+              <span>Artist Name · First Light EP</span>
+            </div>
+            <time datetime="PT3M42S">3:42</time>
+          </div>
+          <div class="preview-actions">
+            <button class="btn primary" type="button">Play preview</button>
+            <button class="btn" type="button">Add to playlist</button>
+          </div>
+        </div>
+        <p class="preview-footnote">More character in headings and branding, with Inter keeping the controls readable.</p>
+      </section>
+    </div>
+    <p class="preview-footer">Appearance choices in this preview are temporary. The actual app stores your font style under Identity &amp; settings → Typography.</p>
+  </main>
+</body>
+</html>
