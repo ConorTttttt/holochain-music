@@ -390,6 +390,8 @@ function setLayerPanel(open, focusBack = true) {
   document.querySelector('.shell').classList.toggle('panel-open', open);
   $('btn-now-panel').setAttribute('aria-expanded', String(open));
   $('btn-now-panel').setAttribute('aria-label', open ? 'Close Now Playing' : 'Open Now Playing');
+  $('now-edge-tab').setAttribute('aria-expanded', String(open));
+  $('now-edge-tab').hidden = open;
   if (open) { layerQueueSignature = ''; renderLayers(); panel.focus(); }
   else if (focusBack && layerOrigin && layerOrigin.isConnected) layerOrigin.focus();
 }
@@ -445,6 +447,7 @@ function renderLayers() {
   }
 }
 $('btn-now-panel').addEventListener('click', () => setLayerPanel($('now-panel').hidden));
+$('now-edge-tab').addEventListener('click', () => setLayerPanel(true));
 $('panel-close').addEventListener('click', () => setLayerPanel(false));
 $('panel-play').addEventListener('click', () => $('btn-play').click());
 $('panel-manage-queue').addEventListener('click', () => { setLayerPanel(false, false); show('queue'); });
