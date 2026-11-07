@@ -2,11 +2,15 @@
 from pathlib import Path
 import re
 import unittest
+import html.parser
 
 CSS = (Path(__file__).resolve().parents[1] / "holochain_music" / "ui" / "app.css").read_text(
     encoding="utf-8"
 )
 DARK, LIGHT = CSS.split("@media (prefers-color-scheme: light)", 1)
+UI_DIR = Path(__file__).resolve().parents[1] / "holochain_music" / "ui"
+HTML = (UI_DIR / "index.html").read_text(encoding="utf-8")
+JS = (UI_DIR / "app.js").read_text(encoding="utf-8")
 
 
 class UiDesignTokenTests(unittest.TestCase):
@@ -56,6 +60,22 @@ class UiDesignTokenTests(unittest.TestCase):
             with self.subTest(declaration=declaration):
                 self.assertIn(declaration, CSS)
         self.assertIn(":focus-visible { outline: 3px solid var(--focus);", CSS)
+
+    def test_theme_override_and_native_select_contract(self):
+        self.assertIn('<label for="appearance">Appearance</label>', HTML)
+        self.assertIn('<select id="appearance" name="appearance">', HTML)
+        for mode in ("system", "light", "dark"):
+            self.assertIn(f'<option value="{mode}">', HTML)
+        self.assertIn(':root:not([data-theme])', CSS)
+        self.assertIn(':root[data-theme="light"]', CSS)
+        self.assertIn('color-scheme: dark;', CSS)
+        self.assertIn('color-scheme: light;', CSS)
+        self.assertIn("document.documentElement.removeAttribute('data-theme')", JS)
+        self.assertIn("document.documentElement.setAttribute('data-theme', chosen)", JS)
+        self.assertIn("localStorage.getItem(appearanceKey)", JS)
+        self.assertIn("localStorage.setItem(appearanceKey, chosen)", JS)
+        self.assertIn("['system', 'light', 'dark'].includes(mode)", JS)
+        self.assertNotIn('localStorage.setItem(\'hm_token\'', JS)
 
     def test_no_remote_font_or_stylesheet_dependency(self):
         self.assertNotIn("@import", CSS)
