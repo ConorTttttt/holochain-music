@@ -127,6 +127,7 @@ class OfflineStorageManagementTests(unittest.TestCase):
     def fake_app(self, state="stopped", running=False):
         app = MusicApp.__new__(MusicApp)
         app._storage_lock = threading.RLock()
+        app._storage_readers = 0
         app.library = self.library
         app.player = MagicMock()
         app.player.status.return_value = {"state": state, "track_key": None}
@@ -150,6 +151,29 @@ class OfflineStorageManagementTests(unittest.TestCase):
             app.remove_download(first)
         self.assertTrue(self.library.meta(first)["complete"])
         app.downloads["example"].stop.assert_not_called()
+
+    def test_remove_refuses_in_progress_offline_verification_or_export(self):
+        first, _ = self.add_track("FIRST")
+        app = self.fake_app()
+        app._storage_readers = 1
+        with self.assertRaisesRegex(AppError, "verification or WAV export is active"):
+            app.remove_download(first)
+        self.assertTrue(self.library.meta(first)["complete"])
+
+    def test_reader_guard_blocks_cleanup_and_releases_counter_after_failure(self):
+        first, _ = self.add_track("FIRST")
+        app = self.fake_app()
+        with app._offline_storage_reader():
+            self.assertEqual(app._storage_readers, 1)
+            with self.assertRaises(AppError):
+                app.remove_download(first)
+        self.assertEqual(app._storage_readers, 0)
+        try:
+            with app._offline_storage_reader():
+                raise RuntimeError("test export failure")
+        except RuntimeError:
+            pass
+        self.assertEqual(app._storage_readers, 0)
 
     def test_successful_app_remove_invalidates_downloader_cache_without_stopping_audio(self):
         first, manifest = self.add_track("FIRST")
