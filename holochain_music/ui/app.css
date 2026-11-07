@@ -318,6 +318,9 @@ a { color: var(--accent); }
 .expanded-actions .primary .icon { width: 30px; height: 30px; }
 .expanded-extras label { display: flex; gap: 10px; align-items: center; }
 .expanded-extras input { width: min(130px, 24vw); accent-color: var(--accent); }
+@media (max-width: 1100px) {
+  .now-panel { width: min(320px, calc(100vw - 28px)); }
+}
 @media (max-width: 860px) {
   .shell.panel-open { grid-template-columns: minmax(0,1fr); }
   .now-panel { top: 0; bottom: 0; max-height: 100dvh; border-radius: 12px 0 0 12px; }
