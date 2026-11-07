@@ -136,12 +136,14 @@ class VerifiedArtworkCache:
         return self.root / digest
 
     def save(self, *, artist_agent: str, album_id: str, manifest: dict,
-             trusted_artist: bytes, expected_digest: str, image: bytes) -> None:
-        verify_public_artwork_manifest(
-            manifest, artist_agent=artist_agent, album_id=album_id,
+             trusted_artist: bytes, expected_digest: str, image: bytes, store: Path) -> None:
+        # Verify the bytes against the artist-signed S1 ciphertext here too,
+        # not just at the network caller. A clean but unrelated PNG is rejected.
+        recovered = recover_public_artwork(
+            manifest, store=store, artist_agent=artist_agent, album_id=album_id,
             trusted_artist=trusted_artist, expected_digest=expected_digest)
-        if not isinstance(image, bytes) or image != clean_png_bytes(image):
-            raise ArtworkError("refusing unverified or noncanonical artwork")
+        if not isinstance(image, bytes) or image != recovered:
+            raise ArtworkError("artwork bytes differ from artist-signed package")
         directory = self._directory(artist_agent, album_id)
         AlbumArtworkStore(directory).save(album_id, image)
         record = {"artist_agent": artist_agent, "album_id": album_id, "manifest": manifest,
