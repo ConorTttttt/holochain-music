@@ -11,6 +11,7 @@ import unittest
 
 
 CSS = (Path(__file__).resolve().parents[1] / "holochain_music" / "ui" / "app.css").read_text(encoding="utf-8")
+JS = (Path(__file__).resolve().parents[1] / "holochain_music" / "ui" / "app.js").read_text(encoding="utf-8")
 
 
 def tokens(body):
@@ -19,9 +20,12 @@ def tokens(body):
 
 def themes():
     dark = re.search(r":root\s*\{([^{}]*)\}", CSS, re.S)
-    light = re.search(r"@media\s*\(prefers-color-scheme:\s*light\)\s*\{\s*:root\s*\{([^{}]*)\}", CSS, re.S)
-    if not dark or not light:
-        raise AssertionError("Both dark and prefers-color-scheme:light token blocks are required")
+    light = re.search(r"@media\s*\(prefers-color-scheme:\s*light\)\s*\{\s*:root:not\(\[data-theme\]\)\s*\{([^{}]*)\}", CSS, re.S)
+    explicit_light = re.search(r':root\[data-theme="light"\]\s*\{([^{}]*)\}', CSS, re.S)
+    if not dark or not light or not explicit_light:
+        raise AssertionError("Dark, system light and explicit light token blocks are required")
+    if tokens(light.group(1)) != tokens(explicit_light.group(1)):
+        raise AssertionError("Explicit Light must match the System light palette")
     return tokens(dark.group(1)), tokens(light.group(1))
 
 
@@ -80,6 +84,27 @@ class OceanSignalThemeTests(unittest.TestCase):
         self.assertIn(".badge.ok { color: var(--teal); border-color: var(--teal); }", CSS)
         self.assertIn(".btn.primary, .player .primary { background: var(--accent);", CSS)
         self.assertIn("accent-color: var(--accent)", CSS)
+
+    def test_theme_appearance_is_selectable_in_settings(self):
+        self.assertIn("el('h2', { text: 'Appearance' })", JS)
+        self.assertIn("el('label', { for: 'appearance', text: 'Theme' })", JS)
+        for value in ("system", "light", "dark"):
+            self.assertIn("el('option', { value: '" + value + "'", JS)
+        self.assertIn("onchange: e => setAppearance(e.target.value)", JS)
+
+    def test_theme_persists_only_in_browser_and_has_no_backend_request(self):
+        self.assertIn("const APPEARANCE_KEY = 'holochain_music_appearance'", JS)
+        self.assertIn("localStorage.getItem(APPEARANCE_KEY)", JS)
+        self.assertIn("localStorage.setItem(APPEARANCE_KEY, mode)", JS)
+        self.assertIn("document.documentElement.removeAttribute('data-theme')", JS)
+        self.assertIn("document.documentElement.setAttribute('data-theme', mode)", JS)
+        self.assertIn("catch (_) { return 'system'; }", JS)
+
+    def test_system_theme_changes_with_device_and_explicit_dark_overrides_light_os(self):
+        self.assertIn(":root:not([data-theme])", CSS)
+        self.assertIn(':root[data-theme="light"]', CSS)
+        self.assertIn("color-scheme: dark", CSS)
+        self.assertIn("color-scheme: light", CSS)
 
     def test_preserves_borderless_icons_and_round_play_pause(self):
         self.assertIn(".player button { width: 40px; height: 40px; border: 0; border-radius: 0; background: transparent;", CSS)
