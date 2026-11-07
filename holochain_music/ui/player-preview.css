@@ -1,0 +1,27 @@
+/* Static preview only: uses real app.css player markup and appearance tokens. */
+.player-preview { max-width: 900px; margin: 0 auto; padding: 35px 26px 175px; min-height: calc(100vh - 110px); }
+.preview-overline { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.preview-header { margin-bottom: 30px; }
+.preview-header h1 { margin: 12px 0; }
+.preview-header .sub { max-width: 660px; }
+.preview-picker { display: grid; gap: 9px; margin-top: 22px; max-width: 280px; font-size: 13px; font-weight: 600; }
+.preview-picker select { min-height: 44px; border: 1px solid var(--field-border); border-radius: 10px; background: var(--panel); color: var(--text); padding: 8px 12px; }
+.preview-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 22px; max-width: 640px; }
+.preview-card h2 { margin-top: 8px; }
+.preview-track { display: flex; align-items: center; gap: 14px; padding: 14px; background: var(--panel-2); border-radius: 11px; }
+.preview-cover { display: grid; place-items: center; width: 58px; height: 58px; flex: none; border-radius: 11px; color: var(--accent); background: var(--panel); border: 1px solid var(--line); }
+.preview-cover .icon { width: 30px; height: 30px; }
+.preview-details { min-width: 0; flex: 1; }
+.preview-details strong, .preview-details span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.preview-details span { font-size: 13px; color: var(--muted); }
+.preview-track .badge { flex: none; }
+.preview-note { max-width: 660px; margin-top: 24px; color: var(--muted); font-size: 13px; }
+.player-preview + .player { pointer-events: none; }
+@media (max-width: 860px) {
+  .player-preview { min-height: 0; padding: 24px 15px 40px; }
+  .player-preview + .player { position: sticky; }
+}
+@media (max-width: 440px) {
+  .preview-card { padding: 14px; }
+  .preview-track { flex-wrap: wrap; }
+}

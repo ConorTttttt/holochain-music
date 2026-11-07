@@ -323,11 +323,23 @@ function requestSeek(frame) {
   }, 120);
 }
 
+// Keep the custom track fill aligned with the same slider value used for seeks.
+// This is presentation only: dragging still sends a seek at 'change', not 'input'.
+function paintSeekProgress() {
+  const slider = $('seek');
+  const value = Math.max(0, Math.min(1000, Number(slider.value) || 0));
+  slider.style.setProperty('--seek-progress', `${value / 10}%`);
+}
+
 function renderPlayer() {
   const p = state.player; if (!p) return;
   const item = libraryById.get(p.track_key);
-  $('now-title').textContent = item ? item.title : 'Nothing playing';
-  $('now-artist').textContent = item ? item.artist_name : 'Choose a track';
+  const title = item ? (item.title || 'Untitled') : 'Nothing playing';
+  const artist = item ? (item.artist_name || 'Unknown artist') : 'Choose a track';
+  $('now-title').textContent = title;
+  $('now-artist').textContent = artist;
+  $('now-title').title = title;
+  $('now-artist').title = artist;
   // "Playing" only once PCM for the current position has actually been written.
   const playingLabel = !p.output_active ? 'Starting…' : p.source === 'offline' ? 'Playing · offline copy' : 'Streaming';
   const labels = { idle: 'Idle', loading: 'Opening · verifying…', seeking: 'Seeking…', playing: playingLabel,
@@ -338,6 +350,7 @@ function renderPlayer() {
     badge.textContent = `Audio interruptions · ${p.audio_output.underruns}`;
     badge.className = 'badge warn';
   }
+  badge.title = badge.textContent;
   if (p.state === 'error' && p.error && renderPlayer.lastError !== p.error) toast(p.error);
   renderPlayer.lastError = p.error;
   const playing = ['playing', 'buffering', 'seeking'].includes(p.state);
@@ -352,6 +365,7 @@ function renderPlayer() {
   const shown = displayedFrame(p);
   $('elapsed').textContent = fmt(1000 * shown / rate); $('duration').textContent = fmt(1000 * p.total_frames / rate);
   if (!dragging) $('seek').value = p.total_frames ? Math.round(1000 * shown / p.total_frames) : 0;
+  paintSeekProgress();
   $('seek').setAttribute('aria-valuetext', `${$('elapsed').textContent} of ${$('duration').textContent}`);
   const qc = $('queue-count'); qc.hidden = !state.queue.length; qc.textContent = state.queue.length;
 }
@@ -364,6 +378,7 @@ $('btn-back').addEventListener('click', () => nudge(-10));
 $('btn-fwd').addEventListener('click', () => nudge(10));
 $('btn-next').addEventListener('click', () => act('/api/next'));
 $('btn-queue').addEventListener('click', () => show('queue'));
+$('seek').addEventListener('input', paintSeekProgress);
 $('seek').addEventListener('pointerdown', () => { dragging = true; });
 $('seek').addEventListener('change', () => { dragging = false; const p = state.player; if (p && p.total_frames) requestSeek($('seek').value * p.total_frames / 1000); });
 let volTimer; $('volume').addEventListener('input', () => { clearTimeout(volTimer); volTimer = setTimeout(() => act('/api/volume', { volume: $('volume').value / 100 }), 120); });
