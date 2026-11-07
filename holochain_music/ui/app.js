@@ -71,6 +71,8 @@ function accessBadge(item) {
     const pct = Math.round(100 * item.download.available_chunks / Math.max(1, item.download.total_chunks));
     return el('span', { class: 'badge warn', text: `Downloading ${pct}%` });
   }
+  if (item.download && item.download.state === 'pausing') return el('span', { class: 'badge warn', text: 'Pausing download…' });
+  if (item.download && item.download.state === 'paused') return el('span', { class: 'badge warn', text: 'Download paused' });
   if (item.download && item.download.state === 'unavailable') return el('span', { class: 'badge bad', text: 'Unavailable' });
   if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Downloaded · verify offline' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
@@ -148,11 +150,16 @@ function trackActions(fileId, catalogueRow) {
     box.append(el('button', { class: 'btn', type: 'button', text: 'Queue', 'aria-label': `Add ${item.title} to queue`,
       onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }));
     if (item.grant_kind === 'perpetual-personal' && !item.offline_ready) {
-      const busy = item.download && ['downloading', 'retrying'].includes(item.download.state);
+      const busy = item.download && ['downloading', 'retrying', 'pausing'].includes(item.download.state);
       box.append(el('button', { class: 'btn', type: 'button',
-        text: busy ? 'Downloading…' : item.download && item.download.state === 'unavailable' ? 'Retry download' : 'Download for Offline',
-        disabled: busy || !state.online,
-        onclick: () => startOfflineDownload(fileId) }));
+        text: busy ? 'Downloading…' : item.download && item.download.state === 'unavailable' ? 'Retry download' :
+          item.download && item.download.state === 'paused' ? 'Resume download' : 'Download for Offline',
+        disabled: !state.online || Boolean(busy),
+        onclick: () => item.download && item.download.state === 'paused'
+          ? controlOfflineDownload(fileId, 'resume')
+          : item.download && item.download.state === 'unavailable'
+            ? controlOfflineDownload(fileId, 'retry')
+            : startOfflineDownload(fileId) }));
     }
     if (item.offline_ready && item.grant_kind === 'perpetual-personal')
       box.append(el('button', { class: 'btn', type: 'button', text: 'Export licensed WAV',
@@ -301,6 +308,31 @@ async function startOfflineDownload(fileId) {
     if (view === 'library') render();
   } catch (e) { toast('Download not started: ' + e.message); }
 }
+// Explicit transfer commands, distinct from pause/resume of audible playback.
+const downloadActionsBusy = new Set();
+const offlineDownloadRoutes = Object.freeze({
+  pause: '/api/offline/download/pause',
+  resume: '/api/offline/download/resume',
+  retry: '/api/offline/download/retry'
+});
+async function controlOfflineDownload(fileId, action) {
+  if (downloadActionsBusy.has(fileId) || !Object.hasOwn(offlineDownloadRoutes, action)) return;
+  downloadActionsBusy.add(fileId);
+  if (view === 'library' && libraryFilters.scope === 'offline') render();
+  try {
+    const result = await api(offlineDownloadRoutes[action], { file_id: fileId });
+    if (action === 'pause')
+      toast(result.state === 'paused' ? 'Download paused. Authenticated chunks retained.' :
+        'Pausing download; wait for the worker to finish stopping.', 'info');
+    if (action === 'resume') toast('Resuming from retained authenticated encrypted chunks.', 'info');
+    if (action === 'retry') toast('Retrying authenticated hosts. Previously received chunks are retained.', 'info');
+    await refreshLibrary();
+  } catch (e) { toast(action + ' download failed: ' + e.message); }
+  finally {
+    downloadActionsBusy.delete(fileId);
+    if (view === 'library') render();
+  }
+}
 // Storage and deletion are explicit user actions; no auto-cleanup and no
 // background /api/offline/storage polling during real-time playback.
 let storageReport = null;
@@ -350,7 +382,8 @@ function downloadStateText(item) {
     if (transfer.state === 'unavailable') return 'Source unavailable — Retry when online.' + progress;
     if (transfer.state === 'retrying') return 'Retrying an authenticated source…' + progress;
     if (transfer.state === 'downloading') return 'Downloading encrypted audio…' + progress;
-    if (transfer.state === 'paused') return 'Transfer paused or interrupted. Restart is available when supported.' + progress;
+    if (transfer.state === 'pausing') return 'Stopping the transfer worker safely…' + progress;
+    if (transfer.state === 'paused') return 'Paused. Authenticated chunks are retained; playing missing audio may restart the transfer.' + progress;
     if (transfer.state === 'complete') return 'Encrypted transfer complete; check offline licence and local keys.';
     return 'Transfer status: ' + String(transfer.state || 'unknown') + progress;
   }
@@ -393,11 +426,27 @@ function offlineTrackCard(item) {
     }
   } else if (item.grant_kind === 'perpetual-personal') {
     const transfer = item.download;
-    const busy = transfer && ['downloading', 'retrying'].includes(transfer.state);
-    actions.append(el('button', { class: 'btn', type: 'button',
-      text: busy ? 'Downloading…' : transfer && transfer.state === 'unavailable' ? 'Retry download' : 'Download for Offline',
-      disabled: !state.online || Boolean(busy),
-      onclick: () => startOfflineDownload(item.file_id) }));
+    const stage = transfer?.state;
+    const controlsBusy = downloadActionsBusy.has(item.file_id);
+    if (stage === 'downloading' || stage === 'retrying') {
+      actions.append(el('button', { class: 'btn', type: 'button',
+        text: 'Pause download', disabled: controlsBusy,
+        onclick: () => controlOfflineDownload(item.file_id, 'pause') }));
+    } else if (stage === 'pausing') {
+      actions.append(el('button', { class: 'btn', type: 'button', text: 'Pausing…', disabled: true }));
+    } else if (stage === 'paused') {
+      actions.append(el('button', { class: 'btn', type: 'button',
+        text: 'Resume download', disabled: !state.online || controlsBusy,
+        onclick: () => controlOfflineDownload(item.file_id, 'resume') }));
+    } else if (stage === 'unavailable') {
+      actions.append(el('button', { class: 'btn', type: 'button',
+        text: 'Retry download', disabled: !state.online || controlsBusy,
+        onclick: () => controlOfflineDownload(item.file_id, 'retry') }));
+    } else {
+      actions.append(el('button', { class: 'btn', type: 'button',
+        text: 'Download for Offline', disabled: !state.online || controlsBusy,
+        onclick: () => startOfflineDownload(item.file_id) }));
+    }
   }
   if (item.grant_kind === 'perpetual-personal' &&
       (item.offline_ready || Number(item.download?.available_chunks) > 0)) {
@@ -421,7 +470,7 @@ function renderOfflineDashboard(rows) {
       'Only tracks explicitly verified in this session appear here. Actual playback still checks audio and access.',
       verified, 'No tracks verified yet. Choose Verify offline readiness on a recorded complete download.'),
     section('Downloads',
-      'Transfers show authenticated chunk progress when known. Temporary streaming access is not an offline rental licence.',
+      'Pause, resume and retry affect encrypted downloads, not the player. Chunks already verified are retained. Playing a track that needs missing chunks can restart its transfer. Temporary access is not an offline rental licence.',
       pending, 'No downloads or offline-eligible music match your current filters.'),
     el('section', { class: 'offline-group' }, el('h2', { text: 'Independent licensed exports' }),
       el('p', { text: 'After verifying a permanent personal-use licence and local file, choose Export licensed WAV. The app can write a standard WAV under your home directory; export history and independent player testing are not tracked here.' }),
