@@ -180,7 +180,7 @@ class Library:
         Sizes describe allocated file content, not deduplicated disk blocks,
         filesystem quota or permission to remove those files.
         """
-        def count_files(root: Path) -> tuple[int, int]:
+        def count_files(root: Path, *, objects_only: bool = False) -> tuple[int, int>:
             total, count = 0, 0
             if not root.is_dir() or root.is_symlink():
                 return total, count
@@ -190,11 +190,13 @@ class Library:
                     path = Path(base) / name
                     if path.is_symlink() or not path.is_file():
                         continue
+                    if objects_only and (not _HEX64.fullmatch(path.name) or path.parent.name != path.name[:2]):
+                        continue
                     total += path.stat().st_size
                     count += 1
             return total, count
 
-        encrypted_bytes, objects = count_files(self.cas / "objects" / "sha256")
+        encrypted_bytes, objects = count_files(self.cas / "objects" / "sha256", objects_only=True)
         metadata_bytes, metadata_files = count_files(self.tracks_dir)
         for name in ("playlists.json", "history.json"):
             path = self.root / name
