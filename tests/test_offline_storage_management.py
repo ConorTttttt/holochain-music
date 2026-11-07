@@ -4,6 +4,7 @@ Run: python3 -m unittest discover -s tests -p 'test_offline_storage_management.p
 These are local-unit/structural tests; real playback, filesystem quota and
 exported WAV testing are still required before merging.
 """
+import ast
 import json
 from pathlib import Path
 import tempfile
@@ -23,6 +24,11 @@ CSS = (ROOT / "holochain_music/ui/app.css").read_text(encoding="utf-8")
 
 
 class OfflineStorageManagementTests(unittest.TestCase):
+    def test_storage_module_has_valid_python_syntax(self):
+        library_source = (ROOT / "holochain_music" / "library.py").read_text(encoding="utf-8")
+        ast.parse(library_source, filename="holochain_music/library.py")
+        self.assertIn("-> tuple[int, int]:", library_source)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
