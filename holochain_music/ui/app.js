@@ -300,7 +300,7 @@ const views = {
       }
     } },
       f('Album or EP title', albumName), f('Optional PNG cover file path on this computer (RGB/RGBA, up to 1200px and 768 KiB)', coverPath),
-      el('p', { class: 'muted', text: 'Local PNG artwork is scrubbed of embedded metadata. It appears on this device only until peer-to-peer artwork delivery is implemented.' }),
+      el('p', { class: 'muted', text: 'Artwork is PUBLIC: the image is scrubbed of metadata, artist-signed, and made available to other listeners through authenticated Holochain/MoQ hosts. Music audio remains licensed separately.' }),
       el('button', { class: 'btn', type: 'submit', text: 'Create album' }));
 
     form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title),
