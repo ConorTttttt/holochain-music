@@ -80,6 +80,19 @@ class UiDesignTokenTests(unittest.TestCase):
             compact,
         )
 
+    def test_font_face_is_local_and_typography_is_semantic(self):
+        for path in (
+            "/fonts/PlusJakartaSans-wght.ttf",
+            "/fonts/PlusJakartaSans-Italic-wght.ttf",
+        ):
+            self.assertIn(f'url("{path}")', CSS)
+        self.assertEqual(CSS.count('font-family: "Plus Jakarta Sans";'), 2)
+        self.assertIn("--type-size-body: 15px;", CSS)
+        self.assertIn("--type-leading-body: 1.5;", CSS)
+        self.assertIn("--type-weight-semibold: 600;", CSS)
+        self.assertIn("font-size: var(--type-size-title);", CSS)
+        self.assertIn("font-size: var(--type-size-section);", CSS)
+
     def test_compact_search_and_volume_fit_available_width(self):
         # At high zoom the search field and volume thumb reached the right edge
         # of the user's screenshot. Flex/grid min-content sizing must shrink.
@@ -117,7 +130,7 @@ class UiDesignTokenTests(unittest.TestCase):
     def test_no_remote_font_or_stylesheet_dependency(self):
         self.assertNotIn("@import", CSS)
         self.assertNotRegex(CSS, r"url\(\s*['\"]?https?://")
-        self.assertIn("Plus Jakarta Sans remains an approved future bundled-font", CSS)
+        self.assertIn('--font-ui: "Plus Jakarta Sans", system-ui,', CSS)
 
 
 if __name__ == "__main__":
