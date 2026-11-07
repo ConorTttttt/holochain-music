@@ -183,6 +183,15 @@ class AlbumArtworkTests(unittest.TestCase):
         self.assertIn("artwork_path=Path(", SERVER)
         self.assertIn("rights_basis: rights.value", JS)
 
+    def test_own_tracks_keep_album_identity_for_offline_artwork(self):
+        artist_source = (ROOT / "holochain_music" / "artist.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "holochain_music" / "app.py").read_text(encoding="utf-8")
+        self.assertIn('"album_id": album_id or None, "track_number": track_number,', artist_source)
+        self.assertIn('album_id = track.get("album_id")', app_source)
+        self.assertIn('"album_id": album_id, "album_title": album_title,', app_source)
+        self.assertIn('"track_number": track.get("track_number", 1)', app_source)
+        self.assertIn('"album_id", "duration_ms"', app_source)
+
     def test_static_preview_never_sends_artwork_to_a_server(self):
         self.assertIn("preview-artwork-file", PREVIEW)
         self.assertIn("URL.createObjectURL(file)", PREVIEW)
