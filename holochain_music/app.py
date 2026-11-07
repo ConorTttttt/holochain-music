@@ -70,7 +70,8 @@ class MusicApp:
         self.keys = KeyStore(self.paths.keys)
         self.library = Library(self.paths.library)
         self.album_art = AlbumArtworkStore(self.paths.host / 'artwork')
-        self.artwork_cache = VerifiedArtworkCache(self.paths.library / "artwork")
+        self.artwork_cache = VerifiedArtworkCache(self.paths.library / "artwork",
+                                                  cas=self.paths.library / "artwork-cas")
         self._artwork_jobs: set[tuple[str, str]] = set()
         self._artwork_cooldown: dict[tuple[str, str], float] = {}
         self._artwork_lock = threading.Lock()
