@@ -112,6 +112,11 @@ async function albumArtworkUrl(albumId, artistAgent) {
     return null;
   })();
   albumArtwork.set(key, request);
+  request.then(url => {
+    if (!url) window.setTimeout(() => {
+      if (albumArtwork.get(key) === request) albumArtwork.delete(key);
+    }, 45_000);
+  });
   return request;
 }
 window.addEventListener('pagehide', () => {
@@ -138,9 +143,11 @@ function showPlayerArtwork(item) {
   const albumId = item && validAlbumId(item.album_id) ? item.album_id : null;
   const artist = item && validArtworkArtist(item.artist_agent) ? item.artist_agent : null;
   const key = albumId && artist ? `${artist}:${albumId}` : null;
-  if (key === shownArtworkKey) return;
-  shownArtworkKey = key;
   const image = $('now-art-image');
+  // A previously unavailable cover can be retried when its negative cache
+  // expires; do not re-request an image already displayed successfully.
+  if (key === shownArtworkKey && (!key || !image.hidden || albumArtwork.has(key))) return;
+  shownArtworkKey = key;
   image.hidden = true;
   image.removeAttribute('src');
   if (!key) return;
