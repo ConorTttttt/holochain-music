@@ -181,6 +181,188 @@ function list(rows, empty) {
   return el('div', { class: 'tracks' }, ...rows);
 }
 
+// Collection membership, rights and local availability remain independent.
+// Filters use only fields the local backend actually reports; payment history,
+// verified purchase records and subscription terms do not yet exist here.
+const libraryFilters = { scope: 'all', query: '', sort: 'default' };
+const libraryScopes = [
+  ['all', 'All music'], ['songs', 'Songs'], ['albums', 'Albums'],
+  ['licences', 'Permanent licences'], ['temporary', 'Temporary access'],
+  ['offline', 'Offline'], ['requests', 'Access requests']
+];
+const libraryScopeNotes = {
+  all: 'Your locally represented collection. Saved or requested does not mean purchased or playable.',
+  songs: 'Songs represented in your local library, including currently unavailable items.',
+  albums: 'Albums represented by local track metadata. Unavailable tracks remain listed.',
+  licences: 'Permanent personal-use licences, including artist grants. This is not a verified purchase history.',
+  temporary: 'Time-limited streaming access. Rental and subscription payments are not yet distinguished.',
+  offline: 'Locally marked offline-ready copies. Audio and keys are verified again when played.',
+  requests: 'Locally recorded access requests. Declined decisions are not yet synchronised into this view.'
+};
+function matchesLibraryScope(track, scope) {
+  if (scope === 'licences') return track.grant_kind === 'perpetual-personal';
+  if (scope === 'temporary') return track.grant_kind === 'stream';
+  if (scope === 'offline') return track.offline_ready === true;
+  if (scope === 'requests') return Boolean(track.requested) && !track.playable;
+  return true;
+}
+function renderLibraryView() {
+  const scopes = el('div', { class: 'library-scopes', role: 'group', 'aria-label': 'Library collections' });
+  const search = el('input', { type: 'search', class: 'library-search', 'aria-label': 'Search within your library',
+    placeholder: 'Search titles, artists or albums' });
+  search.value = libraryFilters.query;
+  const sort = el('select', { class: 'library-sort', 'aria-label': 'Sort library songs' },
+    el('option', { value: 'default', text: 'Library order' }),
+    el('option', { value: 'title', text: 'Title (A–Z)' }),
+    el('option', { value: 'artist', text: 'Artist (A–Z)' }));
+  sort.value = libraryFilters.sort;
+  const count = el('p', { class: 'library-count muted', role: 'status', 'aria-live': 'polite' });
+  const note = el('p', { class: 'sub' });
+  const results = el('section', { class: 'library-results', 'aria-label': 'Library results' });
+  function update() {
+    note.textContent = libraryScopeNotes[libraryFilters.scope];
+    for (const button of scopes.querySelectorAll('button')) {
+      button.setAttribute('aria-pressed', String(button.dataset.scope === libraryFilters.scope));
+    }
+    const q = libraryFilters.query.trim().toLocaleLowerCase();
+    let rows = library.filter(t => matchesLibraryScope(t, libraryFilters.scope) &&
+      (!q || [t.title, t.artist_name, t.album_title].some(v => String(v || '').toLocaleLowerCase().includes(q))));
+    if (libraryFilters.sort === 'title') rows = [...rows].sort((a,b) =>
+      String(a.title || '').localeCompare(String(b.title || '')));
+    if (libraryFilters.sort === 'artist') rows = [...rows].sort((a,b) =>
+      String(a.artist_name || '').localeCompare(String(b.artist_name || '')) ||
+      String(a.title || '').localeCompare(String(b.title || '')));
+    count.textContent = rows.length + (rows.length === 1 ? ' track' : ' tracks');
+    if (libraryFilters.scope !== 'albums') {
+      results.replaceChildren(list(rows.map(t => trackRow(t, t.file_id, null)),
+        q ? 'No tracks match your library search or collection filter.' :
+        'No tracks in this collection yet. Browse the catalogue to discover music.'));
+      return;
+    }
+    const groups = new Map();
+    for (const t of rows) {
+      const key = t.album_id || (t.album_title ? 'title:' + t.album_title : 'singles');
+      if (!groups.has(key)) groups.set(key, { title: t.album_title || 'Singles & ungrouped', tracks: [] });
+      groups.get(key).tracks.push(t);
+    }
+    const children = [];
+    for (const group of groups.values()) children.push(el('section', { class: 'library-album' },
+      el('h2', { text: group.title + ' · ' + group.tracks.length + (group.tracks.length === 1 ? ' song' : ' songs') }),
+      list(group.tracks.map(t => trackRow(t, t.file_id, null)), 'No tracks')));
+    results.replaceChildren(...(children.length ? children : [
+      el('p', { class: 'empty', text: q ? 'No albums match your search.' : 'No album information is available locally.' })]));
+  }
+  for (const [value, label] of libraryScopes) scopes.append(el('button', {
+    type: 'button', class: 'btn library-scope', 'data-scope': value, 'aria-pressed': String(value === libraryFilters.scope),
+    text: label, onclick: () => { libraryFilters.scope = value; update(); } }));
+  search.addEventListener('input', () => { libraryFilters.query = search.value; update(); });
+  sort.addEventListener('change', () => { libraryFilters.sort = sort.value; update(); });
+  update();
+  return [el('h1', { text: 'Your library' }), scopes,
+    el('div', { class: 'library-toolbar' },
+      el('label', { class: 'library-field' }, el('span', { text: 'Search your library' }), search),
+      el('label', { class: 'library-field' }, el('span', { text: 'Sort by' }), sort)),
+    note, count, results];
+}
+
+// Read the latest saved playlists before modifying them; never change the
+// current playback session or queue for an ordinary library edit.
+let playlistSaveBusy = false;
+async function savePlaylistChange(transform, message, focusId = null) {
+  if (playlistSaveBusy) return toast('Another playlist change is being saved.', 'info');
+  playlistSaveBusy = true;
+  try {
+    const { playlists } = await api('/api/playlists');
+    const updated = transform(playlists.map(p => ({ ...p, tracks: [...p.tracks] })));
+    if (!updated) return false;
+    await api('/api/playlists', { playlists: updated });
+    toast(message, 'info');
+    await render();
+    const focusTarget = focusId ? $('playlist-' + focusId) : $('playlist-list-heading');
+    if (focusTarget) focusTarget.focus();
+    return true;
+  } catch (e) { toast('Playlist not saved: ' + e.message); return false; }
+  finally { playlistSaveBusy = false; }
+}
+function playablePlaylistTracks(playlist) {
+  return playlist.tracks.filter(id => (libraryById.get(id) || {}).playable);
+}
+async function queueWholePlaylist(playlist) {
+  const playable = playablePlaylistTracks(playlist);
+  if (!playable.length) return toast('No playable tracks in this playlist.');
+  // Queue append is explicit. Never replace the current session/priority queue.
+  await act('/api/queue', { items: [...state.queue, ...playable] }, 'Added ' + playable.length + ' tracks to queue');
+}
+async function playWholePlaylist(playlist) {
+  const playable = playablePlaylistTracks(playlist);
+  if (!playable.length) return toast('No playable tracks in this playlist.');
+  if (!confirm('Play "' + playlist.name + '" now? This replaces the current upcoming queue.')) return;
+  try {
+    // Start the selected track first. A failed access/source resolution must
+    // not silently erase the listener's existing upcoming queue.
+    await api('/api/play', { file_id: playable[0] });
+    await api('/api/queue', { items: playable.slice(1) });
+    toast('Playing playlist · upcoming queue replaced', 'info');
+  } catch (e) { toast('Unable to play playlist: ' + e.message); }
+}
+function playlistItem(playlist, id, index) {
+  const item = libraryById.get(id) || { title: 'Unavailable track' };
+  const buttons = el('div', { class: 'playlist-edit-actions' },
+    el('button', { class: 'btn', type: 'button', text: 'Move up', disabled: index === 0,
+      'aria-label': 'Move ' + (item.title || 'track') + ' earlier in ' + playlist.name, onclick: () =>
+        savePlaylistChange(rows => {
+          const p = rows.find(x => x.id === playlist.id);
+          if (!p || index < 1 || index >= p.tracks.length) return null;
+          [p.tracks[index - 1], p.tracks[index]] = [p.tracks[index], p.tracks[index - 1]];
+          return rows;
+        }, 'Track moved earlier', playlist.id) }),
+    el('button', { class: 'btn', type: 'button', text: 'Move down', disabled: index === playlist.tracks.length - 1,
+      'aria-label': 'Move ' + (item.title || 'track') + ' later in ' + playlist.name, onclick: () =>
+        savePlaylistChange(rows => {
+          const p = rows.find(x => x.id === playlist.id);
+          if (!p || index < 0 || index >= p.tracks.length - 1) return null;
+          [p.tracks[index], p.tracks[index + 1]] = [p.tracks[index + 1], p.tracks[index]];
+          return rows;
+        }, 'Track moved later', playlist.id) }),
+    el('button', { class: 'btn', type: 'button', text: 'Remove',
+      'aria-label': 'Remove ' + (item.title || 'track') + ' from ' + playlist.name, onclick: () =>
+        savePlaylistChange(rows => {
+          const p = rows.find(x => x.id === playlist.id);
+          if (!p || index >= p.tracks.length) return null;
+          p.tracks.splice(index, 1);
+          return rows;
+        }, 'Removed from playlist only · music and licences unchanged', playlist.id) }));
+  return el('li', { class: 'playlist-item' },
+    trackRow(item, id, null), buttons);
+}
+function playlistSection(playlist) {
+  return el('section', { class: 'playlist-section', 'aria-label': 'Playlist ' + playlist.name },
+    el('h2', { id: 'playlist-' + playlist.id, tabindex: '-1',
+      text: playlist.name + ' · ' + playlist.tracks.length + (playlist.tracks.length === 1 ? ' song' : ' songs') }),
+    el('div', { class: 'playlist-top-actions' },
+      el('button', { class: 'btn primary', type: 'button', text: 'Play now (replace queue)',
+        onclick: () => playWholePlaylist(playlist) }),
+      el('button', { class: 'btn', type: 'button', text: 'Add playlist to queue',
+        onclick: () => queueWholePlaylist(playlist) }),
+      el('button', { class: 'btn', type: 'button', text: 'Rename', onclick: () => {
+        const next = prompt('Rename playlist', playlist.name);
+        if (next === null || next.trim() === playlist.name) return;
+        savePlaylistChange(rows => {
+          const p = rows.find(x => x.id === playlist.id);
+          if (!p) return null;
+          p.name = next.trim(); return rows;
+        }, 'Playlist renamed', playlist.id);
+      } }),
+      el('button', { class: 'btn', type: 'button', text: 'Delete playlist', onclick: () => {
+        if (!confirm('Delete playlist "' + playlist.name + '"? This only deletes the playlist; your tracks, licences and downloads remain.')) return;
+        savePlaylistChange(rows => rows.filter(x => x.id !== playlist.id),
+          'Playlist deleted · music and licences unchanged');
+      } })),
+    playlist.tracks.length ?
+      el('ol', { class: 'playlist-entries' }, ...playlist.tracks.map((id,i) => playlistItem(playlist,id,i))) :
+      el('p', { class: 'empty', text: 'This playlist has no tracks. Use + Playlist on a song to add music.' }));
+}
+
 // ---- views -----------------------------------------------------------
 const views = {
   async browse() {
@@ -214,8 +396,7 @@ const views = {
     return out;
   },
   async library() {
-    return [el('h1', { text: 'Your library' }), el('p', { class: 'sub', text: 'Encrypted on this computer. “Offline ready” tracks play with no network at all.' }),
-      list(library.map(t => trackRow(t, t.file_id, null)), 'Nothing here yet. Browse the catalogue and request access from an artist.')];
+    return renderLibraryView();
   },
   async queue() {
     const rows = state.queue.map((id, i) => { const t = libraryById.get(id) || { title: id.slice(0, 12) };
@@ -231,21 +412,19 @@ const views = {
   },
   async playlists() {
     const { playlists } = await api('/api/playlists');
-    const name = el('input', { id: 'pl-name', maxlength: '120', placeholder: 'New playlist name' });
-    const out = [el('h1', { text: 'Playlists' }),
-      el('form', { class: 'stack', onsubmit: async e => { e.preventDefault(); if (!name.value.trim()) return;
+    const name = el('input', { id: 'pl-name', required: true, maxlength: '120', placeholder: 'New playlist name' });
+    const out = [el('h1', { id: 'playlist-list-heading', tabindex: '-1', text: 'Playlists' }),
+      el('p', { class: 'sub', text: 'Playlists are local lists of tracks, not proof of ownership or permission to listen.' }),
+      el('form', { class: 'stack playlist-create', onsubmit: async e => { e.preventDefault();
+        if (!name.value.trim()) return;
         const id = Array.from(crypto.getRandomValues(new Uint8Array(8)), b => b.toString(16).padStart(2, '0')).join('');
-        await act('/api/playlists', { playlists: [...playlists, { id, name: name.value.trim(), tracks: [] }] }, 'Playlist created'); render(); } },
-        el('label', { for: 'pl-name', text: 'Create a playlist' }, name), el('button', { class: 'btn primary', type: 'submit', text: 'Create' }))];
-    for (const p of playlists) {
-      out.push(el('h2', { text: p.name }), el('div', { class: 'actions' },
-        el('button', { class: 'btn primary', type: 'button', text: 'Play all', onclick: async () => {
-          const ids = p.tracks.filter(id => (libraryById.get(id) || {}).playable); if (!ids.length) return toast('No playable tracks in this playlist');
-          await act('/api/queue', { items: ids.slice(1) }); await act('/api/play', { file_id: ids[0] }); } }),
-        el('button', { class: 'btn', type: 'button', text: 'Delete', onclick: async () => {
-          await act('/api/playlists', { playlists: playlists.filter(x => x.id !== p.id) }); render(); } })),
-        list(p.tracks.map(id => trackRow(libraryById.get(id) || { title: 'Unavailable track' }, id, null)), 'Empty playlist.'));
-    }
+        await savePlaylistChange(rows => [...rows, { id, name: name.value.trim(), tracks: [] }],
+          'Playlist created', id);
+      } },
+        el('label', { for: 'pl-name', text: 'Create a playlist' }, name),
+        el('button', { class: 'btn primary', type: 'submit', text: 'Create playlist' }))];
+    for (const p of playlists) out.push(playlistSection(p));
+    if (!playlists.length) out.push(el('p', { class: 'empty', text: 'No playlists yet. Create one to organise your music.' }));
     return out;
   },
   async publish() {
@@ -363,12 +542,22 @@ async function exportWav(item) {
   if (path) await act('/api/export', { file_id: item.file_id, path }, 'Exported');
 }
 async function addToPlaylist(fileId) {
-  const { playlists } = await api('/api/playlists');
-  if (!playlists.length) return toast('Create a playlist first (Playlists).');
-  const name = prompt(`Add to which playlist?\n${playlists.map(p => p.name).join('\n')}`, playlists[0].name);
-  const p = playlists.find(x => x.name === name); if (!p) return;
-  if (!p.tracks.includes(fileId)) p.tracks.push(fileId);
-  await act('/api/playlists', { playlists }, `Added to ${p.name}`);
+  try {
+    const { playlists } = await api('/api/playlists');
+    if (!playlists.length) return toast('Create a playlist first (Playlists).');
+    const choice = prompt('Add to which playlist? Enter its number:\n' +
+      playlists.map((p,i) => (i + 1) + '. ' + p.name).join('\n'), '1');
+    if (choice === null) return;
+    const index = Number(choice) - 1;
+    if (!Number.isInteger(index) || index < 0 || index >= playlists.length) return toast('Choose a valid playlist number.');
+    const target = playlists[index];
+    await savePlaylistChange(rows => {
+      const p = rows.find(x => x.id === target.id);
+      if (!p) return null;
+      if (p.tracks.includes(fileId)) { toast('Already in ' + p.name, 'info'); return null; }
+      p.tracks.push(fileId); return rows;
+    }, 'Added to ' + target.name);
+  } catch (e) { toast('Unable to add to playlist: ' + e.message); }
 }
 
 async function render() {
