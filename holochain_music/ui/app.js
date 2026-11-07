@@ -71,6 +71,8 @@ function accessBadge(item) {
     const pct = Math.round(100 * item.download.available_chunks / Math.max(1, item.download.total_chunks));
     return el('span', { class: 'badge warn', text: `Downloading ${pct}%` });
   }
+  if (item.download && item.download.state === 'pausing') return el('span', { class: 'badge warn', text: 'Pausing download…' });
+  if (item.download && item.download.state === 'paused') return el('span', { class: 'badge warn', text: 'Download paused' });
   if (item.download && item.download.state === 'unavailable') return el('span', { class: 'badge bad', text: 'Unavailable' });
   if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Downloaded · verify offline' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
