@@ -318,7 +318,8 @@ class MusicApp:
                         expected_digest=trusted.digest)
                     self.artwork_cache.save(
                         artist_agent=artist_agent, album_id=album_id, manifest=trusted.manifest,
-                        trusted_artist=trusted.artist_key, expected_digest=trusted.digest, image=image)
+                        trusted_artist=trusted.artist_key, expected_digest=trusted.digest,
+                        image=image, store=cas)
                     succeeded = True
                     break
                 except (MoqFetchError, ValueError, OSError):
