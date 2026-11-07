@@ -106,6 +106,26 @@ class OceanSignalThemeTests(unittest.TestCase):
         self.assertIn("color-scheme: dark", CSS)
         self.assertIn("color-scheme: light", CSS)
 
+    def test_amethyst_night_is_selectable_and_persistent(self):
+        self.assertIn("'amethyst-night'", JS)
+        self.assertIn("el('option', { value: 'amethyst-night', text: 'Amethyst Night' })", JS)
+        self.assertIn("localStorage.setItem(APPEARANCE_KEY, mode)", JS)
+        self.assertIn(':root[data-theme="amethyst-night"]', CSS)
+
+    def test_amethyst_night_text_and_control_contrast(self):
+        match = re.search(r':root\\[data-theme="amethyst-night"\\]\\s*\\{([^{}]*)\\}', CSS, re.S)
+        self.assertIsNotNone(match)
+        theme = tokens(match.group(1))
+        self.assertEqual(theme["bg"], "#151020")
+        self.assertEqual(theme["accent"], "#C4A0FF")
+        for fg, bg, minimum in (
+            ("text", "bg", 4.5), ("muted", "panel", 4.5),
+            ("accent-ink", "accent", 4.5), ("teal", "panel", 4.5),
+            ("field-border", "panel-2", 3), ("focus", "panel-2", 3),
+        ):
+            with self.subTest(foreground=fg, background=bg):
+                self.assertGreaterEqual(contrast(theme[fg], theme[bg]), minimum)
+
     def test_preserves_borderless_icons_and_round_play_pause(self):
         self.assertIn(".player button { width: 40px; height: 40px; border: 0; border-radius: 0; background: transparent;", CSS)
         self.assertIn(".player .primary { width: 46px; height: 46px; border-radius: 50%;", CSS)
