@@ -16,21 +16,21 @@
       <div class="brand"><img src="/icon.svg" alt="" width="32" height="32"><div><strong>Holochain Music</strong><small id="net-status" aria-live="polite">Starting…</small></div></div>
       <nav aria-label="Listen">
         <p class="nav-head">Listen</p>
-        <button class="nav" data-view="browse" type="button">Browse</button>
-        <button class="nav" data-view="artists" type="button">Artists</button>
-        <button class="nav" data-view="library" type="button">Your library</button>
-        <button class="nav" data-view="playlists" type="button">Playlists</button>
-        <button class="nav" data-view="history" type="button">Recently played</button>
-        <button class="nav" data-view="queue" type="button">Queue <span id="queue-count" class="pill" hidden></span></button>
+        <button class="nav" data-view="browse" data-icon="compass" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#compass-regular"></use></svg><span>Browse</span></button>
+        <button class="nav" data-view="artists" data-icon="users" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#users-regular"></use></svg><span>Artists</span></button>
+        <button class="nav" data-view="library" data-icon="music-notes" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#music-notes-regular"></use></svg><span>Your library</span></button>
+        <button class="nav" data-view="playlists" data-icon="playlist" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#playlist-regular"></use></svg><span>Playlists</span></button>
+        <button class="nav" data-view="history" data-icon="clock-counter-clockwise" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#clock-counter-clockwise-regular"></use></svg><span>Recently played</span></button>
+        <button class="nav" data-view="queue" data-icon="list-dashes" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#list-dashes-regular"></use></svg><span>Queue</span><span id="queue-count" class="pill" hidden></span></button>
       </nav>
       <nav aria-label="Artist studio">
         <p class="nav-head">Artist studio</p>
-        <button class="nav" data-view="publish" type="button">Publish a track</button>
-        <button class="nav" data-view="requests" type="button">Access requests <span id="request-count" class="pill" hidden></span></button>
-        <button class="nav" data-view="mytracks" type="button">Your releases</button>
+        <button class="nav" data-view="publish" data-icon="microphone-stage" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#microphone-stage-regular"></use></svg><span>Publish a track</span></button>
+        <button class="nav" data-view="requests" data-icon="handshake" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#handshake-regular"></use></svg><span>Access requests</span> <span id="request-count" class="pill" hidden></span></button>
+        <button class="nav" data-view="mytracks" data-icon="vinyl-record" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#vinyl-record-regular"></use></svg><span>Your releases</span></button>
       </nav>
       <nav aria-label="Settings">
-        <button class="nav" data-view="settings" type="button">Identity &amp; settings</button>
+        <button class="nav" data-view="settings" data-icon="gear" type="button"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#gear-regular"></use></svg><span>Identity &amp; settings</span></button>
       </nav>
     </aside>
     <main id="main" class="main" tabindex="-1">
@@ -55,11 +55,11 @@
     <div class="now"><div class="art" aria-hidden="true">♪</div><div class="now-text"><strong id="now-title">Nothing playing</strong><span id="now-artist">Choose a track</span></div></div>
     <div class="transport">
       <div class="buttons">
-        <button id="btn-stop" type="button" aria-label="Stop" title="Stop">■</button>
-        <button id="btn-back" type="button" aria-label="Back 10 seconds" title="Back 10 s (←)">«</button>
-        <button id="btn-play" class="primary" type="button" aria-label="Play" title="Play / pause (Space)">▶</button>
-        <button id="btn-fwd" type="button" aria-label="Forward 10 seconds" title="Forward 10 s (→)">»</button>
-        <button id="btn-next" type="button" aria-label="Next in queue" title="Next (N)">⏭</button>
+        <button id="btn-stop" type="button" aria-label="Stop" title="Stop"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#stop-regular"></use></svg></button>
+        <button id="btn-back" type="button" aria-label="Back 10 seconds" title="Back 10 s (←)"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#rewind-regular"></use></svg></button>
+        <button id="btn-play" class="primary" type="button" aria-label="Play" title="Play / pause (Space)"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#play-fill"></use></svg></button>
+        <button id="btn-fwd" type="button" aria-label="Forward 10 seconds" title="Forward 10 s (→)"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#fast-forward-regular"></use></svg></button>
+        <button id="btn-next" type="button" aria-label="Next in queue" title="Next (N)"><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#skip-forward-regular"></use></svg></button>
       </div>
       <div class="timeline">
         <span id="elapsed">0:00</span>
@@ -69,7 +69,7 @@
     </div>
     <div class="side">
       <span id="state-badge" class="badge" role="status">Idle</span>
-      <label class="volume"><span class="sr-only">Volume</span>🔈<input id="volume" type="range" min="0" max="100" value="100" aria-label="Volume"></label>
+      <label class="volume"><span class="sr-only">Volume</span><svg class="ph-icon" aria-hidden="true" focusable="false"><use href="/icons.svg#speaker-high-regular"></use></svg><input id="volume" type="range" min="0" max="100" value="100" aria-label="Volume"></label>
     </div>
   </footer>
   <div id="toast" class="toast" role="alert" hidden></div>
