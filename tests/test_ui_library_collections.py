@@ -63,6 +63,13 @@ class LibraryCollectionTests(unittest.TestCase):
         self.assertIn("playlist-entries", JS)
         self.assertIn("playlist-edit-actions", CSS)
 
+    def test_stale_playlist_indices_are_rejected_and_live_search_focus_survives_refresh(self):
+        self.assertIn("p.tracks[index] !== id", JS)
+        self.assertIn("Playlist changed since it was displayed", JS)
+        self.assertIn("const searchActive = active && active.classList.contains('library-search')", JS)
+        self.assertIn("replacement.focus()", JS)
+        self.assertIn("replacement.setSelectionRange(selectionStart, selectionEnd)", JS)
+
     def test_rename_and_delete_are_distinct_and_delete_requires_confirmation(self):
         self.assertIn("prompt('Rename playlist'", JS)
         self.assertIn("Delete playlist", JS)
