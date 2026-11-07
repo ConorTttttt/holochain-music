@@ -26,7 +26,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/fonts/inter-latin-400-normal.woff2": ("fonts/inter-latin-400-normal.woff2", "font/woff2"),
           "/fonts/inter-latin-500-normal.woff2": ("fonts/inter-latin-500-normal.woff2", "font/woff2"),
           "/fonts/inter-latin-600-normal.woff2": ("fonts/inter-latin-600-normal.woff2", "font/woff2"),
-          "/fonts/inter-latin-700-normal.woff2": ("fonts/inter-latin-700-normal.woff2", "font/woff2")
+          "/fonts/inter-latin-700-normal.woff2": ("fonts/inter-latin-700-normal.woff2", "font/woff2")}
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob:; connect-src 'self'; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
