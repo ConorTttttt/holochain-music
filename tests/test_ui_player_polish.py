@@ -54,7 +54,8 @@ class PlayerPolishTests(unittest.TestCase):
             self.assertIn(name, self.elements.ids)
 
     def test_fallback_vinyl_is_decorative_and_not_remote_art(self):
-        self.assertIn('<div class="art" aria-hidden="true" title="Artwork placeholder">', HTML)
+        self.assertIn('<div class="art" aria-hidden="true" title="Album artwork">', HTML)
+        self.assertIn('id="now-art-image" alt="" hidden', HTML)
         self.assertIn('<use href="#ph-vinyl-record"></use>', HTML)
         self.assertIn(".player .art {", CSS)
         self.assertIn(".player .art::before {", CSS)
