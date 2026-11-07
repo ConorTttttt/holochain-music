@@ -95,6 +95,17 @@ class ApiTests(unittest.TestCase):
         except ValueError:
             return r.status, payload, r
 
+    def test_phosphor_icon_sprite_is_local_and_cache_safe(self):
+        status, data, headers = self.req("GET", "/icons.svg", token=False, origin=None)
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.getheader("Content-Type"), "image/svg+xml")
+        self.assertEqual(headers.getheader("Cache-Control"), "no-store")
+        self.assertEqual(headers.getheader("X-Content-Type-Options"), "nosniff")
+        self.assertIn("img-src 'self'", headers.getheader("Content-Security-Policy"))
+        self.assertIn(b'<symbol id="play-fill"', data)
+        self.assertIn(b'<symbol id="music-notes-regular"', data)
+        self.assertEqual(self.req("GET", "/icons/missing.svg", token=False)[0], 404)
+
     def test_bundled_fonts_load_with_strict_csp(self):
         for path in (
             "/fonts/PlusJakartaSans-wght.ttf",
