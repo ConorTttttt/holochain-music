@@ -13,6 +13,9 @@ import zlib
 from holochain_music.artwork import (ALBUM_ID, SIG, AlbumArtworkStore,
                                     ArtworkError, clean_png_bytes, load_cover)
 from holochain_music.artist import ArtistService
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from holochain_storage.package import manifest_digest
+from holochain_music.artwork_transport import verify_public_artwork_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "holochain_music" / "ui" / "app.js").read_text(encoding="utf-8")
@@ -40,17 +43,29 @@ class FakeBridge:
         self.fail = False
 
     def call(self, operation, *, entry):
-        if self.fail:
+        if self.fail and operation == "publish_album":
             raise RuntimeError("simulated Holochain publish failure")
         self.entries.append((operation, entry))
         return {"ok": True}
 
-    def records(self, operation, *, artist):
-        if operation != "list_albums" or artist != "artist-agent":
+    def records(self, operation, **kwargs):
+        if operation != "list_albums" or kwargs.get("artist") != "artist-agent":
             return []
         from types import SimpleNamespace
         return [SimpleNamespace(author="artist-agent", body=entry) for op, entry in self.entries
                 if op == "publish_album"]
+
+
+class FakeKeys:
+    def __init__(self):
+        self.artist = Ed25519PrivateKey.generate()
+        self.host = Ed25519PrivateKey.generate()
+
+    def artist_ed25519(self):
+        return self.artist
+
+    def host_ed25519(self):
+        return self.host
 
 
 class AlbumArtworkTests(unittest.TestCase):
@@ -131,17 +146,31 @@ class AlbumArtworkTests(unittest.TestCase):
                 with self.assertRaises(ArtworkError):
                     store.read(value)
 
-    def test_published_album_keeps_artwork_manifest_unset(self):
+    def test_published_album_pins_artist_signed_artwork_manifest(self):
         with tempfile.TemporaryDirectory() as temp:
             bridge = FakeBridge()
             cover = Path(temp) / "cover.png"
             cover.write_bytes(png(metadata=chunk(b"tEXt", b"author\x00private")))
-            artist = ArtistService(bridge=bridge, keys=object(), host_root=Path(temp) / "host")
+            artist = ArtistService(bridge=bridge, keys=FakeKeys(), host_root=Path(temp) / "host")
             result = artist.create_album("Example album", None, artwork_path=cover)
             self.assertTrue(result["local_artwork"])
             self.assertTrue(artist.album_art.has(result["album_id"]))
-            self.assertEqual(bridge.entries[0][0], "publish_album")
-            self.assertIsNone(bridge.entries[0][1]["artwork_manifest_sha256"])
+            albums = [entry for operation, entry in bridge.entries if operation == "publish_album"]
+            self.assertEqual(len(albums), 1)
+            digest = albums[0]["artwork_manifest_sha256"]
+            self.assertEqual(result["artwork_manifest_sha256"], digest)
+            self.assertEqual(len(digest), 64)
+            stored = list(artist.files.glob("*/manifest.json"))
+            self.assertEqual(len(stored), 1)
+            import json
+            manifest = json.loads(stored[0].read_text(encoding="utf-8"))
+            self.assertEqual(manifest_digest(manifest), digest)
+            verify_public_artwork_manifest(
+                manifest, artist_agent="artist-agent", album_id=result["album_id"],
+                trusted_artist=artist.keys.artist.public_key().public_bytes_raw(),
+                expected_digest=digest)
+            self.assertTrue(any(op == "publish_file_commitment" for op, _ in bridge.entries))
+            self.assertTrue(any(op == "publish_replica_claim" for op, _ in bridge.entries))
             self.assertEqual(artist.my_albums()[0]["local_artwork"], True)
 
     def test_failed_album_publish_rolls_back_local_cover(self):
@@ -150,7 +179,7 @@ class AlbumArtworkTests(unittest.TestCase):
             bridge.fail = True
             cover = Path(temp) / "cover.png"
             cover.write_bytes(png())
-            artist = ArtistService(bridge=bridge, keys=object(), host_root=Path(temp) / "host")
+            artist = ArtistService(bridge=bridge, keys=FakeKeys(), host_root=Path(temp) / "host")
             with self.assertRaisesRegex(RuntimeError, "publish failure"):
                 artist.create_album("Failed release", None, artwork_path=cover)
             self.assertEqual(list((artist.root / "artwork").glob("*.png")), [])
@@ -170,7 +199,7 @@ class AlbumArtworkTests(unittest.TestCase):
         self.assertIn("URL.revokeObjectURL(url)", JS)
         self.assertIn("headers: { Authorization:", JS)
         self.assertIn("showPlayerArtwork(item);", JS)
-        self.assertIn("function albumCoverThumb(albumId)", JS)
+        self.assertIn("function albumCoverThumb(albumId, artistAgent)", JS)
         self.assertIn("document.createElementNS(", JS)
         self.assertIn(".player .art img[hidden] { display: none; }", CSS)
         self.assertNotIn("img.src = item.cover_url", JS)
