@@ -61,6 +61,21 @@ class LayeredPlayerTests(unittest.TestCase):
         self.assertIn("layerOrigin.focus()", JS)
         self.assertIn("function show(name, arg = null)", JS)
 
+    def test_bottom_player_surface_opens_expanded_view_without_hijacking_controls(self):
+        tag, attrs = self.markup.elements["player-expand-hint"]
+        self.assertEqual(tag, "span")
+        self.assertIn("tabindex=\"0\"", HTML)
+        self.assertIn('aria-describedby="player-expand-hint"', HTML)
+        self.assertIn("const playerBar = document.querySelector('footer.player')", JS)
+        self.assertIn("playerBar.addEventListener('click', event => {", JS)
+        self.assertIn("if (event.target.closest(playerControlSelector)) return;", JS)
+        self.assertIn('button, input, select, textarea, a, label', JS)
+        self.assertIn("playerBar.addEventListener('keydown', event => {", JS)
+        self.assertIn("event.target !== playerBar || event.key !== 'Enter' || event.repeat", JS)
+        self.assertIn("openExpandedPlayer(playerBar)", JS)
+        self.assertIn("if (dialog.open) return;", JS)
+        self.assertIn("footer.player { cursor: pointer; }", CSS)
+
     def test_expanded_player_is_accessible_native_dialog(self):
         tag, _ = self.markup.elements["now-expanded"]
         self.assertEqual(tag, "dialog")
