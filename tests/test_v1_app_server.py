@@ -106,7 +106,7 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(headers.getheader("Content-Type"), "font/ttf")
                 self.assertIn("font-src 'self'", headers.getheader("Content-Security-Policy"))
                 self.assertEqual(headers.getheader("X-Content-Type-Options"), "nosniff")
-                self.assertTrue(data.startswith(b"\\x00\\x01\\x00\\x00"))
+                self.assertTrue(data.startswith(b"\x00\x01\x00\x00"))
                 self.assertGreater(len(data), 100_000)
         self.assertEqual(self.req("GET", "/fonts/missing.ttf", token=False)[0], 404)
 
