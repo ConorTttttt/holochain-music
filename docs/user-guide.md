@@ -64,22 +64,17 @@ Changes are immediate and do **not** restart playback, Holochain, or your audio 
 
 ## Typography
 
-In **Identity & settings → Typography → Font style**, choose:
+Holochain Music uses **Inter** for its interface, navigation, page headings, track names and playback controls. The UI has a consistent type scale and tabular time labels, with a system-font fallback for glyphs missing from the bundled Latin subset.
 
-- **Balanced — Inter** (default): Inter for navigation, controls, headings, song titles and artist information.
-- **Expressive — Inter + Space Grotesk**: Inter remains the body/UI typeface while Space Grotesk is used for page titles and the application name.
-
-To compare both styles **without launching Holochain Music**, run from the repository root:
+To preview Inter across all four colour palettes **without launching the Holochain backend**, run from the repository root:
 
 ```bash
 python3 -m http.server 8766 --bind 127.0.0.1 --directory holochain_music/ui
 ```
 
-Then open `http://127.0.0.1:8766/typography-preview.html`. This is a standalone specimen, not a music player; colour changes here are for visual comparison only. Stop the preview server with Ctrl+C.
+Open `http://127.0.0.1:8766/typography-preview.html`; switch between Ocean Signal and Amethyst colours. This is a noninteractive specimen, not the music player. Stop the preview with Ctrl+C.
 
-Both styles work with **every Ocean Signal and Amethyst theme**. Changes apply immediately and are saved only in this browser, independently of the colour theme. They do not change audio, network settings or licence permissions.
-
-Fonts are bundled as WOFF2 files and served from this computer; no Google Fonts/CDN request is needed. The bundled webfonts are Latin subsets; the CSS uses a platform font fallback for unsupported glyphs. The included fonts are distributed under the SIL Open Font License 1.1. Their full licences are in `holochain_music/ui/fonts/Inter-OFL.txt` and `holochain_music/ui/fonts/SpaceGrotesk-OFL.txt`.
+Inter is included as local WOFF2 files in four weights (400, 500, 600, 700). No Google Fonts/CDN request is required, and the app works offline. The font is distributed under **SIL Open Font License 1.1**, included at `holochain_music/ui/fonts/Inter-OFL.txt`.
 
 ## Back up your identity and music
 
