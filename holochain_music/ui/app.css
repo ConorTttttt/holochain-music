@@ -269,12 +269,14 @@ a { color: var(--accent); }
 
 /* Layered Player: changes layout only; never remounts the audio session. */
 .shell { grid-template-columns: 240px minmax(0,1fr); }
-.shell.panel-open { grid-template-columns: 240px minmax(0,1fr) minmax(300px,360px); }
+.shell.panel-open { grid-template-columns: 240px minmax(0,1fr); }
 .now-panel[hidden] { display: none; }
 .now-panel {
-  grid-column: 3; min-width: 0; padding: 20px; background: var(--panel);
-  border-left: 1px solid var(--line); height: calc(100vh - 110px);
-  overflow-y: auto; position: sticky; top: 0;
+  position: fixed; z-index: 13; top: 12px; right: 0; bottom: 122px;
+  width: min(340px, calc(100vw - 28px)); min-width: 0; padding: 20px;
+  background: var(--panel); border: 1px solid var(--line); border-right: none;
+  border-radius: 14px 0 0 14px; overflow-y: auto;
+  box-shadow: -12px 8px 32px rgba(0, 0, 0, .24);
 }
 .now-panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .now-panel-head h2 { font-size: 20px; margin: 0; }
@@ -316,13 +318,10 @@ a { color: var(--accent); }
 .expanded-actions .primary .icon { width: 30px; height: 30px; }
 .expanded-extras label { display: flex; gap: 10px; align-items: center; }
 .expanded-extras input { width: min(130px, 24vw); accent-color: var(--accent); }
-@media (max-width: 1100px) {
-  .shell.panel-open { grid-template-columns: 240px minmax(0,1fr); }
-  .now-panel { grid-column: 2; grid-row: 2; position: static; height: auto; border-left: 0; border-top: 1px solid var(--line); }
-}
 @media (max-width: 860px) {
   .shell.panel-open { grid-template-columns: minmax(0,1fr); }
-  .now-panel { grid-column: 1; grid-row: auto; }
+  .now-panel { top: 0; bottom: 0; max-height: 100dvh; border-radius: 12px 0 0 12px; }
+  .now-edge-tab { top: 35%; }
 }
 @media (max-width: 420px) {
   .player #btn-now-panel { width: 40px; height: 40px; }
@@ -337,3 +336,22 @@ a { color: var(--accent); }
 footer.player { cursor: pointer; }
 footer.player:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 footer.player button:disabled, footer.player input:disabled { cursor: not-allowed; }
+
+/* Discoverable narrow right-edge handle. The side panel is an overlay, not
+   another playback view or an extra column that shrinks browsing space. */
+.now-edge-tab {
+  position: fixed; z-index: 12; right: 0; top: 38%;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  width: 44px; min-height: 142px; padding: 12px 7px;
+  border: 1px solid var(--line); border-right: 0; border-radius: 12px 0 0 12px;
+  background: var(--panel-2); color: var(--text); box-shadow: -5px 4px 18px rgba(0, 0, 0, .15);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
+.now-edge-tab .icon { width: 22px; height: 22px; color: var(--accent); flex: none; }
+.now-edge-tab span { writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .035em; }
+.now-edge-tab:hover { background: var(--panel); border-color: var(--accent); }
+.now-edge-tab:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.now-edge-tab[hidden] { display: none; }
+@media (max-width: 860px) {
+  .now-edge-tab { top: 35%; }
+}
