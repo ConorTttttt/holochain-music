@@ -61,6 +61,26 @@ class LayeredPlayerTests(unittest.TestCase):
         self.assertIn("layerOrigin.focus()", JS)
         self.assertIn("function show(name, arg = null)", JS)
 
+    def test_right_edge_tab_opens_small_side_panel_without_resetting_audio(self):
+        tag, attrs = self.markup.elements["now-edge-tab"]
+        self.assertEqual(tag, "button")
+        self.assertEqual(attrs["aria-controls"], "now-panel")
+        self.assertEqual(attrs["aria-expanded"], "false")
+        self.assertEqual(attrs["type"], "button")
+        self.assertNotIn("hidden", attrs)
+        self.assertIn("now-edge-tab", CSS)
+        self.assertIn("position: fixed; z-index: 12; right: 0", CSS)
+        self.assertIn(".now-edge-tab[hidden] { display: none; }", CSS)
+        self.assertIn("position: fixed; z-index: 13; top: 12px; right: 0", CSS)
+        self.assertIn("width: min(340px, calc(100vw - 28px))", CSS)
+        self.assertIn("panel.hidden = !open;", JS)
+        self.assertIn("$('now-edge-tab').addEventListener('click', () => setLayerPanel(true));", JS)
+        self.assertIn("$('now-edge-tab').setAttribute('aria-expanded', String(open));", JS)
+        self.assertIn("$('now-edge-tab').hidden = open;", JS)
+        self.assertIn("layerOrigin.focus()", JS)
+        self.assertIn("panel.focus()", JS)
+        self.assertNotIn("new Audio(", JS)
+
     def test_bottom_player_surface_opens_expanded_view_without_hijacking_controls(self):
         tag, attrs = self.markup.elements["player-expand-hint"]
         self.assertEqual(tag, "span")
