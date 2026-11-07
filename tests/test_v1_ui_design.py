@@ -76,9 +76,27 @@ class UiDesignTokenTests(unittest.TestCase):
         # creating a large empty block below the stacked navigation.
         compact = CSS.split("@media (max-width: 860px)", 1)[1]
         self.assertIn(
-            ".shell { grid-template-columns: 1fr; grid-template-rows: max-content auto; }",
+            ".shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content auto; }",
             compact,
         )
+
+    def test_compact_search_and_volume_fit_available_width(self):
+        # At high zoom the search field and volume thumb reached the right edge
+        # of the user's screenshot. Flex/grid min-content sizing must shrink.
+        compact = CSS.split("@media (max-width: 860px)", 1)[1]
+        for rule in (
+            ".shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content auto; }",
+            ".main { min-width: 0;",
+            ".topbar { min-width: 0;",
+            ".search { flex: 1 1 200px; min-width: 0; max-width: 100%; }",
+            ".search input { display: block; width: 100%; max-width: 100%; min-width: 0; }",
+            ".player { grid-template-columns: minmax(0, 1fr); min-width: 0;",
+            ".timeline { min-width: 0; grid-template-columns: 44px minmax(0, 1fr) 44px; }",
+            ".side { min-width: 0; justify-content: space-between; flex-wrap: wrap; }",
+            ".volume input { width: min(100px, 25vw); min-width: 0; }",
+        ):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, compact)
 
     def test_theme_override_and_native_select_contract(self):
         self.assertIn('<label for="appearance">Appearance</label>', HTML)
