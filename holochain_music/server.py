@@ -15,6 +15,7 @@ import secrets
 from urllib.parse import urlsplit
 
 from .app import AppError, MusicApp, USER_ERRORS
+from .artwork import ALBUM_ID, ArtworkError
 
 MAX_BODY = 16 * 1024
 UI = Path(__file__).with_name("ui")
@@ -26,7 +27,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/fonts/inter-latin-500-normal.woff2": ("fonts/inter-latin-500-normal.woff2", "font/woff2"),
           "/fonts/inter-latin-600-normal.woff2": ("fonts/inter-latin-600-normal.woff2", "font/woff2"),
           "/fonts/inter-latin-700-normal.woff2": ("fonts/inter-latin-700-normal.woff2", "font/woff2")
-CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src 'self'; "
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' blob:; connect-src 'self'; "
        "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
 
@@ -128,7 +129,11 @@ def routes(app: MusicApp) -> dict:
             _text(_keys(d, {"display_name"}, {"biography"})["display_name"], 120),
             _text(d.get("biography", ""), 2048, empty_ok=True))),
         ("POST", "/api/artist/album"): online(lambda d: app.artist.create_album(
-            _text(_keys(d, {"title"}, {"release_date"})["title"], 200), d.get("release_date") or None)),
+            _text(_keys(d, {"title"}, {"release_date", "artwork_path"})["title"], 200),
+            d.get("release_date") or None,
+            artwork_path=Path(_text(d["artwork_path"], 1024)).expanduser()
+            if d.get("artwork_path") else None)),
+        ("POST", "/api/artist/albums"): online(noargs(lambda: {"albums": app.artist.my_albums()})),
         ("POST", "/api/artist/publish"): publish,
         ("POST", "/api/artist/tracks"): online(noargs(lambda: {"tracks": app.artist.my_tracks()})),
         ("POST", "/api/artist/requests"): online(noargs(lambda: {"requests": app.artist.requests()})),
@@ -178,6 +183,20 @@ def make_handler(app: MusicApp, token: str, *, port: int):
                 return self._send({"error": "not found"}, 404)
             if not secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {token}"):
                 return self._send({"error": "authorisation required"}, 401)
+            # A session-authorised binary image response. No token in URL, no
+            # arbitrary file path, and never a direct reference to a source file.
+            if method == "GET" and path.path.startswith("/api/artwork/"):
+                album_id = path.path.removeprefix("/api/artwork/")
+                if not ALBUM_ID.fullmatch(album_id):
+                    return self._send({"error": "not found"}, 404)
+                try:
+                    image = app.album_art.read(album_id)
+                except (ArtworkError, OSError):
+                    image = None
+                if image is None:
+                    return self._send({"error": "not found"}, 404)
+                self._headers(200, "image/png", len(image))
+                return self.wfile.write(image)
             handler = table.get((method, path.path))
             if handler is None:
                 return self._send({"error": "unknown endpoint"}, 404)
