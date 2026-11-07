@@ -25,3 +25,8 @@
   .preview-card { padding: 14px; }
   .preview-track { flex-wrap: wrap; }
 }
+
+.preview-upload { max-width: 650px; margin-top: 24px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+.preview-upload label { display: block; font-weight: 600; margin-bottom: 10px; }
+.preview-upload input { max-width: 100%; }
+.preview-upload p { margin: 10px 0 0; font-size: 13px; }
