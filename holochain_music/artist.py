@@ -190,6 +190,7 @@ class ArtistService:
             "file_id": file_id, "manifest_sha256": digest, "rights_basis": rights_basis})
         self.host_file(manifest, owner_agent=self.me, artist_key=public_key_bytes(artist_key))
         _atomic_json(d / "track.json", {"track_id": track_id, "title": title.strip(), "file_id": file_id,
+                                        "album_id": album_id or None, "track_number": track_number,
                                         "manifest_sha256": digest, "owner_agent": self.me,
                                         "published_at": int(time.time()), **info})
         return {"track_id": track_id, "file_id": file_id, "manifest_sha256": digest, **info}
