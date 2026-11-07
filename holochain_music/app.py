@@ -295,7 +295,13 @@ class MusicApp:
             self._artwork_jobs.add(key)
         thread = threading.Thread(target=self._fetch_album_artwork, args=key, daemon=True,
                                   name="holochain-artwork-fetch")
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError:
+            with self._artwork_lock:
+                self._artwork_jobs.discard(key)
+            self._artwork_slots.release()
+            return None, False
         return None, True
 
     def _fetch_album_artwork(self, artist_agent: str, album_id: str) -> None:
