@@ -149,7 +149,10 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
 .toast { position: fixed; right: 18px; bottom: 104px; max-width: 420px; background: var(--panel-2); border: 1px solid var(--bad); border-radius: var(--radius-panel); padding: 10px 14px; z-index: 20; }
 .toast.info { border-color: var(--accent); }
 @media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
+  /* The navigation must occupy only its content height. Without explicit
+   * rows, the grid's auto tracks share spare viewport height and leave a
+   * large empty gap below the last navigation button at high zoom. */
+  .shell { grid-template-columns: 1fr; grid-template-rows: max-content auto; }
   /* Keep navigation groups stacked, while their buttons wrap within each group.
    * A row-direction sidebar stretched the selected pill and created large blank
    * gaps at narrow widths / high browser zoom. */
