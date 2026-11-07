@@ -1,12 +1,21 @@
+/* Ocean Signal — exploratory colour trial, not final brand approval.
+   Keep all components on semantic tokens. Switching the final palette should
+   require updating these values, not changing playback or application logic. */
 :root {
-  --bg: #0f1720; --panel: #16212d; --panel-2: #1d2b3a; --line: #2a3b4d;
-  --text: #e8f0f7; --muted: #93a6b8; --accent: #5fd3a6; --accent-ink: #062016;
-  --warn: #f2c66d; --bad: #ff8f87; --focus: #9fd8ff; --radius: 10px;
+  color-scheme: dark;
+  --bg: #0D1820; --panel: #142631; --panel-2: #203846; --line: #375465;
+  --text: #F2F8FC; --muted: #BDD1DF; --accent: #93BEFF; --accent-ink: #10263F;
+  --teal: #75E3DC; --field-border: #768F9F;
+  --warn: #F6C56E; --bad: #FFAAA8; --focus: #93BEFF; --radius: 10px;
 }
 @media (prefers-color-scheme: light) {
-  :root { --bg: #f4f7fa; --panel: #ffffff; --panel-2: #eef3f7; --line: #d5dee7;
-    --text: #13212e; --muted: #536576; --accent: #138a5e; --accent-ink: #ffffff;
-    --warn: #8a5d00; --bad: #b3261e; --focus: #0b62a8; }
+  :root {
+    color-scheme: light;
+    --bg: #F5FAFC; --panel: #FFFFFF; --panel-2: #EAF2F7; --line: #CADCE6;
+    --text: #152D3B; --muted: #506779; --accent: #1959B8; --accent-ink: #FFFFFF;
+    --teal: #08766F; --field-border: #6F8390;
+    --warn: #895700; --bad: #AF3427; --focus: #1959B8;
+  }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -27,7 +36,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .pill { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font-size: 11px; padding: 0 7px; }
 .main { padding: 18px 28px 40px; overflow: auto; }
 .topbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
-.search input { width: min(380px, 70vw); background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; }
+.search input { width: min(380px, 70vw); background: var(--panel); border: 1px solid var(--field-border); border-radius: 999px; padding: 8px 14px; }
 h1 { font-size: 26px; margin: 4px 0 4px; }
 h2 { font-size: 18px; margin: 22px 0 8px; }
 .sub { color: var(--muted); margin: 0 0 16px; }
@@ -43,7 +52,7 @@ h2 { font-size: 18px; margin: 22px 0 8px; }
 .btn.primary, .player .primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn:disabled, .player button:disabled { opacity: .45; cursor: not-allowed; }
 .badge { display: inline-block; font-size: 12px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; color: var(--muted); white-space: nowrap; }
-.badge.ok { color: var(--accent); border-color: var(--accent); }
+.badge.ok { color: var(--teal); border-color: var(--teal); }
 .badge.warn { color: var(--warn); border-color: var(--warn); }
 .badge.bad { color: var(--bad); border-color: var(--bad); }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -51,7 +60,7 @@ h2 { font-size: 18px; margin: 22px 0 8px; }
 .tile:hover { border-color: var(--accent); }
 form.stack { display: grid; gap: 10px; max-width: 560px; }
 form.stack label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
-form.stack input, form.stack textarea, form.stack select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; color: var(--text); }
+form.stack input, form.stack textarea, form.stack select { background: var(--panel-2); border: 1px solid var(--field-border); border-radius: 8px; padding: 8px 10px; color: var(--text); }
 code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
 .empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
 .player { position: fixed; left: 0; right: 0; bottom: 0; height: 92px; background: var(--panel); border-top: 1px solid var(--line); display: grid; grid-template-columns: 1fr 2fr 1fr; align-items: center; padding: 0 18px; gap: 16px; }
