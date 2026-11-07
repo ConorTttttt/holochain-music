@@ -148,8 +148,11 @@ class AlbumArtworkStore:
             return None
         if target.stat().st_size > MAX_OUTPUT_BYTES:
             return None
-        data = target.read_bytes()
-        return data if data == clean_png_bytes(data) else None
+        try:
+            data = target.read_bytes()
+            return data if data == clean_png_bytes(data) else None
+        except (ArtworkError, OSError):
+            return None
 
     def has(self, album_id: str) -> bool:
         return self.read(album_id) is not None
