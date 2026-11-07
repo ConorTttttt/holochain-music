@@ -301,6 +301,45 @@ async function startOfflineDownload(fileId) {
     if (view === 'library') render();
   } catch (e) { toast('Download not started: ' + e.message); }
 }
+// Storage and deletion are explicit user actions; no auto-cleanup and no
+// background /api/offline/storage polling during real-time playback.
+let storageReport = null;
+let storageBusy = false;
+const readableBytes = bytes => {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1024) return value + ' B';
+  if (value < 1048576) return (value / 1024).toFixed(1) + ' KiB';
+  if (value < 1073741824) return (value / 1048576).toFixed(1) + ' MiB';
+  return (value / 1073741824).toFixed(2) + ' GiB';
+};
+async function inspectOfflineStorage() {
+  if (storageBusy) return;
+  storageBusy = true;
+  storageReport = { state: 'checking' };
+  if (view === 'library' && libraryFilters.scope === 'offline') render();
+  try {
+    storageReport = { state: 'complete', data: await api('/api/offline/storage') };
+  } catch (e) {
+    storageReport = { state: 'error', message: 'Storage could not be counted: ' + e.message };
+  } finally {
+    storageBusy = false;
+    if (view === 'library' && libraryFilters.scope === 'offline') render();
+  }
+}
+async function removeLocalDownload(item) {
+  if (!item || !item.file_id) return;
+  if (!confirm('Remove only the local app-managed encrypted copy of "' +
+    (item.title || 'this track') + '"? Your licence, library entry, playlists and independently exported files will remain. Shared audio chunks are retained. Stop playback first.')) return;
+  try {
+    const result = await api('/api/offline/remove', { file_id: item.file_id });
+    offlineChecks.delete(item.file_id);
+    storageReport = null;
+    toast('Removed ' + readableBytes(result.removed_bytes) + ' of exclusive encrypted audio. ' +
+      result.shared_objects_preserved + ' shared objects kept. Rights and exported WAV files remain.', 'info');
+    await refreshLibrary();
+    if (view === 'library' && libraryFilters.scope === 'offline') render();
+  } catch (e) { toast('Local copy was not removed: ' + e.message); }
+}
 function downloadStateText(item) {
   const transfer = item.download;
   if (transfer) {
@@ -360,6 +399,13 @@ function offlineTrackCard(item) {
       disabled: !state.online || Boolean(busy),
       onclick: () => startOfflineDownload(item.file_id) }));
   }
+  if (item.grant_kind === 'perpetual-personal' &&
+      (item.offline_ready || Number(item.download?.available_chunks) > 0)) {
+    actions.append(el('button', { class: 'btn offline-remove', type: 'button',
+      text: 'Remove local copy',
+      'aria-label': 'Remove local encrypted copy of ' + (item.title || 'track') + ' only',
+      onclick: () => removeLocalDownload(item) }));
+  }
   card.append(actions);
   return card;
 }
@@ -381,8 +427,22 @@ function renderOfflineDashboard(rows) {
       el('p', { text: 'After verifying a permanent personal-use licence and local file, choose Export licensed WAV. The app can write a standard WAV under your home directory; export history and independent player testing are not tracked here.' }),
       el('p', { class: 'muted', text: 'An exported file is yours to retain under its personal-use licence. It is not a transfer of copyright or proof of a payment.' })),
     el('section', { class: 'offline-group' }, el('h2', { text: 'Storage and safety' }),
-      el('p', { text: 'Encrypted app-managed downloads remain in your private music library. Do not remove identity keys, licences or backups when cleaning storage.' }),
-      el('p', { class: 'muted', text: 'Storage totals, selected-download removal and safe cache clearing are not yet implemented. Independently exported WAV files will never be removed by future Clear Cache actions.' })));
+      el('p', { text: 'Encrypted app-managed downloads remain in your private music library. Select Remove local copy on a track to delete only exclusive encrypted objects after confirmation; shared chunks, licence and playlist references remain.' }),
+      el('button', { class: 'btn', type: 'button',
+        text: storageBusy ? 'Counting storage…' : 'Check local storage usage',
+        disabled: storageBusy, onclick: inspectOfflineStorage }),
+      storageReport && storageReport.state === 'complete'
+        ? el('dl', { class: 'offline-storage-metrics' },
+          el('dt', { text: 'Encrypted library audio objects' }),
+          el('dd', { text: readableBytes(storageReport.data.encrypted_bytes) + ' · ' +
+            storageReport.data.encrypted_objects + ' files' }),
+          el('dt', { text: 'Library metadata and grants' }),
+          el('dd', { text: readableBytes(storageReport.data.library_metadata_bytes) }),
+          el('dt', { text: 'Total counted local library files' }),
+          el('dd', { text: readableBytes(storageReport.data.accounted_bytes) }))
+        : storageReport ? el('p', { role: 'status',
+          text: storageReport.state === 'checking' ? 'Counting local library files…' : storageReport.message }) : null,
+      el('p', { class: 'muted', text: 'Sizes count file bytes, not filesystem quota. Identity keys, Holochain host storage, temporary files, independently exported WAV files and backups are not included. Clear All, moving storage folders and deleting exports are intentionally unavailable.' })));
 }
 
 // Read the latest saved playlists before modifying them; never change the
