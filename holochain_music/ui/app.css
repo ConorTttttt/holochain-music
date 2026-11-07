@@ -46,13 +46,10 @@
 @font-face { font-family: "Inter"; src: url("/fonts/inter-latin-500-normal.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
 @font-face { font-family: "Inter"; src: url("/fonts/inter-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
 @font-face { font-family: "Inter"; src: url("/fonts/inter-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
-@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk-latin-600-normal.woff2") format("woff2"); font-weight: 600; font-style: normal; font-display: swap; }
-@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk-latin-700-normal.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
 
-/* Balanced: Inter for UI and headings. Expressive: Inter UI + Space Grotesk headings. */
+/* Inter is the sole app typeface; system fonts cover unsupported glyphs. */
 :root { --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
         --font-display: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif; }
-:root[data-typography="expressive"] { --font-display: "Space Grotesk", "Inter", system-ui, sans-serif; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
@@ -139,9 +136,9 @@ code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 
 a { color: var(--accent); }
 
 /* Appearance settings use the same accessible semantic colours as the rest of the UI. */
-.appearance-field, .typography-field { display: grid; gap: 8px; max-width: 360px; }
-.appearance-field label, .typography-field label { font-weight: 600; }
-.appearance-field select, .typography-field select { width: 100%; min-height: 44px; border: 1px solid var(--field-border); border-radius: 999px; background: var(--panel-2); color: var(--text); padding: 8px 14px; cursor: pointer; }
+.appearance-field { display: grid; gap: 8px; max-width: 360px; }
+.appearance-field label { font-weight: 600; }
+.appearance-field select { width: 100%; min-height: 44px; border: 1px solid var(--field-border); border-radius: 999px; background: var(--panel-2); color: var(--text); padding: 8px 14px; cursor: pointer; }
 
 /* Phosphor SVG controls: same-origin assets, semantic accent retained. */
 .icon-sprite { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
