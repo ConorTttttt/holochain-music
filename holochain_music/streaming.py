@@ -70,6 +70,12 @@ class Download:
                     if self.trusted.hosts else None, **self.metrics}
 
     # ---- control -----------------------------------------------------
+    def is_running(self) -> bool:
+        """The worker thread may still be writing even after a state update."""
+        with self._cv:
+            worker = self._thread
+            return bool(worker and worker.is_alive())
+
     def start(self) -> None:
         with self._cv:
             if self.state == "complete" or (self._thread and self._thread.is_alive()):

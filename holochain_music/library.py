@@ -24,7 +24,7 @@ import time
 
 from holochain_storage import portable
 from holochain_storage.package import (
-    StorageError, canonical, manifest_digest, object_path, verify_package,
+    StorageError, _assert_manifest, _verify_signed, canonical, manifest_digest, object_path, verify_package,
 )
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -171,6 +171,124 @@ class Library:
         if not meta.get("complete"):
             self.update_meta(file_id, complete=True, completed_at=int(time.time()))
         return True
+
+    # ---- explicitly requested storage management ---------------------
+    def storage_usage(self) -> dict:
+        """Count local library files, not exports, keys or host-owned objects.
+
+        This is an on-demand filesystem scan (not a polling-loop operation).
+        Sizes describe allocated file content, not deduplicated disk blocks,
+        filesystem quota or permission to remove those files.
+        """
+        def count_files(root: Path, *, objects_only: bool = False) -> tuple[int, int]:
+            total, count = 0, 0
+            if not root.is_dir() or root.is_symlink():
+                return total, count
+            for base, dirs, names in os.walk(root, followlinks=False):
+                dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
+                for name in names:
+                    path = Path(base) / name
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    if objects_only and (not _HEX64.fullmatch(path.name) or path.parent.name != path.name[:2]):
+                        continue
+                    total += path.stat().st_size
+                    count += 1
+            return total, count
+
+        encrypted_bytes, objects = count_files(self.cas / "objects" / "sha256", objects_only=True)
+        metadata_bytes, metadata_files = count_files(self.tracks_dir)
+        for name in ("playlists.json", "history.json"):
+            path = self.root / name
+            if path.is_file() and not path.is_symlink():
+                metadata_bytes += path.stat().st_size
+                metadata_files += 1
+        return {
+            "encrypted_bytes": encrypted_bytes,
+            "encrypted_objects": objects,
+            "library_metadata_bytes": metadata_bytes,
+            "metadata_files": metadata_files,
+            "accounted_bytes": encrypted_bytes + metadata_bytes,
+        }
+
+    def remove_offline_copy(self, file_id: str) -> dict:
+        """Remove only this track's exclusive encrypted CAS objects.
+
+        All manifests are checked before unlinking anything. Shared CAS objects,
+        signed grants, keys, manifests, playlists and exports are NEVER removed.
+        The caller must independently prevent active playback/download races.
+        """
+        file_id = file_key(file_id)
+        with self._lock:
+            meta = self.meta(file_id)
+            if meta is None or not self.has_manifest(file_id):
+                raise LibraryError("no complete track record to remove locally")
+
+            def authenticated_chunks(fid: str, record: dict) -> set[str]:
+                package = self.manifest(fid)
+                if record.get("manifest_sha256") != manifest_digest(package):
+                    raise LibraryError("manifest changed; refusing to remove encrypted audio")
+                try:
+                    signed = _verify_signed(package, bytes.fromhex(record["artist_key_hex"]), "manifest")
+                    _assert_manifest(signed)
+                except (StorageError, ValueError, KeyError, TypeError) as exc:
+                    raise LibraryError("manifest cannot be authenticated; no files removed") from exc
+                if signed["file_id"] != fid:
+                    raise LibraryError("manifest file ID mismatch; no files removed")
+                return {chunk["sha256"] for chunk in signed["chunks"]}
+
+            own_chunks = authenticated_chunks(file_id, meta)
+            protected: set[str] = set()
+            # Any other known manifest may reference the same encrypted object.
+            # Fail closed on unknown/invalid directories or manifests rather than
+            # over-estimating the number of exclusively owned objects.
+            for directory in self.tracks_dir.iterdir():
+                if directory.is_symlink():
+                    raise LibraryError("unsafe library track directory; no files removed")
+                if not directory.is_dir() or not _HEX64.fullmatch(directory.name):
+                    continue
+                if directory.name == file_id:
+                    continue
+                manifest_path = directory / "manifest.json"
+                if manifest_path.is_symlink():
+                    raise LibraryError("unsafe referenced manifest; no files removed")
+                if not manifest_path.exists():
+                    continue  # pending metadata with no audio references
+                other_meta = self.meta(directory.name)
+                if other_meta is None:
+                    raise LibraryError("unknown referenced manifest; no files removed")
+                protected.update(authenticated_chunks(directory.name, other_meta))
+
+            unique = own_chunks - protected
+            prepared: list[tuple[Path, int]] = []
+            # Reject every unsafe path before changing the 'complete' flag.
+            for digest in unique:
+                path = object_path(self.cas, digest)
+                for parent in (self.cas, self.cas / "objects", self.cas / "objects" / "sha256", path.parent):
+                    if parent.is_symlink():
+                        raise LibraryError("unsafe encrypted-object directory; no files removed")
+                if path.is_symlink():
+                    raise LibraryError("unsafe encrypted-object link; no files removed")
+                if path.exists():
+                    if not path.is_file():
+                        raise LibraryError("unsafe encrypted-object type; no files removed")
+                    prepared.append((path, path.stat().st_size))
+
+            # If an unlink later fails, the track remains marked incomplete,
+            # never falsely offline-ready. A user can retry after fixing disk
+            # permissions; a grant and metadata remain untouched.
+            self.update_meta(file_id, complete=False)
+            removed_bytes, removed_objects = 0, 0
+            for path, size in prepared:
+                path.unlink()
+                removed_bytes += size
+                removed_objects += 1
+            return {
+                "removed_bytes": removed_bytes,
+                "removed_objects": removed_objects,
+                "shared_objects_preserved": len(own_chunks & protected),
+                "message": "Only exclusive app-managed encrypted chunks were removed. Library entries, licences and exports remain.",
+            }
 
     # ---- playlists & history -----------------------------------------
     def playlists(self) -> list[dict]:

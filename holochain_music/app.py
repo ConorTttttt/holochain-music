@@ -1,6 +1,7 @@
 """Holochain Music application core: one object the UI and CLI talk to."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,8 @@ class MusicApp:
         self.online = False
         self._lock_fd = None
         self._sync_lock = threading.Lock()
+        self._storage_lock = threading.RLock()
+        self._storage_readers = 0
         self.shutdown_requested = threading.Event()
         self.player = Player(backend=self.settings["audio_backend"], device=self.settings["audio_device"],
                              resolve=self._session_for, on_finished=self._advance,
@@ -363,29 +366,30 @@ class MusicApp:
 
     # ---- playback -----------------------------------------------------
     def _ensure_download(self, file_id: str, *, start: bool = True) -> Download | None:
-        if self.library.verify_complete(file_id):
-            return None
-        d = self.downloads.get(file_id)
-        if d is None:
-            self.require_online()
-            meta = self.library.meta(file_id)
-            artist, track_id = self._split_key(meta["track_key"])
-            trusted = self.catalogue.resolve(artist, track_id)
-            if trusted.digest != meta["manifest_sha256"]:
-                raise AppError("catalogue changed this track's encrypted file; re-add it")
-            d = Download(trusted=trusted, store=self.library.cas, moq_binary=binaries.find("holochain-music-moq"),
-                         allow_lan=self.settings["allow_lan"], present=self.library.present_chunks(trusted.manifest),
-                         on_complete=lambda: self.library.verify_complete(file_id))
-            self.downloads[file_id] = d
-        elif d.state == "unavailable":
-            # User retry after an outage: hosts may have moved; re-resolve them.
-            self.require_online()
-            meta = self.library.meta(file_id)
-            artist, track_id = self._split_key(meta["track_key"])
-            d.replace_hosts(self.catalogue.resolve(artist, track_id).hosts)
-        if start:
-            d.start()
-        return d
+        with self._storage_lock:
+            if self.library.verify_complete(file_id):
+                return None
+            d = self.downloads.get(file_id)
+            if d is None:
+                self.require_online()
+                meta = self.library.meta(file_id)
+                artist, track_id = self._split_key(meta["track_key"])
+                trusted = self.catalogue.resolve(artist, track_id)
+                if trusted.digest != meta["manifest_sha256"]:
+                    raise AppError("catalogue changed this track's encrypted file; re-add it")
+                d = Download(trusted=trusted, store=self.library.cas, moq_binary=binaries.find("holochain-music-moq"),
+                             allow_lan=self.settings["allow_lan"], present=self.library.present_chunks(trusted.manifest),
+                             on_complete=lambda: self.library.verify_complete(file_id))
+                self.downloads[file_id] = d
+            elif d.state == "unavailable":
+                # User retry after an outage: hosts may have moved; re-resolve them.
+                self.require_online()
+                meta = self.library.meta(file_id)
+                artist, track_id = self._split_key(meta["track_key"])
+                d.replace_hosts(self.catalogue.resolve(artist, track_id).hosts)
+            if start:
+                d.start()
+            return d
 
     def download(self, file_id: str) -> dict:
         """Explicit offline download: only permanent licences are supported.
@@ -402,7 +406,54 @@ class MusicApp:
         d = self._ensure_download(file_id)
         return d.progress() if d else {"state": "complete"}
 
+    def offline_storage_usage(self) -> dict:
+        """On-demand read-only accounting, excluding identity keys and exports."""
+        with self._storage_lock:
+            return self.library.storage_usage()
+
+    def remove_download(self, file_id: str) -> dict:
+        """Remove only safely unshared encrypted audio, not entitlements.
+
+        Avoid concurrent playback, stream worker writes, and unexpected CAS
+        refetch while mutating content-addressed storage. A normal library
+        download can later fetch exclusive objects again if licensed.
+        """
+        file_key(file_id)
+        with self._storage_lock:
+            playback = self.player.status()
+            if playback.get("state") not in ("idle", "stopped", "finished", "error"):
+                raise AppError("Stop playback before removing an offline download.")
+            if any(download.is_running() for download in self.downloads.values()):
+                raise AppError("A download is still active. Finish downloads or restart offline before removal.")
+            if self._storage_readers:
+                raise AppError("Offline verification or WAV export is active. Try removal after it completes.")
+            result = self.library.remove_offline_copy(file_id)
+            # Discard cached completed/failed Download state so it cannot
+            # falsely announce already-present objects after their deletion.
+            self.downloads.pop(file_id, None)
+            return result
+
+    @contextmanager
+    def _offline_storage_reader(self):
+        """Prevent removal while verification or an export is reading CAS data."""
+        lock = getattr(self, "_storage_lock", None)
+        if lock is None:
+            # Compatible with isolated backend unit fixtures using __new__.
+            yield
+            return
+        with lock:
+            self._storage_readers += 1
+        try:
+            yield
+        finally:
+            with lock:
+                self._storage_readers -= 1
+
     def offline_readiness(self, file_id: str) -> dict:
+        with self._offline_storage_reader():
+            return self._offline_readiness_impl(file_id)
+
+    def _offline_readiness_impl(self, file_id: str) -> dict:
         """On-demand offline verification; never return the content key.
 
         Verification reads signed encrypted chunks and unwraps the grant key.
@@ -480,6 +531,10 @@ class MusicApp:
 
     # ---- export (licence permitting) ------------------------------------
     def export_wav(self, file_id: str, destination: Path) -> Path:
+        with self._offline_storage_reader():
+            return self._export_wav_impl(file_id, destination)
+
+    def _export_wav_impl(self, file_id: str, destination: Path) -> Path:
         """Write a playable WAV for a perpetual personal-use licence only.
 
         The exported file is plaintext by design and cannot be revoked."""

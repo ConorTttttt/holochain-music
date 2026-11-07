@@ -310,3 +310,14 @@ a { color: var(--accent); }
   .offline-group { padding: 12px; }
   .offline-track-heading { align-items: flex-start; }
 }
+
+/* Explicit offline storage metrics and non-destructive selected copy removal. */
+.offline-storage-metrics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px 14px; margin: 14px 0; }
+.offline-storage-metrics dt { color: var(--muted); overflow-wrap: anywhere; }
+.offline-storage-metrics dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+.offline-actions .offline-remove { border-color: var(--warn); color: var(--text); }
+.offline-actions .offline-remove:hover { border-color: var(--accent); }
+@media (max-width: 560px) {
+  .offline-storage-metrics { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .offline-storage-metrics dd { text-align: left; margin-bottom: 9px; }
+}
