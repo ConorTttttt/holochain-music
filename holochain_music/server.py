@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 
 from .app import AppError, MusicApp, USER_ERRORS
 from .artwork import ALBUM_ID, ArtworkError
+from .artwork_transport import AGENT
 
 MAX_BODY = 16 * 1024
 UI = Path(__file__).with_name("ui")
@@ -131,7 +132,7 @@ def routes(app: MusicApp) -> dict:
         ("POST", "/api/artist/profile"): online(lambda d: app.artist.save_profile(
             _text(_keys(d, {"display_name"}, {"biography"})["display_name"], 120),
             _text(d.get("biography", ""), 2048, empty_ok=True))),
-        ("POST", "/api/artist/album"): online(lambda d: app.artist.create_album(
+        ("POST", "/api/artist/album"): online(lambda d: app.create_album(
             _text(_keys(d, {"title"}, {"release_date", "artwork_path"})["title"], 200),
             d.get("release_date") or None,
             artwork_path=Path(_text(d["artwork_path"], 1024)).expanduser()
@@ -189,17 +190,29 @@ def make_handler(app: MusicApp, token: str, *, port: int):
             # A session-authorised binary image response. No token in URL, no
             # arbitrary file path, and never a direct reference to a source file.
             if method == "GET" and path.path.startswith("/api/artwork/"):
-                album_id = path.path.removeprefix("/api/artwork/")
-                if not ALBUM_ID.fullmatch(album_id):
+                parts = path.path.removeprefix("/api/artwork/").split("/")
+                if len(parts) == 1:
+                    # Legacy artist-only route stays functional for existing clients.
+                    album_id = parts[0]
+                    if not ALBUM_ID.fullmatch(album_id):
+                        return self._send({"error": "not found"}, 404)
+                    image, pending = app.album_art.read(album_id), False
+                elif len(parts) == 2:
+                    artist_agent, album_id = parts
+                    if not AGENT.fullmatch(artist_agent) or not ALBUM_ID.fullmatch(album_id):
+                        return self._send({"error": "not found"}, 404)
+                    try:
+                        image, pending = app.album_artwork(artist_agent, album_id)
+                    except (ArtworkError, OSError):
+                        return self._send({"error": "not found"}, 404)
+                else:
                     return self._send({"error": "not found"}, 404)
-                try:
-                    image = app.album_art.read(album_id)
-                except (ArtworkError, OSError):
-                    image = None
-                if image is None:
-                    return self._send({"error": "not found"}, 404)
-                self._headers(200, "image/png", len(image))
-                return self.wfile.write(image)
+                if image is not None:
+                    self._headers(200, "image/png", len(image))
+                    return self.wfile.write(image)
+                if pending:
+                    return self._send({"pending": True}, 202)
+                return self._send({"error": "not found"}, 404)
             handler = table.get((method, path.path))
             if handler is None:
                 return self._send({"error": "unknown endpoint"}, 404)

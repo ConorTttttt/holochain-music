@@ -85,22 +85,38 @@ function accessBadge(item) {
 // to short-lived blob: URLs. No bearer token is placed in an img src or query.
 const albumArtwork = new Map();
 const validAlbumId = id => typeof id === 'string' && /^[0-9a-f]{32}$/.test(id);
-async function albumArtworkUrl(albumId) {
-  if (!token || !validAlbumId(albumId)) return null;
-  if (albumArtwork.has(albumId)) return albumArtwork.get(albumId);
+const validArtworkArtist = agent => typeof agent === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(agent);
+async function albumArtworkUrl(albumId, artistAgent) {
+  if (!token || !validAlbumId(albumId) || !validArtworkArtist(artistAgent)) return null;
+  const key = `${artistAgent}:${albumId}`;
+  if (albumArtwork.has(key)) return albumArtwork.get(key);
   const request = (async () => {
     try {
-      const response = await fetch(`/api/artwork/${albumId}`, {
-        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store'
-      });
-      if (!response.ok || response.headers.get('Content-Type') !== 'image/png') return null;
-      if (Number(response.headers.get('Content-Length')) > 768 * 1024) return null;
-      const image = await response.blob();
-      if (image.size > 768 * 1024 || image.type !== 'image/png') return null;
-      return URL.createObjectURL(image);
-    } catch (_) { return null; }
+      // The backend queues no more than two MoQ cover fetches; a 202 means
+      // the cover is being verified, not that arbitrary bytes are available.
+      for (let attempt = 0; attempt < 36; attempt++) {
+        const response = await fetch(`/api/artwork/${artistAgent}/${albumId}`, {
+          headers: { Authorization: `Bearer ${token}` }, cache: 'no-store'
+        });
+        if (response.status === 202) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+        if (!response.ok || response.headers.get('Content-Type') !== 'image/png') return null;
+        if (Number(response.headers.get('Content-Length')) > 768 * 1024) return null;
+        const image = await response.blob();
+        if (image.size > 768 * 1024 || image.type !== 'image/png') return null;
+        return URL.createObjectURL(image);
+      }
+    } catch (_) { /* optional artwork never blocks listening */ }
+    return null;
   })();
-  albumArtwork.set(albumId, request);
+  albumArtwork.set(key, request);
+  request.then(url => {
+    if (!url) window.setTimeout(() => {
+      if (albumArtwork.get(key) === request) albumArtwork.delete(key);
+    }, 45_000);
+  });
   return request;
 }
 window.addEventListener('pagehide', () => {
@@ -108,7 +124,7 @@ window.addEventListener('pagehide', () => {
     Promise.resolve(request).then(url => { if (url) URL.revokeObjectURL(url); });
   }
 });
-function albumCoverThumb(albumId) {
+function albumCoverThumb(albumId, artistAgent) {
   const thumb = el('span', { class: 'track-cover', 'aria-hidden': 'true' });
   const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   icon.setAttribute('class', 'icon');
@@ -117,22 +133,26 @@ function albumCoverThumb(albumId) {
   use.setAttribute('href', '#ph-vinyl-record');
   icon.append(use);
   thumb.append(icon);
-  if (validAlbumId(albumId)) albumArtworkUrl(albumId).then(url => {
+  if (validAlbumId(albumId) && validArtworkArtist(artistAgent)) albumArtworkUrl(albumId, artistAgent).then(url => {
     if (url) thumb.append(el('img', { src: url, alt: '' }));
   });
   return thumb;
 }
-let shownArtworkAlbumId = undefined;
+let shownArtworkKey = undefined;
 function showPlayerArtwork(item) {
   const albumId = item && validAlbumId(item.album_id) ? item.album_id : null;
-  if (albumId === shownArtworkAlbumId) return;
-  shownArtworkAlbumId = albumId;
+  const artist = item && validArtworkArtist(item.artist_agent) ? item.artist_agent : null;
+  const key = albumId && artist ? `${artist}:${albumId}` : null;
   const image = $('now-art-image');
+  // A previously unavailable cover can be retried when its negative cache
+  // expires; do not re-request an image already displayed successfully.
+  if (key === shownArtworkKey && (!key || !image.hidden || albumArtwork.has(key))) return;
+  shownArtworkKey = key;
   image.hidden = true;
   image.removeAttribute('src');
-  if (!albumId) return;
-  albumArtworkUrl(albumId).then(url => {
-    if (shownArtworkAlbumId === albumId && url) {
+  if (!key) return;
+  albumArtworkUrl(albumId, artist).then(url => {
+    if (shownArtworkKey === key && url) {
       image.src = url;
       image.hidden = false;
     }
@@ -174,7 +194,7 @@ function trackRow(t, fileId, catalogueRow) {
   const item = libraryById.get(fileId);
   const active = state.player && state.player.track_key === fileId;
   return el('div', { class: `row${active ? ' active' : ''}` },
-    el('div', { class: 'track-info' }, albumCoverThumb(t.album_id),
+    el('div', { class: 'track-info' }, albumCoverThumb(t.album_id, t.artist_agent),
       el('div', { class: 'title' }, el('strong', { text: t.title || 'Untitled' }),
         el('span', {}, catalogueRow ? el('a', { href: '#', text: t.artist_name || 'Unknown artist',
           onclick: e => { e.preventDefault(); show('artist', t.artist_agent); } }) : (t.artist_name || 'Unknown artist')))),
@@ -652,7 +672,7 @@ const views = {
       }
     } },
       f('Album or EP title', albumName), f('Optional PNG cover file path on this computer (RGB/RGBA, up to 1200px and 768 KiB)', coverPath),
-      el('p', { class: 'muted', text: 'Local PNG artwork is scrubbed of embedded metadata. It appears on this device only until peer-to-peer artwork delivery is implemented.' }),
+      el('p', { class: 'muted', text: 'Artwork is PUBLIC: the image is scrubbed of metadata, artist-signed, and made available to other listeners through authenticated Holochain/MoQ hosts. Music audio remains licensed separately.' }),
       el('button', { class: 'btn', type: 'submit', text: 'Create album' }));
 
     form.append(f('WAV file on this computer (16-bit PCM, mono/stereo)', path), f('Track title', title),

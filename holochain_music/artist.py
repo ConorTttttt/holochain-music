@@ -34,6 +34,7 @@ from music_catalogue.content_grants import issue_content_grant, issue_personal_l
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 
 from .artwork import AlbumArtworkStore, load_cover
+from .artwork_transport import publish_public_artwork
 from .bridge import Bridge
 from .keys import KeyStore
 from .library import _atomic_json, _read_json, file_key
@@ -119,23 +120,40 @@ class ArtistService:
 
     def create_album(self, title: str, release_date: str | None, *,
                      artwork_path: Path | None = None) -> dict:
-        """Create a public album entry; cover stays local until a verified
-        cross-peer artwork distribution protocol is available."""
+        """Create a v1 album with an optional immutable, publicly retrievable
+        artist-signed artwork package pinned to this first album record."""
         cover = load_cover(artwork_path) if artwork_path is not None else None
         album_id = secrets.token_hex(16)
+        digest = None
         if cover is not None:
+            signer = self.keys.artist_ed25519()
+            artist_key = public_key_bytes(signer)
+            self._ensure_key(OWNER_PURPOSE, artist_key)
+            manifest = publish_public_artwork(
+                cover, artist_agent=self.me, album_id=album_id,
+                signer=signer, store=self.cas)
+            digest = manifest_digest(manifest)
+            # Use existing, Holochain-authenticated storage commitments and
+            # claims. MoQ serves the exact signed S1 artwork as a public file.
+            self.bridge.call("publish_file_commitment", entry={
+                "schema": "holochain-storage/file-commitment/v1", "owner_agent": self.me,
+                "file_id": manifest["body"]["file_id"], "manifest_sha256": digest})
+            self.host_file(manifest, owner_agent=self.me, artist_key=artist_key)
             self.album_art.save(album_id, cover)
         try:
-            # Do not put a bare PNG digest in artwork_manifest_sha256: that
-            # catalogue field expects a signed artwork manifest, not file bytes.
             self.bridge.call("publish_album", entry={
                 "schema": "holochain-music/album/v1", "artist_agent": self.me, "album_id": album_id,
-                "title": title.strip(), "release_date": release_date or None, "artwork_manifest_sha256": None})
+                "title": title.strip(), "release_date": release_date or None,
+                "artwork_manifest_sha256": digest})
         except BaseException:
+            # The published file commitment/claim is append-only: an orphan
+            # can remain in the DHT, but it cannot be associated with an album
+            # without this artist-authored album pin.
             if cover is not None:
                 self.album_art.delete(album_id)
             raise
-        return {"album_id": album_id, "local_artwork": cover is not None}
+        return {"album_id": album_id, "local_artwork": cover is not None,
+                "artwork_manifest_sha256": digest}
 
     def my_albums(self) -> list[dict]:
         """Verified authored album records with a local-only art availability flag."""
@@ -152,7 +170,8 @@ class ArtistService:
                 continue
             seen.add(album_id)
             albums.append({"album_id": album_id, "title": str(body.get("title", ""))[:200],
-                           "local_artwork": self.album_art.has(album_id)})
+                           "local_artwork": self.album_art.has(album_id),
+                           "artwork_manifest_sha256": body.get("artwork_manifest_sha256")})
         return albums
 
     def publish_track(self, *, wav: Path, title: str, album_id: str | None = None,
