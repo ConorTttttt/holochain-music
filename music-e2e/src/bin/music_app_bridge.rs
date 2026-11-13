@@ -271,6 +271,14 @@ impl Bridge {
             "get_inbox_grants" => self.inbox("get_inbox_grants").await,
             // Storage writes.
             "register_signing_key" => self.create(false, "register_signing_key", arg_entry(args)?).await,
+            // S2 key-binding v2 (only present on the opt-in v2 storage DNA).
+            // The entry carries a proof signed locally; no private key passes here.
+            "key_binding_v2_context" => {
+                let context: Value = self.call(false, "key_binding_v2_context", &()).await?;
+                Ok(context)
+            }
+            "register_signing_key_v2" => self.create(false, "register_signing_key_v2", arg_entry(args)?).await,
+            "get_signing_keys_v2" => self.records(false, "get_signing_keys_v2", &arg_agent(args, "agent")?).await,
             "publish_file_commitment" => self.create(false, "publish_file_commitment", arg_entry(args)?).await,
             "publish_replica_claim" => self.create(false, "publish_replica_claim", arg_entry(args)?).await,
             "publish_moq_endpoint" => self.create(false, "publish_moq_endpoint", arg_entry(args)?).await,

@@ -1,0 +1,17 @@
+---
+# S2 key-binding v2 storage DNA (opt-in, separate network; see
+# docs/s2-key-binding-v2.md). The v1 DNA in ../../dna is unchanged.
+manifest_version: "0"
+name: music_storage_v2
+integrity:
+  network_seed: ~
+  properties: ~
+  zomes:
+    - name: music_storage_integrity
+      path: ../target/wasm32-unknown-unknown/release/music_storage_integrity_v2.wasm
+coordinator:
+  zomes:
+    - name: music_storage
+      path: ../target/wasm32-unknown-unknown/release/music_storage_v2.wasm
+      dependencies:
+        - name: music_storage_integrity

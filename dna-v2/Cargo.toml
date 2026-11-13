@@ -1,0 +1,21 @@
+# S2 key-binding v2 storage DNA: a SEPARATE workspace so that nothing about
+# the deployed v1 DNA build (`../dna`) changes. Even declaring a cargo feature
+# on the v1 crates alters their metadata hash, symbol names and therefore the
+# v1 DNA hash, so v2 is built from its own crates. Cargo.lock is a copy of
+# ../dna/Cargo.lock: identical dependency versions.
+[workspace]
+resolver = "2"
+members = ["integrity", "coordinator"]
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+hdi = "=0.8.0"
+hdk = "=0.7.0"
+serde = "1"
+holochain_serialized_bytes = "0.0.57"
+
+[profile.release]
+opt-level = "z"
+lto = true

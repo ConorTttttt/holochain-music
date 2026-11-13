@@ -25,7 +25,10 @@ import wave
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
-from holochain_storage.holochain_identity import HOST_PURPOSE, OWNER_PURPOSE, key_for_agent
+from holochain_storage.holochain_identity import (
+    ASSURANCE_POP_V2, HOST_PURPOSE, OWNER_PURPOSE, key_for_agent, make_key_binding_v2,
+    resolve_signing_key,
+)
 from holochain_storage.package import (
     StorageError, canonical, create_package, manifest_digest, public_key_bytes,
     replicate_package, sha256,
@@ -77,7 +80,14 @@ def normalise_wav(source: Path, destination: Path) -> dict:
 
 
 class ArtistService:
-    def __init__(self, *, bridge: Bridge, keys: KeyStore, host_root: Path, deliver=None):
+    def __init__(self, *, bridge: Bridge, keys: KeyStore, host_root: Path, deliver=None,
+                 key_binding: str = "v1"):
+        """`key_binding="v2"` is an explicit opt-in for the separate v2 storage
+        DNA (dna-v2/, proof-of-possession bindings). The default keeps the
+        existing v1 behaviour; no existing identity is migrated."""
+        if key_binding not in ("v1", "v2"):
+            raise ArtistError("key_binding must be 'v1' or 'v2'")
+        self.key_binding = key_binding
         self.bridge, self.keys = bridge, keys
         # Delivery may be queued by the app's outbox when the listener is offline.
         self.deliver = deliver or (lambda op, **kw: (bridge.call(op, **kw), {"delivered": True})[1])
@@ -95,6 +105,12 @@ class ArtistService:
 
     # ---- identity bindings --------------------------------------------
     def _ensure_key(self, purpose: str, public: bytes) -> None:
+        if self.key_binding == "v2":
+            signer = {OWNER_PURPOSE: self.keys.artist_ed25519, HOST_PURPOSE: self.keys.host_ed25519}[purpose]()
+            if public_key_bytes(signer) != public:
+                raise ArtistError("signing key does not match this installation's key store")
+            self._ensure_key_v2(purpose, signer)
+            return
         bound = set()
         for record in self.bridge.records("get_signing_keys", agent=self.me):
             try:
@@ -109,6 +125,36 @@ class ArtistService:
             raise ArtistError(f"this agent already has a different {purpose} key registered")
         self.bridge.call("register_signing_key", entry={"schema": KEY_SCHEMA, "agent": self.me,
                                                         "purpose": purpose, "signing_key_hex": public.hex()})
+
+    def _ensure_key_v2(self, purpose: str, signer) -> None:
+        """Opt-in v2 registration: sign the proof of possession locally, publish
+        only public material, then re-read and verify what the DHT returns."""
+        public = public_key_bytes(signer)
+        context = self.bridge.call("key_binding_v2_context")
+        if not isinstance(context, dict) or context.get("agent") != self.me:
+            raise ArtistError("storage cell agent differs from this installation's agent")
+        dna_hash = context.get("dna_hash")
+
+        def current():
+            records = self.bridge.records("get_signing_keys_v2", agent=self.me)
+            if not any(r.body.get("purpose") == purpose for r in records if isinstance(r.body, dict)):
+                return None
+            try:
+                key, _ = resolve_signing_key(records, self.me, purpose,
+                                             require=ASSURANCE_POP_V2, dna_hash=dna_hash)
+            except StorageError as exc:
+                raise ArtistError(f"existing {purpose} key bindings are invalid or ambiguous: {exc}") from exc
+            return key
+
+        existing = current()
+        if existing == public:
+            return
+        if existing is not None:
+            raise ArtistError(f"this agent already has a different {purpose} key registered")
+        entry = make_key_binding_v2(signer, dna_hash=dna_hash, agent=self.me, purpose=purpose)
+        self.bridge.call("register_signing_key_v2", entry=entry)
+        if current() != public:
+            raise ArtistError("registered key binding could not be confirmed")
 
     # ---- catalogue ----------------------------------------------------
     def save_profile(self, display_name: str, biography: str) -> dict:
