@@ -238,6 +238,10 @@ class Download:
                 return
             host = self.trusted.hosts[self.host_index % len(self.trusted.hosts)]
             self._restart.clear()
+            if self._stop.is_set():
+                # pause()/stop() raced the loop check above and its cancel
+                # signal was just cleared: honour it before starting a receiver.
+                break
             with self._cv:
                 self._position = start if start is not None else None
                 self.attempts += 1

@@ -112,6 +112,34 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             self.assertFalse(d.is_running())
             self.assertEqual(result["available_chunks"], 0)
 
+    def test_pause_racing_the_next_transfer_attempt_is_not_lost(self):
+        # Regression: pause() can land after the worker's loop-top stop check
+        # but before it clears the shared cancel event for the next attempt
+        # (e.g. right after start() or a seek restart). The pause must still
+        # prevent a new receiver from running instead of being erased.
+        fetch, _, calls = self.receiver()
+        d = self.make_download()
+        plan = Download._plan
+        injected = []
+
+        def plan_then_pause(download):
+            if not injected:
+                injected.append(True)
+                download.pause()  # worker thread: sets pausing/stop/cancel, no self-join
+            return plan(download)
+
+        with patch.object(Download, "_plan", plan_then_pause), \
+                patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetch):
+            d.start()
+            wait_until(lambda: not d.is_running())
+            progress = d.progress()
+            self.assertEqual(calls, [], "a receiver ran after pause was requested")
+            self.assertEqual(progress["state"], "paused")
+            self.assertEqual(progress["available_chunks"], 0)
+            d.resume()
+            wait_until(lambda: d.progress()["state"] == "complete")
+        self.assertEqual(d.progress()["available_chunks"], len(self.chunks))
+
     def test_retry_is_explicit_and_cached_chunks_survive_restart(self):
         fetch, _, _ = self.receiver()
         d = self.make_download()
