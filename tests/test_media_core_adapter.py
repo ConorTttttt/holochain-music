@@ -266,10 +266,15 @@ class MediaCoreComparisonTests(unittest.TestCase):
                                  signed_manifest=self.manifest)
 
     def test_adapter_interface_accepts_no_secret_material(self):
-        # The CLI has no flag for keys/grants; an unknown flag is a usage
-        # failure (MediaCoreUnavailable), never a verification result.
+        # The CLI has no flag for content keys or private keys (grants are
+        # accepted only by CORE-005 `check-access`, which never unwraps); an
+        # unknown flag is a usage failure (MediaCoreUnavailable), never a
+        # verification result.
         with self.assertRaises(core.MediaCoreUnavailable):
             core._run(["audit", "--content-key", self.key.hex()])
+        for secret in ("--content-key", "--recipient-private-hex", "--signing-key-hex"):
+            with self.assertRaises(core.MediaCoreUnavailable):
+                core._run(["check-access", secret, self.key.hex()])
 
 
 if __name__ == "__main__":

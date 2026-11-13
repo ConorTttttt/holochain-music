@@ -10,8 +10,12 @@ Boundary (deliberately small, same model as ``holochain-music-moq`` and
 ``music_conductor_bridge``): a supervised local subprocess that receives only
 PUBLIC material (signed manifest/receipt JSON, public keys, conductor-bridge
 records, ciphertext directories) and prints one JSON object. Content keys,
-grants, X25519 keys and private signing keys are never passed to it, and it
-never decrypts. Licences, playback and export are unchanged.
+X25519 *private* keys and private signing keys are never passed to it, and it
+never decrypts or unwraps. ``check_access`` (CORE-005) additionally passes an
+owner-signed, recipient-wrapped grant/licence and the listener's X25519
+*public* key, so Rust can verify the same entitlement Python verifies; the
+key inside the grant stays wrapped. Licences, playback and export are
+unchanged: no production path calls this module.
 
 Media Core's VerifiedCas uses the same on-disk layout as Music
 (``objects/sha256/<2 hex>/<sha256>``), so Music's ``verify_package``,
@@ -137,6 +141,46 @@ def verify_replica_claim(receipt: dict, signed_manifest: dict, owner_agent: str,
                      "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--receipt", _write(Path(tmp), "r.json", receipt),
                      "--owner-agent", owner_agent, "--node-agent", node_agent])
+
+
+RIGHTS = ("stream", "managed-offline", "export")
+
+
+def check_access(grant: dict, signed_manifest: dict, owner_agent: str,
+                 owner_key_binding: AuthoredRecord, owner_commitment: AuthoredRecord,
+                 listener_agent: str, recipient_public: bytes, right: str,
+                 now: int | None = None) -> dict:
+    """Rust (CORE-005) counterpart of ``unwrap_content_grant``'s policy checks.
+
+    The owner identity and key come only from the conductor-authenticated
+    ``AuthoredRecord``s, exactly as for ``verify_replica_claim``; the listener
+    agent and X25519 *public* key are this device's own trusted context.
+    ``right`` is one of ``RIGHTS``. Acceptance is a policy decision only: it
+    does not show that the wrapped key decrypts, so Music's own unwrap (with
+    AES-GCM authentication) is still required before any plaintext access.
+    Rejections raise ``MediaCoreRejected`` with ``boundary`` ``s2-binding`` or
+    ``entitlement`` (plus ``category``/``reason``).
+    """
+    if right not in RIGHTS:
+        raise MediaCoreUnavailable("invalid right")
+    if not isinstance(recipient_public, bytes) or len(recipient_public) != 32:
+        raise MediaCoreUnavailable("recipient X25519 public key must have 32 bytes")
+    bridge = {"owner_key_binding": _record(owner_key_binding),
+              "owner_commitment": _record(owner_commitment)}
+    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+        args = ["check-access",
+                "--bridge-json", _write(Path(tmp), "bridge.json", bridge),
+                "--manifest", _write(Path(tmp), "m.json", signed_manifest),
+                "--owner-agent", owner_agent,
+                "--grant", _write(Path(tmp), "g.json", grant),
+                "--listener-agent", listener_agent,
+                "--recipient-x25519-hex", recipient_public.hex(),
+                "--right", right]
+        if now is not None:
+            if type(now) is not int or now < 0:
+                raise MediaCoreUnavailable("now must be non-negative Unix seconds")
+            args += ["--now", str(now)]
+        return _run(args)
 
 
 def import_into_cas(signed_manifest: dict, trusted_artist: bytes, source_store: str | Path,
