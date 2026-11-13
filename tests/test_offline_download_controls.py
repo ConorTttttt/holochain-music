@@ -360,7 +360,15 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         # host gave no "Retrying" feedback for many seconds.
         self.assertIn("downloadActionInFlight.set(fileId, action)", JS)
         self.assertIn("downloadActionInFlight.delete(fileId)", JS)
-        for label in ("pause: 'Pausing…'", "resume: 'Resuming…'", "retry: 'Retrying…'"):
+        # Download for Offline too: host resolution right after a restart can
+        # take until the bridge timeout; the button stayed enabled with no
+        # feedback and repeat clicks sent duplicate requests.
+        start = JS[JS.index("async function startOfflineDownload(fileId) {"):JS.index("// Explicit transfer commands")]
+        self.assertIn("if (downloadActionsBusy.has(fileId)) return;", start)
+        self.assertIn("downloadActionInFlight.set(fileId, 'download');", start)
+        self.assertIn("downloadActionInFlight.delete(fileId);", start.split("finally {")[1])
+        self.assertIn("if (!transfer && downloadActionInFlight.has(item.file_id))", JS)
+        for label in ("download: 'Starting…'", "pause: 'Pausing…'", "resume: 'Resuming…'", "retry: 'Retrying…'"):
             self.assertIn(label, JS)
         self.assertIn("if (inFlight) return offlineDownloadInFlightText[inFlight] + progress;", JS)
         self.assertIn("'aria-busy': 'true', disabled: true", JS)

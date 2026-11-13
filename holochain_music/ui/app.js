@@ -307,13 +307,23 @@ async function verifyOfflineTrack(fileId) {
   if (view === 'library' && libraryFilters.scope === 'offline') render();
 }
 async function startOfflineDownload(fileId) {
+  // Host resolution can take many seconds (e.g. just after a restart): show
+  // Starting… and ignore repeat clicks instead of sending duplicate requests.
+  if (downloadActionsBusy.has(fileId)) return;
+  downloadActionsBusy.add(fileId);
+  downloadActionInFlight.set(fileId, 'download');
+  if (view === 'library') render();
   try {
     const result = await api('/api/download', { file_id: fileId });
     if (result.state === 'complete') toast('Encrypted download present. Verify offline readiness before relying on it.', 'info');
     else toast('Download ' + (result.state || 'requested') + '. Progress will update in Offline.', 'info');
     await refreshLibrary();
-    if (view === 'library') render();
   } catch (e) { toast('Download not started: ' + e.message); }
+  finally {
+    downloadActionsBusy.delete(fileId);
+    downloadActionInFlight.delete(fileId);
+    if (view === 'library') render();
+  }
 }
 // Explicit transfer commands, distinct from pause/resume of audible playback.
 const downloadActionsBusy = new Set();
@@ -322,9 +332,10 @@ const downloadActionsBusy = new Set();
 // say what is happening now rather than the last polled state.
 const downloadActionInFlight = new Map();
 const offlineDownloadInFlightLabels = Object.freeze({
-  pause: 'Pausing…', resume: 'Resuming…', retry: 'Retrying…'
+  download: 'Starting…', pause: 'Pausing…', resume: 'Resuming…', retry: 'Retrying…'
 });
 const offlineDownloadInFlightText = Object.freeze({
+  download: 'Starting: resolving authenticated hosts for this download…',
   pause: 'Pausing: stopping the authenticated transfer safely…',
   resume: 'Resuming from retained authenticated chunks…',
   retry: 'Retrying: re-resolving authenticated hosts…'
@@ -395,6 +406,7 @@ async function removeLocalDownload(item) {
 }
 function downloadStateText(item) {
   const transfer = item.download;
+  if (!transfer && downloadActionInFlight.has(item.file_id)) return offlineDownloadInFlightText[downloadActionInFlight.get(item.file_id)];
   if (transfer) {
     const found = Number(transfer.available_chunks);
     const total = Number(transfer.total_chunks);
