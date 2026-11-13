@@ -120,6 +120,10 @@ class Download:
         with self._cv:
             if self.state == "complete":
                 return self.progress()
+            if self.state in ("downloading", "retrying") and self._thread and self._thread.is_alive():
+                # Already transferring (e.g. Play resumed it while the UI still
+                # showed Paused): the requested outcome holds, nothing to do.
+                return self.progress()
             if self.state != "paused" or (self._thread and self._thread.is_alive()):
                 raise TrackUnavailable("download has not finished pausing")
         self.start()

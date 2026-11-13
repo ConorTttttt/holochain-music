@@ -246,6 +246,24 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         self.assertEqual(restored.progress()["available_chunks"], len(self.chunks))
         self.assertTrue(cached.exists())
 
+    def test_resume_of_an_already_running_transfer_is_a_harmless_no_op(self):
+        # Play can resume a paused transfer while the Offline card still shows
+        # "Resume download" until the next library refresh; clicking it then
+        # reported "download has not finished pausing".
+        fetch, first, calls = self.receiver(first_chunk_pause=True)
+        d = self.make_download()
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetch):
+            d.start()
+            self.assertTrue(first.wait(2))
+            worker = d._thread
+            self.assertEqual(d.resume()["state"], "downloading")
+            self.assertIs(d._thread, worker, "no second receiver worker")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(d.pause()["state"], "paused")
+            with self.assertRaisesRegex(TrackUnavailable, "not finished pausing"):
+                d.state = "pausing"  # a pause still settling is still refused
+                d.resume()
+
     def test_resume_rejects_nonpaused_worker_without_changing_progress(self):
         d = self.make_download()
         with self.assertRaisesRegex(TrackUnavailable, "not finished pausing"):
