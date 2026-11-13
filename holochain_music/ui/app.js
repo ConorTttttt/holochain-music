@@ -840,7 +840,12 @@ async function addToPlaylist(fileId) {
   } catch (e) { toast('Unable to add to playlist: ' + e.message); }
 }
 
+// Views await API data. Only the latest render may fill #view, so a slow
+// earlier one (e.g. Browse waiting on the catalogue just after a restart)
+// cannot replace the view the listener has since opened, such as Offline.
+let renderSeq = 0;
 async function render() {
+  const seq = ++renderSeq;
   const active = document.activeElement;
   const searchActive = active && active.classList.contains('library-search') && view === 'library';
   const selectionStart = searchActive ? active.selectionStart : null;
@@ -849,8 +854,11 @@ async function render() {
     if (b.dataset.view === view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
   });
   const host = $('view');
-  try { host.replaceChildren(...(await views[view](viewArg)).filter(Boolean)); }
-  catch (e) { host.replaceChildren(el('h1', { text: 'Something went wrong' }), el('p', { class: 'empty', text: e.message })); }
+  let children;
+  try { children = (await views[view](viewArg)).filter(Boolean); }
+  catch (e) { children = [el('h1', { text: 'Something went wrong' }), el('p', { class: 'empty', text: e.message })]; }
+  if (seq !== renderSeq) return;  // superseded by a newer navigation or refresh
+  host.replaceChildren(...children);
   // Slow library metadata refreshes must not interrupt a listener typing
   // into the scoped search field or relocate their cursor.
   if (searchActive && view === 'library') {

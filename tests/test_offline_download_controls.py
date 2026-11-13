@@ -371,6 +371,19 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         self.assertIn("item.download.state === 'pausing' ? 'Pausing…' : 'Downloading…'", JS)
         self.assertIn("Boolean(busy) || Boolean(inFlight)", JS)
 
+    def test_slow_earlier_view_render_cannot_replace_the_offline_view(self):
+        # Browser acceptance after an app restart: the startup Browse view was
+        # still awaiting the catalogue when the listener opened Library ->
+        # Offline to resume a download; Browse then replaced the Offline view
+        # (nav still showing Library) and detached its download buttons.
+        render = JS[JS.index("async function render() {"):JS.index("function show(name")]
+        self.assertIn("let renderSeq = 0;", JS)
+        self.assertIn("const seq = ++renderSeq;", render)
+        guard = render.index("if (seq !== renderSeq) return;")
+        self.assertLess(render.index("await views[view](viewArg)"), guard)
+        self.assertLess(guard, render.index("host.replaceChildren(...children);"))
+        self.assertEqual(render.count("host.replaceChildren("), 1, "every #view update must pass the guard")
+
     def test_paused_download_stays_protected_from_removal_until_worker_exits(self):
         d = self.make_download()
         app = self.fake_app()
