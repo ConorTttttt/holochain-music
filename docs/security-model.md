@@ -134,6 +134,22 @@ Per-session (512) and per-host (64) MoQ request limits; host send rate cap;
 download retries exponential up to 16 s and ≤ 6 consecutive failures, then the
 explicit `unavailable` state.
 
+## 6a. Signing-key binding assurance (S2 key-binding v2)
+
+The deployed storage DNA (`dna/`, `holochain-storage/key-binding/v1`) checks
+only that a key binding is *authored* by the agent it names; any agent can bind
+another agent's *public* key. Ciphertext integrity and grants are unaffected,
+but attribution of content and hosts is weaker than signature-level identity.
+
+`dna-v2/` is a separate, opt-in storage DNA (`music_storage_v2`) whose
+integrity zome accepts only `holochain-storage/key-binding/v2` bindings
+carrying an Ed25519 proof of possession by the bound key, over a
+domain-separated statement of DNA hash, agent, purpose, key and generation.
+It refuses v1 bindings. The v1 DNA and its hash are unchanged; the app still
+uses v1 by default (`ArtistService(key_binding="v2")` is an explicit opt-in).
+Rotation, revocation and host-attributed receipts are outstanding. See
+`docs/s2-key-binding-v2.md`.
+
 ## 7. Needs independent review before production
 
 The private-inbox design (§3), the unrestricted remote-call capability, key
