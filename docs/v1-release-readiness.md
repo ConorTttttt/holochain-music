@@ -288,3 +288,53 @@ and Windows cross-build checks pass. Windows CI and rc2 physical-speaker
 validation have not run; repeated seeks, track changes and recovery through
 speakers remain the acceptance gate. The Ubuntu release artefact, identities
 and libraries are preserved. No push, merge or publication was performed.
+
+## 11. Offline download controls — real-stack acceptance (PR #43, 2026-11-13)
+
+Pause, resume and retry of permanent-licence downloads were accepted on one
+Linux machine with two real app processes (artist Alice hosting, listener
+Bob), two real Holochain 0.7.0 conductors (official release binaries), a
+disposable kitsune2 bootstrap/relay, Alice's authenticated MoQ/QUIC host
+throttled to 64 KiB/s, synthetic position-unique 30 s stereo WAVs and real
+Chromium driving Bob's UI. Disposable homes, ports and browser profiles
+only. This is not a two-computer test. Audio used a paced recording sink
+(SHA-256 of the exact PCM handed to the device), not physical speakers. The
+container kernel has IPv6 disabled; a test-only `LD_PRELOAD` shim mapped
+the IPv6 socket error to the one Holochain treats as "IPv6 disabled".
+
+| Test | Result (fixed branch) |
+|---|---|
+| A Pause during a real transfer | `downloading → pausing → paused`; the MoQ receiver process exits; verified chunks stay in CAS; no progress or receiver for 15 s idle; UI shows Pausing… then Paused/Resume |
+| B Resume | Progress never drops below kept chunks; kept chunk files untouched (inode + mtime); 21/21 objects received once, 0 duplicates; signed-manifest verification; exported WAV byte-identical |
+| C Stop/restart and SIGKILL crash | Kept chunks survive; restart offers Download for Offline (pause not claimed across restarts) which fetches only missing chunks (18 of 21); crash leaves no partial objects |
+| D Host outage + Retry | `unavailable` after 6 bounded attempts (~96 s); Retry while down re-resolves and fails visibly; after restore, Retry re-fetches manifest + receipt, reconnects and completes from kept chunks |
+| E Offline playback | Inside a network namespace with no route: plays and seeks (UI, 3 positions) with every output session byte-exact; export works; no helper process spawned |
+| F Permissions | Stream-only, no-grant, unknown/malformed IDs, missing token refused on all control routes; wrong-recipient and forged grants and a missing listener key give no readiness, export or audio. Licences are non-revocable by design |
+| G Playback interaction | Pausing the playing track refused, audio uninterrupted; pausing another track's download does not touch playback; Play resumes a paused transfer; UI seek mid-download is byte-exact; queue intact |
+| H Storage safety | Accounting equals CAS files; active downloads cannot be removed; removal deletes exactly the track's exclusive objects; a damaged object is an integrity failure (no Retry; Remove local copy recovers); playback of it emits no unverified audio |
+
+Evidence at the fixed branch head: browser/real-service acceptance 128/128
+checks and offline (no-route namespace) 19/19; `test_v1_e2e_download_controls`
+PASS (316 s), `test_v1_e2e_flow` PASS (144 s), `test_v1_e2e_grant_security`
+6/6 (95 s; an earlier concurrent run hit one remote-call timeout before any
+assertion); full Python suite 477 tests OK, 14 skipped (opt-in E2E, Windows,
+installer). The same acceptance on the unmodified PR head reproduced D30 and
+D31 in the real browser.
+
+Defects found and fixed on the PR branch:
+
+| ID | Severity | Fix |
+|---|---|---|
+| D29 | High | A pause racing the next transfer attempt was lost; the receiver then downloaded the whole track and ended "paused" at 100%. |
+| D30 | High | A same-size damaged local object made Download for Offline a silent no-op ("complete" without verification, or a stale completed worker); when detected it was shown as "Source unavailable" with a Retry that cannot help. |
+| D31 | Medium | Command buttons kept stale labels while requests were in flight (no Pausing/Resuming/Retrying/Starting feedback; Download for Offline accepted repeat clicks); identical buttons lacked per-track accessible names. |
+| D32 | Medium | A slow earlier view render (Browse after a restart) replaced the Offline view the listener had opened. |
+| D33 | Low | Resume on a transfer Play had already resumed reported "download has not finished pausing". |
+
+Remaining limitations: only one authenticated host existed, so multi-host
+failover was not exercised; after a crash (SIGKILL) the conductor and MoQ
+receiver are orphaned on POSIX (pre-existing, documented in `portable.py`);
+right after a restart the first host resolution can wait for the conductor
+to reconverge (shown as Starting…, then an error toast if it times out);
+pasting a new private link into an already-open tab does not reload it.
+Opt-in regression: `tests/test_v1_e2e_download_controls.py`.
