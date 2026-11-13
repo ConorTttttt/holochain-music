@@ -140,6 +140,97 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             wait_until(lambda: d.progress()["state"] == "complete")
         self.assertEqual(d.progress()["available_chunks"], len(self.chunks))
 
+    def copy_all_chunks(self, *, damage_index=None):
+        for chunk in self.chunks:
+            target = object_path(self.destination, chunk["sha256"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(object_path(self.source, chunk["sha256"]), target)
+        if damage_index is not None:
+            chunk = self.chunks[damage_index]
+            object_path(self.destination, chunk["sha256"]).write_bytes(bytes(chunk["cipher_bytes"]))
+
+    def test_damaged_present_object_is_an_integrity_failure_not_completion_or_outage(self):
+        # Real-service acceptance (Test H): a same-size damaged CAS object is
+        # discovered as present (size-only). The download claimed "complete"
+        # without verifying, or, after verification, "Source unavailable"
+        # with a Retry that cannot replace a stored object.
+        self.copy_all_chunks(damage_index=3)
+        fetch, _, calls = self.receiver()
+        d = self.make_download(present={c["index"] for c in self.chunks})
+        self.assertEqual(d.progress()["state"], "idle", "completion must wait for verification")
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetch):
+            d.start()
+            wait_until(lambda: not d.is_running())
+        progress = d.progress()
+        self.assertEqual((progress["state"], progress["failure"]), ("unavailable", "integrity"))
+        self.assertIn("verification failed", progress["error"])
+        self.assertEqual(calls, [], "no transfer can repair a stored object")
+
+    def test_all_present_valid_objects_complete_after_verification_without_transfer(self):
+        self.copy_all_chunks()
+        completed = []
+        d = self.make_download(present={c["index"] for c in self.chunks},
+                               on_complete=lambda: completed.append("done"))
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=AssertionError("no transfer needed")):
+            d.start()
+            wait_until(lambda: d.progress()["state"] == "complete")
+        self.assertEqual(completed, ["done"])
+        self.assertIsNone(d.progress()["failure"])
+
+    def test_unreachable_hosts_are_reported_as_unreachable_and_cleared_on_restart(self):
+        d = self.make_download()
+        with patch("holochain_music.streaming.MAX_BACKOFF", 0.001), \
+                patch("holochain_music.streaming.fetch_ciphertext", side_effect=MoqFetchError("host down")):
+            d.start()
+            wait_until(lambda: d.progress()["state"] == "unavailable", timeout=10)
+            self.assertEqual(d.progress()["failure"], "unreachable")
+        fetch, _, _ = self.receiver()
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetch):
+            d.start()
+            self.assertIsNone(d.progress()["failure"])
+            wait_until(lambda: d.progress()["state"] == "complete")
+
+    def test_retry_refuses_integrity_failure_with_recovery_guidance(self):
+        app = self.fake_app()
+        d = MagicMock()
+        d.state, d.failure = "unavailable", "integrity"
+        app.downloads[FILE_ID] = d
+        app._ensure_download = MagicMock()
+        with self.assertRaisesRegex(AppError, "Remove the local copy, then download again"):
+            app.retry_download(FILE_ID)
+        app._ensure_download.assert_not_called()
+
+    def test_stale_complete_worker_is_replaced_after_local_damage(self):
+        # Download for Offline after local damage reused the cached "complete"
+        # worker, so it silently did nothing while readiness said incomplete.
+        app = self.fake_app()
+        app.settings = {"allow_lan": False}
+        app.library.verify_complete.return_value = False
+        app.library.meta.return_value = {"file_id": FILE_ID, "track_key": "uhCAkArtist:" + "b" * 32,
+                                         "manifest_sha256": self.trusted.digest}
+        app.library.present_chunks.return_value = {0}
+        app.catalogue.resolve.return_value = self.trusted
+        stale = MagicMock()
+        stale.state = "complete"
+        stale.is_running.return_value = False
+        app.downloads[FILE_ID] = stale
+        with patch("holochain_music.app.binaries.find", return_value="fake-receiver"):
+            fresh = app._ensure_download(FILE_ID, start=False)
+        self.assertIsInstance(fresh, Download)
+        self.assertIs(app.downloads[FILE_ID], fresh)
+        self.assertEqual(fresh.progress()["available_chunks"], 1)
+        stale.start.assert_not_called()
+
+    def test_ui_presents_integrity_failure_distinctly_without_retry(self):
+        self.assertIn("transfer.failure === 'integrity'", JS)
+        self.assertIn("text: 'Integrity check failed'", JS)
+        self.assertIn("'Integrity verification failed: stored encrypted audio does not match", JS)
+        self.assertIn("} else if (integrityFailed(transfer)) {", JS)
+        self.assertIn("!item.offline_ready && !integrityFailed(item.download)", JS)
+        # The integrity branches are checked before the generic outage text/badge.
+        self.assertLess(JS.index("if (integrityFailed(transfer)) return"), JS.index("'Source unavailable — Retry when online.'"))
+        self.assertLess(JS.index("text: 'Integrity check failed'"), JS.index("text: 'Unavailable'"))
+
     def test_retry_is_explicit_and_cached_chunks_survive_restart(self):
         fetch, _, _ = self.receiver()
         d = self.make_download()

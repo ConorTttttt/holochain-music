@@ -65,6 +65,9 @@ async function act(path, body = {}, okMessage) {
 }
 
 // ---- status helpers --------------------------------------------------
+// Final verification failed on stored ciphertext: not a host outage, and a
+// retry cannot replace a local object. Recovery is Remove local copy.
+const integrityFailed = transfer => Boolean(transfer && transfer.state === 'unavailable' && transfer.failure === 'integrity');
 function accessBadge(item) {
   if (!item) return el('span', { class: 'badge', text: 'Not in library' });
   if (item.download && ['downloading', 'retrying'].includes(item.download.state)) {
@@ -73,6 +76,7 @@ function accessBadge(item) {
   }
   if (item.download && item.download.state === 'pausing') return el('span', { class: 'badge warn', text: 'Pausing download…' });
   if (item.download && item.download.state === 'paused') return el('span', { class: 'badge warn', text: 'Download paused' });
+  if (integrityFailed(item.download)) return el('span', { class: 'badge bad', text: 'Integrity check failed' });
   if (item.download && item.download.state === 'unavailable') return el('span', { class: 'badge bad', text: 'Unavailable' });
   if (item.offline_ready) return el('span', { class: 'badge ok', text: 'Downloaded · verify offline' });
   if (item.playable && item.grant_kind === 'perpetual-personal') return el('span', { class: 'badge ok', text: 'Licensed · streaming' });
@@ -149,7 +153,7 @@ function trackActions(fileId, catalogueRow) {
       onclick: () => act('/api/play', { file_id: fileId }) }));
     box.append(el('button', { class: 'btn', type: 'button', text: 'Queue', 'aria-label': `Add ${item.title} to queue`,
       onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }));
-    if (item.grant_kind === 'perpetual-personal' && !item.offline_ready) {
+    if (item.grant_kind === 'perpetual-personal' && !item.offline_ready && !integrityFailed(item.download)) {
       const busy = item.download && ['downloading', 'retrying', 'pausing'].includes(item.download.state);
       const inFlight = downloadActionInFlight.get(fileId);
       box.append(el('button', { class: 'btn', type: 'button',
@@ -398,6 +402,7 @@ function downloadStateText(item) {
       ? ' · ' + Math.round(100 * found / total) + '% of authenticated chunks received' : '';
     const inFlight = downloadActionInFlight.get(item.file_id);
     if (inFlight) return offlineDownloadInFlightText[inFlight] + progress;
+    if (integrityFailed(transfer)) return 'Integrity verification failed: stored encrypted audio does not match the artist-signed manifest and is not used. Remove local copy, then download again.' + progress;
     if (transfer.state === 'unavailable') return 'Source unavailable — Retry when online.' + progress;
     if (transfer.state === 'retrying') return 'Retrying an authenticated source…' + progress;
     if (transfer.state === 'downloading') return 'Downloading encrypted audio…' + progress;
@@ -465,6 +470,9 @@ function offlineTrackCard(item) {
       actions.append(el('button', { class: 'btn', type: 'button',
         text: 'Resume download', 'aria-label': named('Resume download'), disabled: !state.online || controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'resume') }));
+    } else if (integrityFailed(transfer)) {
+      // No Retry: another transfer cannot replace a stored object. Remove
+      // local copy (below) deletes it so Download for Offline can start clean.
     } else if (stage === 'unavailable') {
       actions.append(el('button', { class: 'btn', type: 'button',
         text: 'Retry download', 'aria-label': named('Retry download'), disabled: !state.online || controlsBusy,

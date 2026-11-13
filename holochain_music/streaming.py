@@ -52,8 +52,15 @@ class Download:
         self._restart = threading.Event()
         self._priority: int | None = None
         self._position: int | None = None  # next index the active stream will deliver
-        self.state = "complete" if len(self.available) == self.total else "idle"
+        # `present` is a cheap size-only discovery of local objects, so even when
+        # every index is present only the worker's full signed-manifest check
+        # may declare the download complete (a same-size damaged object fails).
+        self.state = "idle"
         self.error: str | None = None
+        # Why an `unavailable` download stopped: "unreachable" (no authenticated
+        # host answered; Retry can help) or "integrity" (stored ciphertext does
+        # not match the signed manifest; a retry cannot replace a local object).
+        self.failure: str | None = None
         self.attempts = 0
         self.failures = 0
         self.host_index = 0
@@ -65,7 +72,7 @@ class Download:
     def progress(self) -> dict:
         with self._cv:
             return {"state": self.state, "available_chunks": len(self.available),
-                    "total_chunks": self.total, "error": self.error,
+                    "total_chunks": self.total, "error": self.error, "failure": self.failure,
                     "host": self.trusted.hosts[self.host_index % len(self.trusted.hosts)].url
                     if self.trusted.hosts else None, **self.metrics}
 
@@ -80,7 +87,7 @@ class Download:
         with self._cv:
             if self.state == "complete" or (self._thread and self._thread.is_alive()):
                 return
-            self.state, self.error, self.failures = "downloading", None, 0
+            self.state, self.error, self.failure, self.failures = "downloading", None, None, 0
             self._stop.clear()
             self._thread = threading.Thread(target=self._run, name="hm-download", daemon=True)
             self._thread.start()
@@ -228,6 +235,7 @@ class Download:
                 except StorageError as exc:
                     with self._cv:
                         self.state, self.error = "unavailable", f"verification failed: {exc}"[:200]
+                        self.failure = "integrity"
                         self._cv.notify_all()
                     return
                 with self._cv:
@@ -266,6 +274,7 @@ class Download:
                     if self.failures >= MAX_ATTEMPTS:
                         self.state = "unavailable"
                         self.error = f"hosts unreachable after {self.failures} attempts: {exc}"[:200]
+                        self.failure = "unreachable"
                         self._cv.notify_all()
                         return
                     self.state = "retrying"

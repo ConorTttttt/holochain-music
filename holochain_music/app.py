@@ -370,6 +370,12 @@ class MusicApp:
             if self.library.verify_complete(file_id):
                 return None
             d = self.downloads.get(file_id)
+            if d is not None and d.state == "complete" and not d.is_running():
+                # The package no longer verifies (checked above): local objects
+                # were damaged or deleted after this worker completed. Its cached
+                # chunk set is stale, so rediscover what is present on disk.
+                self.downloads.pop(file_id, None)
+                d = None
             if d is None:
                 self.require_online()
                 meta = self.library.meta(file_id)
@@ -439,6 +445,11 @@ class MusicApp:
             d = self.downloads.get(file_id)
             if d is None or d.state != "unavailable":
                 raise AppError("No failed download to retry. Choose Download for Offline instead.")
+            if d.failure == "integrity":
+                # Hosts are not the problem and the store never overwrites an
+                # existing object, so another transfer cannot repair this.
+                raise AppError("Stored encrypted audio failed integrity verification. "
+                               "Remove the local copy, then download again.")
             refreshed = self._ensure_download(file_id)
             return refreshed.progress() if refreshed else {"state": "complete"}
 
