@@ -103,6 +103,27 @@ class KeyStore:
         raw = self._get_or_create("host.ed25519", 32, lambda: Ed25519PrivateKey.generate().private_bytes_raw())
         return Ed25519PrivateKey.from_private_bytes(raw)
 
+    def lifecycle_ed25519(self, role: str, generation: int, *, create: bool = False) -> Ed25519PrivateKey:
+        """S2 v2.1 opt-in: the signing key of one lifecycle generation.
+
+        Generation 1 IS the existing ``artist.ed25519``/``host.ed25519`` file
+        (no key migration). Later generations live in separate files that are
+        created only explicitly, BEFORE their rotation is published, so a
+        published key is never lost by a crash. Never sent to a zome."""
+        if role not in ("artist", "host") or type(generation) is not int or not 1 <= generation <= 1_000_000:
+            raise KeyStoreError("invalid lifecycle key reference")
+        if generation == 1:
+            return self.artist_ed25519() if role == "artist" else self.host_ed25519()
+        name = f"{role}.g{generation}.ed25519"
+        if create:
+            raw = self._get_or_create(name, 32, lambda: Ed25519PrivateKey.generate().private_bytes_raw())
+        else:
+            try:
+                raw = _read_secret(self.dir / name, 32)
+            except FileNotFoundError as exc:
+                raise KeyStoreError(f"no {role} key for lifecycle generation {generation} on this device") from exc
+        return Ed25519PrivateKey.from_private_bytes(raw)
+
     def conductor_passphrase(self) -> bytes:
         # Unlocks the conductor's lair keystore without an interactive
         # prompt. Same protection boundary as the other key files.
