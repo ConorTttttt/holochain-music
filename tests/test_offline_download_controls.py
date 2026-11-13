@@ -244,6 +244,24 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         self.assertIn("pendingSeek", JS)
         self.assertIn("p.seq < lastSeq", JS)
 
+    def test_ui_shows_in_flight_transfer_commands_and_names_each_track(self):
+        # Browser acceptance: while a pause/resume/retry request was in flight
+        # the card kept the stale polled text ("Downloading…", "Source
+        # unavailable") with a disabled button; a retry re-resolving a down
+        # host gave no "Retrying" feedback for many seconds.
+        self.assertIn("downloadActionInFlight.set(fileId, action)", JS)
+        self.assertIn("downloadActionInFlight.delete(fileId)", JS)
+        for label in ("pause: 'Pausing…'", "resume: 'Resuming…'", "retry: 'Retrying…'"):
+            self.assertIn(label, JS)
+        self.assertIn("if (inFlight) return offlineDownloadInFlightText[inFlight] + progress;", JS)
+        self.assertIn("'aria-busy': 'true', disabled: true", JS)
+        # Several cards' identical command buttons need per-track names.
+        for command in ("Pause download", "Resume download", "Retry download", "Download for Offline"):
+            self.assertIn(f"'aria-label': named('{command}')", JS)
+        # The library row no longer says "Downloading…" while pausing.
+        self.assertIn("item.download.state === 'pausing' ? 'Pausing…' : 'Downloading…'", JS)
+        self.assertIn("Boolean(busy) || Boolean(inFlight)", JS)
+
     def test_paused_download_stays_protected_from_removal_until_worker_exits(self):
         d = self.make_download()
         app = self.fake_app()

@@ -151,10 +151,13 @@ function trackActions(fileId, catalogueRow) {
       onclick: () => act('/api/queue', { items: [...state.queue, fileId] }, 'Added to queue') }));
     if (item.grant_kind === 'perpetual-personal' && !item.offline_ready) {
       const busy = item.download && ['downloading', 'retrying', 'pausing'].includes(item.download.state);
+      const inFlight = downloadActionInFlight.get(fileId);
       box.append(el('button', { class: 'btn', type: 'button',
-        text: busy ? 'Downloading…' : item.download && item.download.state === 'unavailable' ? 'Retry download' :
+        text: inFlight ? offlineDownloadInFlightLabels[inFlight] :
+          busy ? (item.download.state === 'pausing' ? 'Pausing…' : 'Downloading…') :
+          item.download && item.download.state === 'unavailable' ? 'Retry download' :
           item.download && item.download.state === 'paused' ? 'Resume download' : 'Download for Offline',
-        disabled: !state.online || Boolean(busy),
+        disabled: !state.online || Boolean(busy) || Boolean(inFlight),
         onclick: () => item.download && item.download.state === 'paused'
           ? controlOfflineDownload(fileId, 'resume')
           : item.download && item.download.state === 'unavailable'
@@ -310,6 +313,18 @@ async function startOfflineDownload(fileId) {
 }
 // Explicit transfer commands, distinct from pause/resume of audible playback.
 const downloadActionsBusy = new Set();
+// The command in flight per track. A pause waits for the receiver to stop and
+// a retry re-resolves authenticated hosts (seconds when a host is down), so
+// say what is happening now rather than the last polled state.
+const downloadActionInFlight = new Map();
+const offlineDownloadInFlightLabels = Object.freeze({
+  pause: 'Pausing…', resume: 'Resuming…', retry: 'Retrying…'
+});
+const offlineDownloadInFlightText = Object.freeze({
+  pause: 'Pausing: stopping the authenticated transfer safely…',
+  resume: 'Resuming from retained authenticated chunks…',
+  retry: 'Retrying: re-resolving authenticated hosts…'
+});
 const offlineDownloadRoutes = Object.freeze({
   pause: '/api/offline/download/pause',
   resume: '/api/offline/download/resume',
@@ -318,7 +333,8 @@ const offlineDownloadRoutes = Object.freeze({
 async function controlOfflineDownload(fileId, action) {
   if (downloadActionsBusy.has(fileId) || !Object.hasOwn(offlineDownloadRoutes, action)) return;
   downloadActionsBusy.add(fileId);
-  if (view === 'library' && libraryFilters.scope === 'offline') render();
+  downloadActionInFlight.set(fileId, action);
+  if (view === 'library') render();
   try {
     const result = await api(offlineDownloadRoutes[action], { file_id: fileId });
     if (action === 'pause')
@@ -330,6 +346,7 @@ async function controlOfflineDownload(fileId, action) {
   } catch (e) { toast(action + ' download failed: ' + e.message); }
   finally {
     downloadActionsBusy.delete(fileId);
+    downloadActionInFlight.delete(fileId);
     if (view === 'library') render();
   }
 }
@@ -379,6 +396,8 @@ function downloadStateText(item) {
     const total = Number(transfer.total_chunks);
     const progress = total > 0 && Number.isFinite(found) && Number.isFinite(total)
       ? ' · ' + Math.round(100 * found / total) + '% of authenticated chunks received' : '';
+    const inFlight = downloadActionInFlight.get(item.file_id);
+    if (inFlight) return offlineDownloadInFlightText[inFlight] + progress;
     if (transfer.state === 'unavailable') return 'Source unavailable — Retry when online.' + progress;
     if (transfer.state === 'retrying') return 'Retrying an authenticated source…' + progress;
     if (transfer.state === 'downloading') return 'Downloading encrypted audio…' + progress;
@@ -428,23 +447,31 @@ function offlineTrackCard(item) {
     const transfer = item.download;
     const stage = transfer?.state;
     const controlsBusy = downloadActionsBusy.has(item.file_id);
-    if (stage === 'downloading' || stage === 'retrying') {
+    const inFlight = downloadActionInFlight.get(item.file_id);
+    // Visible text stays the command; the accessible name adds the track so
+    // several cards' identical buttons remain distinguishable.
+    const named = (text) => text + ' of ' + (item.title || 'track');
+    if (inFlight) {
+      actions.append(el('button', { class: 'btn', type: 'button', text: offlineDownloadInFlightLabels[inFlight],
+        'aria-label': named(offlineDownloadInFlightLabels[inFlight]), 'aria-busy': 'true', disabled: true }));
+    } else if (stage === 'downloading' || stage === 'retrying') {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Pause download', disabled: controlsBusy,
+        text: 'Pause download', 'aria-label': named('Pause download'), disabled: controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'pause') }));
     } else if (stage === 'pausing') {
-      actions.append(el('button', { class: 'btn', type: 'button', text: 'Pausing…', disabled: true }));
+      actions.append(el('button', { class: 'btn', type: 'button', text: 'Pausing…',
+        'aria-label': named('Pausing…'), 'aria-busy': 'true', disabled: true }));
     } else if (stage === 'paused') {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Resume download', disabled: !state.online || controlsBusy,
+        text: 'Resume download', 'aria-label': named('Resume download'), disabled: !state.online || controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'resume') }));
     } else if (stage === 'unavailable') {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Retry download', disabled: !state.online || controlsBusy,
+        text: 'Retry download', 'aria-label': named('Retry download'), disabled: !state.online || controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'retry') }));
     } else {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Download for Offline', disabled: !state.online || controlsBusy,
+        text: 'Download for Offline', 'aria-label': named('Download for Offline'), disabled: !state.online || controlsBusy,
         onclick: () => startOfflineDownload(item.file_id) }));
     }
   }
