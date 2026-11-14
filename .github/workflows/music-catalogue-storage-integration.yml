@@ -39,8 +39,26 @@ jobs:
         run: python -m unittest discover -s tests -v
 
   real-conductors:
+    # One isolated runner per group: each job owns its own conductors, ports,
+    # temporary directories and CPU, and runs its suites one after another.
+    # Every Sweettest binary of the former single job is listed exactly once;
+    # assertions and the 90-minute budget are unchanged. fail-fast is off so
+    # one group's failure never hides another group's result.
+    name: real-conductors (${{ matrix.group.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        group:
+          - name: identity-s7
+            tests: catalogue_storage_identity_sweettest s7_live_verified_retrieval_sweettest
+          - name: s9-s11
+            tests: s9_holochain_moq_sweettest s10_granted_moq_playback_sweettest s11_buffered_granted_moq_sweettest
+          - name: s12-s14
+            tests: s12_overlapping_moq_playback_sweettest s13_adaptive_moq_playback_sweettest s14_verified_seek_repair_sweettest
+          - name: s15-s16
+            tests: s15_selective_moq_repair_sweettest s16_inflight_moq_seek_sweettest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -57,14 +75,24 @@ jobs:
         run: cargo build --manifest-path crates/moq-music/Cargo.toml
       - uses: cachix/install-nix-action@v31
         with:
+          # Holonix declares its binary cache in its flake nixConfig, which CI
+          # does not apply, so holochain/hc/lair were compiled from source
+          # (~45 of the 90 minutes). Same substituter and signing key as
+          # holonix flake.nix nixConfig; on a cache miss Nix still builds.
           extra_nix_config: |
             experimental-features = nix-command flakes
-      - name: Build Holochain DNAs and test S6 WebSocket and full S7 retrieval
+            extra-substituters = https://holochain-ci.cachix.org
+            extra-trusted-public-keys = holochain-ci.cachix.org-1:5IUSkZc0aoRS53rfkvH9Kid40NpyjwCMCzwRTXy+QN8=
+      - name: Build Holochain DNAs and run ${{ matrix.group.name }} on real conductors
+        env:
+          SUITES: ${{ matrix.group.tests }}
+          RUST_BACKTRACE: '1'
         run: |
           export HOLOCHAIN_MUSIC_PYTHON="$(command -v python)"
           export HOLOCHAIN_STORAGE_NODE_BIN="$PWD/crates/storage-node/target/debug/holochain-storage-node"
           export HOLOCHAIN_MOQ_BIN="$PWD/crates/moq-music/target/debug/holochain-music-moq"
           export CARGO_BUILD_JOBS=2 CARGO_INCREMENTAL=0
+          mkdir -p "$RUNNER_TEMP/sweettest-logs"
           nix develop ./music-e2e --command bash -euc '
             cd music-dna
             cargo build --release --target wasm32-unknown-unknown
@@ -77,14 +105,22 @@ jobs:
             cp dna/workdir/music_storage.dna integration/workdir/
             hc app pack integration/workdir
             cd music-e2e
-            cargo test --test catalogue_storage_identity_sweettest -- --nocapture
-            cargo test --test s7_live_verified_retrieval_sweettest -- --nocapture
-            cargo test --test s9_holochain_moq_sweettest -- --nocapture
-            cargo test --test s10_granted_moq_playback_sweettest -- --nocapture
-            cargo test --test s11_buffered_granted_moq_sweettest -- --nocapture
-            cargo test --test s12_overlapping_moq_playback_sweettest -- --nocapture
-            cargo test --test s13_adaptive_moq_playback_sweettest -- --nocapture
-            cargo test --test s14_verified_seek_repair_sweettest -- --nocapture
-            cargo test --test s15_selective_moq_repair_sweettest -- --nocapture
-            cargo test --test s16_inflight_moq_seek_sweettest -- --nocapture
+            for suite in $SUITES; do
+              echo "::group::$suite"
+              # Full output (including any teardown abort) is kept for diagnosis.
+              cargo test --test "$suite" -- --nocapture 2>&1 | tee "$RUNNER_TEMP/sweettest-logs/$suite.log"
+              status=${PIPESTATUS[0]}
+              echo "::endgroup::"
+              if [ "$status" -ne 0 ]; then
+                echo "::error::$suite failed with status $status"
+                exit "$status"
+              fi
+            done
           '
+      - name: Keep Sweettest logs for diagnosis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweettest-logs-${{ matrix.group.name }}
+          path: ${{ runner.temp }}/sweettest-logs/*.log
+          if-no-files-found: ignore
