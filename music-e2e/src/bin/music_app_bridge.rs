@@ -303,6 +303,13 @@ impl Bridge {
             }
             "publish_key_transition_v21" => self.create(false, "publish_key_transition_v21", arg_entry(args)?).await,
             "publish_key_revocation_v21" => self.create(false, "publish_key_revocation_v21", arg_entry(args)?).await,
+            // access-grant/v2 issuance anchor (public, minimal; see dna-v21 grant_anchor.rs).
+            "publish_grant_anchor_v2" => self.create(false, "publish_grant_anchor_v2", arg_entry(args)?).await,
+            "get_grant_anchor_v2" => {
+                let hash = ActionHash::try_from(arg_str(args, "action_hash")?.as_str())?;
+                let row: Option<SequencedRecord> = self.call(false, "get_grant_anchor_v2", &hash).await?;
+                Ok(row.map(SequencedRecord::out).unwrap_or(Value::Null))
+            }
             "get_key_lifecycle_v21" => {
                 let rows: Vec<SequencedRecord> =
                     self.call(false, "get_key_lifecycle_v21", &arg_agent(args, "agent")?).await?;

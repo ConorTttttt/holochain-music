@@ -8,7 +8,11 @@
 //!   source chain, in chain order, with Ed25519 proofs of possession;
 //! * `key-binding/v1` and `key-binding/v2` creates are rejected;
 //! * the v2 entry/link types keep their positions (rejected/unused) and the
-//!   lifecycle types are appended after them.
+//!   lifecycle types are appended after them;
+//! * `holochain-storage/grant-anchor/v2` (see `grant_anchor.rs`) is appended
+//!   last: a minimal public record anchoring one access grant on the
+//!   owner's chain, accepted only for the author's current, unrevoked
+//!   `owner-manifest` key and a fresh grant id.
 //!
 //! The `v1_rules_unchanged` test guards against drift in the shared rules.
 //! S2 authenticated metadata only. No file payload, ciphertext chunk, or key secret.
@@ -157,6 +161,7 @@ pub enum EntryTypes {
     SigningKeyBindingV2(SigningKeyBindingV2),
     KeyTransitionV21(KeyTransitionV21),
     KeyRevocationV21(KeyRevocationV21),
+    GrantAnchorV2(GrantAnchorV2),
 }
 
 #[hdk_link_types]
@@ -168,6 +173,7 @@ pub enum LinkTypes {
     AgentToMoqEndpoint,
     AgentToKeyV2,
     AgentToKeyLifecycleV21,
+    AgentToGrantAnchorV2,
 }
 
 #[hdk_extern]
@@ -197,7 +203,7 @@ fn validate_app_entry(author: &AgentPubKey, entry: &EntryTypes) -> ValidateCallb
         // v2.1 network: keys are bound only through the key lifecycle.
         EntryTypes::SigningKeyBinding(_) => Err(V1_REJECTED_V21.into()),
         EntryTypes::SigningKeyBindingV2(_) => Err(V2_REJECTED_V21.into()),
-        EntryTypes::KeyTransitionV21(_) | EntryTypes::KeyRevocationV21(_) => {
+        EntryTypes::KeyTransitionV21(_) | EntryTypes::KeyRevocationV21(_) | EntryTypes::GrantAnchorV2(_) => {
             Err("lifecycle entries are validated with their action".into())
         }
         EntryTypes::FileCommitment(f) => {
@@ -281,12 +287,14 @@ pub fn validate(op: Op) -> ExternResult<ValidateCallbackResult> {
         FlatOp::CreateEntry(OpEntry::CreateEntry { app_entry, action }) => match &app_entry {
             EntryTypes::KeyTransitionV21(t) => lifecycle_verdict(validate_transition_v21(&action, t)),
             EntryTypes::KeyRevocationV21(r) => lifecycle_verdict(validate_revocation_v21(&action, r)),
+            EntryTypes::GrantAnchorV2(a) => lifecycle_verdict(validate_grant_anchor_v2(&action, a)),
             other => Ok(validate_app_entry(action.author(), other)),
         },
         FlatOp::CreateEntry(_) => Ok(ValidateCallbackResult::Valid),
         FlatOp::Link(OpLink::CreateLink { link_type, action }) => match link_type {
             LinkTypes::AgentToKey | LinkTypes::AgentToFile | LinkTypes::AgentToMoqEndpoint
-            | LinkTypes::AgentToKeyV2 | LinkTypes::AgentToKeyLifecycleV21 => validate_agent_link(&action),
+            | LinkTypes::AgentToKeyV2 | LinkTypes::AgentToKeyLifecycleV21
+            | LinkTypes::AgentToGrantAnchorV2 => validate_agent_link(&action),
             LinkTypes::FileToReplica => validate_owned_target(&action),
             LinkTypes::Anchor => Ok(ValidateCallbackResult::Valid),
         },
@@ -305,6 +313,8 @@ mod v2;
 pub use v2::*;
 mod v21;
 pub use v21::*;
+mod grant_anchor;
+pub use grant_anchor::*;
 
 #[cfg(test)]
 mod tests {
