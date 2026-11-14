@@ -62,6 +62,19 @@ jobs:
           path: integration/workdir
       - name: Rust tests (MoQ host, certificate pinning) on Windows
         run: cargo test --locked --manifest-path crates/moq-music/Cargo.toml
+      - name: Select a complete Perl for the vendored OpenSSL build
+        # music-e2e vendors OpenSSL (openssl-src), whose Configure needs core
+        # Perl modules such as Locale::Maketext::Simple. The MSYS Perl that Git
+        # for Windows puts first on PATH lacks them, so the build aborted
+        # (see PR #43/#44). openssl-src honours OPENSSL_SRC_PERL. Fail loudly
+        # rather than fall back to the incomplete Perl.
+        run: |
+          perl_exe='C:\Strawberry\perl\bin\perl.exe'
+          if [ ! -f "$(cygpath -u "$perl_exe")" ]; then
+            echo "::error::Strawberry Perl not found at $perl_exe"; exit 1
+          fi
+          "$(cygpath -u "$perl_exe")" -MLocale::Maketext::Simple -MIPC::Cmd -e 'print "perl $^V has the modules OpenSSL Configure needs\n"'
+          echo "OPENSSL_SRC_PERL=$perl_exe" >> "$GITHUB_ENV"
       - name: Build Windows binaries (MSVC)
         run: |
           cargo build --locked --release --manifest-path crates/moq-music/Cargo.toml
