@@ -30,3 +30,6 @@ integration/workdir/*.happ
 music-e2e/target-*/
 dna-v2/target/
 dna-v2/workdir/*.dna
+# v2.1 (S2 key lifecycle): generated wasm and packed bundle
+dna-v21/target/
+dna-v21/workdir/*.dna

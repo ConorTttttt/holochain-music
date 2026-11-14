@@ -1,0 +1,15 @@
+[package]
+name = "music_storage_v21"
+version = "0.3.0"
+edition.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+hdk = { workspace = true }
+serde = { workspace = true }
+holochain_serialized_bytes = { workspace = true }
+# The unchanged v1 coordinator source is compiled against the v2.1 integrity
+# crate under its usual name.
+music_storage_integrity = { package = "music_storage_integrity_v21", path = "../integrity" }

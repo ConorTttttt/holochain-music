@@ -147,8 +147,36 @@ carrying an Ed25519 proof of possession by the bound key, over a
 domain-separated statement of DNA hash, agent, purpose, key and generation.
 It refuses v1 bindings. The v1 DNA and its hash are unchanged; the app still
 uses v1 by default (`ArtistService(key_binding="v2")` is an explicit opt-in).
-Rotation, revocation and host-attributed receipts are outstanding. See
-`docs/s2-key-binding-v2.md`.
+See `docs/s2-key-binding-v2.md`.
+
+## 6b. Signing-key lifecycle (S2 key lifecycle v2.1)
+
+`dna-v21/` is a third, opt-in storage DNA (`music_storage_v21`). Each agent
+has one validated key lineage per purpose:
+
+* **Inception.** The first generation proves possession of its key.
+* **Rotation.** The new key proves possession and the old key signs
+  continuity.
+* **Recovery.** Used for a lost key: agent-authorised, no continuity, and
+  labelled as such.
+* **Revocation.** Agent-authorised, with scope `new-operations` or
+  `compromised`.
+
+Integrity validation reads the author's own chain, so skipped generations,
+forks, replays, key reuse, and cross-purpose or cross-DNA transitions are
+refused. The Holochain agent is the only lifecycle authority. A stolen
+*media* key cannot rotate or revoke for its owner, but a stolen *agent* key
+can; agent-key rotation is outside v2.1.
+
+Readers resolve the lineage by predecessor references, never timestamps.
+Content anchored on the owner's chain while its key was valid stays
+verifiable after rotation or revocation. Revocation cannot recall exported
+plaintext.
+
+`replica-receipt/v2` names the host agent and its exact key generation; S1
+receipts are unchanged. The app default is still v1:
+`ArtistService(key_binding="v2.1")` is an explicit opt-in. See
+`docs/s2-key-lifecycle-v21.md`.
 
 ## 7. Needs independent review before production
 

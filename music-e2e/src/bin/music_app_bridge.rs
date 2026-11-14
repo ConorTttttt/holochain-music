@@ -83,6 +83,22 @@ impl AuthoredRecord {
     }
 }
 
+/// S2 v2.1 lifecycle row: also carries the action's chain position.
+#[derive(Debug, Deserialize)]
+struct SequencedRecord {
+    author: String,
+    action_hash: ActionHash,
+    action_seq: u32,
+    body: Value,
+}
+
+impl SequencedRecord {
+    fn out(self) -> Value {
+        json!({"author": self.author, "action_hash": self.action_hash.to_string(),
+               "action_seq": self.action_seq, "body": self.body})
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct TrackLookup { artist: AgentPubKey, track_id: String }
 #[derive(Debug, Serialize)]
@@ -279,6 +295,19 @@ impl Bridge {
             }
             "register_signing_key_v2" => self.create(false, "register_signing_key_v2", arg_entry(args)?).await,
             "get_signing_keys_v2" => self.records(false, "get_signing_keys_v2", &arg_agent(args, "agent")?).await,
+            // S2 key lifecycle v2.1 (only present on the opt-in v2.1 storage DNA).
+            // Entries carry signatures made locally; no private key passes here.
+            "key_lifecycle_v21_context" => {
+                let context: Value = self.call(false, "key_lifecycle_v21_context", &arg_str(args, "purpose")?).await?;
+                Ok(context)
+            }
+            "publish_key_transition_v21" => self.create(false, "publish_key_transition_v21", arg_entry(args)?).await,
+            "publish_key_revocation_v21" => self.create(false, "publish_key_revocation_v21", arg_entry(args)?).await,
+            "get_key_lifecycle_v21" => {
+                let rows: Vec<SequencedRecord> =
+                    self.call(false, "get_key_lifecycle_v21", &arg_agent(args, "agent")?).await?;
+                Ok(Value::Array(rows.into_iter().map(SequencedRecord::out).collect()))
+            }
             "publish_file_commitment" => self.create(false, "publish_file_commitment", arg_entry(args)?).await,
             "publish_replica_claim" => self.create(false, "publish_replica_claim", arg_entry(args)?).await,
             "publish_moq_endpoint" => self.create(false, "publish_moq_endpoint", arg_entry(args)?).await,

@@ -1,0 +1,21 @@
+# S2 key-lifecycle v2.1 storage DNA: a THIRD, separate workspace so that the
+# deployed v1 DNA (`../dna`) and the v2 DNA (`../dna-v2`) builds, wasm and DNA
+# hashes stay byte-identical (declaring a feature or shifting a source line of
+# their crates would change them). Cargo.lock is a copy of ../dna-v2/Cargo.lock:
+# identical dependency versions; only this workspace's own package names differ.
+[workspace]
+resolver = "2"
+members = ["integrity", "coordinator"]
+
+[workspace.package]
+edition = "2021"
+
+[workspace.dependencies]
+hdi = "=0.8.0"
+hdk = "=0.7.0"
+serde = "1"
+holochain_serialized_bytes = "0.0.57"
+
+[profile.release]
+opt-level = "z"
+lto = true
