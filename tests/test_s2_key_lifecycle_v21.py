@@ -348,6 +348,87 @@ class ReceiptV2Tests(unittest.TestCase):
             self.verify(legacy)
 
 
+class GrantAnchorTests(unittest.TestCase):
+    """Reader-side grant-anchor rules (the DNA's own rules run in Media Core's
+    real-conductor suite)."""
+
+    def setUp(self):
+        self.a1, self.a2 = k(), k()
+        self.alice = Chain(ALICE)
+        self.g1 = self.alice.incept(self.a1)
+        self.g2 = self.alice.rotate(self.a2, self.a1, self.g1)
+        self.msg = b"holochain-music/access-grant/v2\x00{synthetic signed grant}"
+        self.gid = "ab" * 16
+
+    def anchor(self, action=None, author=ALICE, position=None, **changes):
+        body = kl.make_grant_anchor(dna_hash=DNA, grant_id=self.gid, grant_message=self.msg,
+                                    issuer_key_action=action or self.g2.action_hash)
+        body.update(changes)
+        self.alice.n += 1
+        return seq(author, body, f"uhCkkAnchor{self.alice.n}", position or self.alice.n)
+
+    def verify(self, record, lifecycle=None, **kw):
+        args = dict(grant_id=self.gid, grant_message=self.msg, issuer_key_action=self.g2.action_hash)
+        args.update(kw)
+        return kl.verify_grant_anchor(record, lifecycle or self.alice.resolve(), **args)
+
+    def test_minimal_public_fields(self):
+        body = self.anchor().body
+        self.assertEqual(set(body), {"schema", "dna_hash", "grant_id", "grant_commitment", "issuer_key_action"})
+        self.assertNotIn(self.msg.hex(), repr(body))
+
+    def test_current_key_anchor_verifies(self):
+        g = self.verify(self.anchor())
+        self.assertEqual(g.generation, 2)
+
+    def test_commitment_is_domain_separated_and_binding(self):
+        self.assertNotEqual(kl.grant_anchor_commitment(self.msg),
+                            __import__("hashlib").sha256(self.msg).hexdigest())
+        with self.assertRaisesRegex(StorageError, "does not match"):
+            self.verify(self.anchor(), grant_message=self.msg + b"x")
+        with self.assertRaisesRegex(StorageError, "does not match"):
+            self.verify(self.anchor(), grant_id="cd" * 16)
+
+    def test_wrong_author_dna_or_shape(self):
+        with self.assertRaisesRegex(StorageError, "content owner"):
+            self.verify(self.anchor(author=MALLORY))
+        with self.assertRaisesRegex(StorageError, "different DNA"):
+            self.verify(self.anchor(dna_hash=OTHER_DNA))
+        with self.assertRaisesRegex(StorageError, "invalid grant anchor"):
+            self.verify(self.anchor(note="x"))
+
+    def test_obsolete_and_revoked_keys(self):
+        # g1 named after the rotation: the generation had already ended.
+        stale = self.anchor(action=self.g1.action_hash)
+        with self.assertRaisesRegex(StorageError, "Rotated"):
+            self.verify(stale, issuer_key_action=self.g1.action_hash)
+        # An anchor made by g1 BEFORE the rotation stays historical.
+        early = self.anchor(action=self.g1.action_hash, position=self.g1.action_seq + 1)
+        self.assertEqual(self.verify(early, issuer_key_action=self.g1.action_hash).generation, 1)
+        self.alice.revoke(self.g2, kl.SCOPE_COMPROMISED)
+        with self.assertRaisesRegex(StorageError, "Revoked"):
+            self.verify(self.anchor())
+        with self.assertRaisesRegex(StorageError, "precedes"):
+            self.verify(self.anchor(position=self.g2.action_seq - 1))
+
+    def test_recovered_issuer_rejected_by_default(self):
+        lost = Chain(ALICE)
+        g1 = lost.incept(self.a1)
+        g2 = lost.recover(self.a2, g1)
+        lost.n += 1
+        body = kl.make_grant_anchor(dna_hash=DNA, grant_id=self.gid, grant_message=self.msg,
+                                    issuer_key_action=g2.action_hash)
+        rec = seq(ALICE, body, "uhCkkRecAnchor", lost.n)
+        args = dict(grant_id=self.gid, grant_message=self.msg, issuer_key_action=g2.action_hash)
+        with self.assertRaisesRegex(StorageError, "recovered without continuity"):
+            kl.verify_grant_anchor(rec, lost.resolve(), **args)
+        self.assertEqual(kl.verify_grant_anchor(rec, lost.resolve(), recovered_policy="accept", **args).generation, 2)
+
+    def test_not_in_lifecycle(self):
+        with self.assertRaisesRegex(StorageError, "not in the owner's lifecycle"):
+            self.verify(self.anchor(action="uhCkkNope"), issuer_key_action="uhCkkNope")
+
+
 class FakeV21Bridge:
     """Stand-in for the v2.1 storage cell: a single source chain. It re-applies
     the reader rules so an invalid write is refused; the real rules run in

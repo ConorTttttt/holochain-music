@@ -48,3 +48,30 @@ S10 grants are signed by the manifest's key. After a rotation, new grants for
 older tracks need those tracks re-published under the active key; the app
 refuses rather than sign with a rotated key. A versioned grant format with
 its own issuer is needed before rotation is transparent to paid access.
+
+## Grant anchors (`holochain-storage/grant-anchor/v2`)
+
+Added to `dna-v21` before release, by reviewer decision (Media Core
+`docs/ACCESS-GRANT-V2.md` §4). This changes the v2.1 DNA hash to
+`uhC0kF7I2QWYZf2K5-cziQFYZev-7WwNrNQFSSeOtwcLpN5Y98mlf`; the v1 and v2 DNAs
+are unchanged.
+
+The anchor is a minimal public entry: `schema`, `dna_hash`, `grant_id`,
+`grant_commitment` (SHA-256 of a domain prefix and the complete signed grant)
+and `issuer_key_action`. The issuer is the action author. It contains no
+recipient, track, rights, terms or key material, but it does reveal how
+often, and roughly when, an artist issues grants.
+
+**Integrity validation enforces:**
+
+* only the author's *current*, unrevoked `owner-manifest` lifecycle
+  transition can be named;
+* grant ids are unique per author;
+* the anchor is for this DNA.
+
+**Readers check:** `key_lifecycle.verify_grant_anchor`, which also binds the
+anchor to the private grant and rejects recovered-without-continuity issuers
+by default.
+
+Routes: `publish_grant_anchor_v2` and `get_grant_anchor_v2`. The grant format
+itself (`access-grant/v2`) is not implemented yet.

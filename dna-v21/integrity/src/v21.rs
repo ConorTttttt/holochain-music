@@ -188,6 +188,8 @@ pub struct PurposeHistory {
     pub transitions: Vec<(String, KeyTransitionV21)>,
     /// Revocations, oldest first.
     pub revocations: Vec<(String, KeyRevocationV21)>,
+    /// `grant_id`s of the author's earlier grant anchors (any purpose).
+    pub anchor_grant_ids: Vec<String>,
 }
 
 /// One Ed25519 check to perform: (public key, signature, message).
@@ -311,9 +313,10 @@ pub fn check_revocation_v21(
 /// action whose `prev_action` is `prev`, in chain order. Deterministic:
 /// `must_get_agent_activity` over the hash-linked chain from `prev` to
 /// genesis, then `must_get_valid_record` for lifecycle actions only.
-fn purpose_history(author: &AgentPubKey, prev: &ActionHash, purpose: &str) -> ExternResult<PurposeHistory> {
+pub(crate) fn purpose_history(author: &AgentPubKey, prev: &ActionHash, purpose: &str) -> ExternResult<PurposeHistory> {
     let transition_def = ScopedEntryDefIndex::try_from(UnitEntryTypes::KeyTransitionV21)?;
     let revocation_def = ScopedEntryDefIndex::try_from(UnitEntryTypes::KeyRevocationV21)?;
+    let anchor_def = ScopedEntryDefIndex::try_from(UnitEntryTypes::GrantAnchorV2)?;
     let mut activity = must_get_agent_activity(author.clone(), ChainFilter::new(prev.clone()))?;
     activity.sort_by_key(|a| a.action.hashed.content.action_seq());
     let mut history = PurposeHistory::default();
@@ -325,13 +328,18 @@ fn purpose_history(author: &AgentPubKey, prev: &ActionHash, purpose: &str) -> Ex
         }
         let is_transition = def.entry_index == transition_def.zome_type;
         let is_revocation = def.entry_index == revocation_def.zome_type;
-        if !is_transition && !is_revocation {
+        let is_anchor = def.entry_index == anchor_def.zome_type;
+        if !is_transition && !is_revocation && !is_anchor {
             continue;
         }
         let hash = item.action.hashed.hash.clone();
         let record = must_get_valid_record(hash.clone())?;
         let decode = |e: SerializedBytesError| wasm_error!(WasmErrorInner::Guest(e.to_string()));
-        if is_transition {
+        if is_anchor {
+            if let Some(a) = record.entry().to_app_option::<GrantAnchorV2>().map_err(decode)? {
+                history.anchor_grant_ids.push(a.grant_id);
+            }
+        } else if is_transition {
             if let Some(t) = record.entry().to_app_option::<KeyTransitionV21>().map_err(decode)? {
                 if t.purpose == purpose && t.agent == author.to_string() {
                     history.transitions.push((hash.to_string(), t));
@@ -464,6 +472,7 @@ mod v21_tests {
         PurposeHistory {
             transitions: t.iter().map(|(h, x)| (h.to_string(), (*x).clone())).collect(),
             revocations: r.iter().map(|(h, x)| (h.to_string(), (*x).clone())).collect(),
+            anchor_grant_ids: Vec::new(),
         }
     }
 

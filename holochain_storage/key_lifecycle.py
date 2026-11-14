@@ -587,3 +587,76 @@ def verify_replica_receipt_v2(receipt: Any, package: dict[str, Any], *, trusted_
     except (InvalidSignature, ValueError) as exc:
         raise StorageError("invalid receipt signature") from exc
     return receipt
+
+
+# ---- grant anchors (access-grant/v2 issuance authority) ---------------------
+#
+# A public, minimal record on the owner's chain that anchors one access grant
+# (Media Core docs/ACCESS-GRANT-V2.md §3.5, §4). The v2.1 DNA enforces that
+# the author's CURRENT, unrevoked owner-manifest key is named and that the
+# grant id is fresh; this verifier re-checks all of that from the reader's
+# lifecycle and adds what the DNA cannot see: the binding to the private
+# grant, content ownership by the author, and the recovered-issuer policy.
+
+GRANT_ANCHOR_SCHEMA = "holochain-storage/grant-anchor/v2"
+GRANT_ANCHOR_COMMITMENT_DOMAIN = b"holochain-storage/grant-anchor-commitment/v2\x00"
+GRANT_ANCHOR_FIELDS = frozenset({"schema", "dna_hash", "grant_id", "grant_commitment", "issuer_key_action"})
+RECOVERED_ISSUER_REJECT = "reject"
+RECOVERED_ISSUER_ACCEPT = "accept"
+_HEX_32 = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def grant_anchor_commitment(grant_message: bytes) -> str:
+    """SHA-256(domain || exact signed grant message), hex."""
+    if not isinstance(grant_message, (bytes, bytearray)) or not grant_message:
+        raise StorageError("grant message required")
+    return hashlib.sha256(GRANT_ANCHOR_COMMITMENT_DOMAIN + bytes(grant_message)).hexdigest()
+
+
+def make_grant_anchor(*, dna_hash: str, grant_id: str, grant_message: bytes,
+                      issuer_key_action: str) -> dict[str, str]:
+    """The public anchor entry. Contains no recipient, content, rights or keys."""
+    if not isinstance(grant_id, str) or not _HEX_32.fullmatch(grant_id):
+        raise StorageError("invalid grant id")
+    return {"schema": GRANT_ANCHOR_SCHEMA, "dna_hash": _identity(dna_hash, "DNA hash"),
+            "grant_id": grant_id, "grant_commitment": grant_anchor_commitment(grant_message),
+            "issuer_key_action": _identity(issuer_key_action, "issuer key action")}
+
+
+def _recovered_lineage(lifecycle: KeyLifecycle, generation: KeyGeneration) -> bool:
+    return any(g.kind == RECOVERY for g in lifecycle.generations if g.generation <= generation.generation)
+
+
+def verify_grant_anchor(record: Any, owner_lifecycle: KeyLifecycle, *, grant_id: str, grant_message: bytes,
+                        issuer_key_action: str, recovered_policy: str = RECOVERED_ISSUER_REJECT) -> KeyGeneration:
+    """Verify an anchor for one grant against the owner's verified lifecycle.
+    Returns the issuer generation; raises LifecycleError (fail closed)."""
+    if recovered_policy not in (RECOVERED_ISSUER_REJECT, RECOVERED_ISSUER_ACCEPT):
+        raise LifecycleError("unknown recovered-issuer policy")
+    if not isinstance(owner_lifecycle, KeyLifecycle) or owner_lifecycle.purpose != OWNER_PURPOSE:
+        raise LifecycleError("an owner-manifest lifecycle is required")
+    if (not isinstance(record, SequencedRecord) or not isinstance(record.body, dict)
+            or type(record.action_seq) is not int or not 0 <= record.action_seq < 2**32):
+        raise LifecycleError("missing authenticated grant anchor", INVALID)
+    if record.author != owner_lifecycle.agent:
+        raise LifecycleError("grant anchor not authored by the content owner")
+    body = record.body
+    if set(body) != GRANT_ANCHOR_FIELDS or any(not isinstance(v, str) for v in body.values()) \
+            or body["schema"] != GRANT_ANCHOR_SCHEMA:
+        raise LifecycleError("invalid grant anchor")
+    if body["dna_hash"] != owner_lifecycle.dna_hash:
+        raise LifecycleError("grant anchor is for a different DNA")
+    if (body["grant_id"] != grant_id or body["issuer_key_action"] != issuer_key_action
+            or body["grant_commitment"] != grant_anchor_commitment(grant_message)):
+        raise LifecycleError("grant anchor does not match this grant")
+    generation = next((g for g in owner_lifecycle.generations if g.action_hash == issuer_key_action), None)
+    if generation is None:
+        raise LifecycleError("issuer key action is not in the owner's lifecycle")
+    if record.action_seq <= generation.action_seq:
+        raise LifecycleError("grant anchor precedes its issuer key")
+    verdict = owner_lifecycle.classify(generation.key, HISTORICAL, ChainAnchor(record.author, record.action_seq))
+    if verdict not in (ACTIVE, HISTORICAL_ONLY):
+        raise LifecycleError(f"issuer key was not valid at the anchor: {verdict}", verdict)
+    if _recovered_lineage(owner_lifecycle, generation) and recovered_policy == RECOVERED_ISSUER_REJECT:
+        raise LifecycleError("issuer key was recovered without continuity; refused by policy")
+    return generation

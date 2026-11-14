@@ -15,7 +15,7 @@ pub use v1::*;
 
 use hdk::prelude::*;
 use music_storage_integrity::{
-    EntryTypes, KeyRevocationV21, KeyTransitionV21, LinkTypes, UnitEntryTypes,
+    EntryTypes, GrantAnchorV2, KeyRevocationV21, KeyTransitionV21, LinkTypes, UnitEntryTypes,
     KEY_LIFECYCLE_SCHEMA_V21,
 };
 
@@ -176,5 +176,30 @@ pub fn get_action_position_v21(action_hash: ActionHash) -> ExternResult<Option<A
         author: record.action().author().to_string(),
         action_hash,
         action_seq: record.action().action_seq(),
+    }))
+}
+
+/// Publish a grant anchor (access-grant/v2). No checks here: integrity
+/// validation decides (current, unrevoked owner-manifest key; fresh grant id).
+#[hdk_extern]
+pub fn publish_grant_anchor_v2(entry: GrantAnchorV2) -> ExternResult<ActionHash> {
+    let agent = agent_info()?.agent_initial_pubkey;
+    let hash = create_entry(EntryTypes::GrantAnchorV2(entry))?;
+    create_link(agent, hash.clone(), LinkTypes::AgentToGrantAnchorV2, ())?;
+    Ok(hash)
+}
+
+/// A validated grant anchor by action hash, with its author and chain
+/// position, or `None` if not (yet) available. Verifiers bind it to the
+/// grant themselves.
+#[hdk_extern]
+pub fn get_grant_anchor_v2(action_hash: ActionHash) -> ExternResult<Option<SequencedRecord<GrantAnchorV2>>> {
+    let Some(record) = get(action_hash.clone(), GetOptions::default())? else { return Ok(None) };
+    let Ok(Some(body)) = record.entry().to_app_option::<GrantAnchorV2>() else { return Ok(None) };
+    Ok(Some(SequencedRecord {
+        author: record.action().author().to_string(),
+        action_hash,
+        action_seq: record.action().action_seq(),
+        body,
     }))
 }
