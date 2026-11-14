@@ -83,6 +83,11 @@ class MoqHost:
         if not self.files:
             raise MoqFetchError("nothing to host")
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        # The host writes its TLS private key here. Its own 0700/0600 is
+        # POSIX-only; on Windows the key would inherit this directory's DACL,
+        # so make the directory owner-only (inherited by the key) first.
+        self.cert_dir.mkdir(parents=True, exist_ok=True)
+        portable.make_private_dir(self.cert_dir)
         served = self.state_dir / "served.json"
         served.write_text(json.dumps({"files": self.files}), encoding="utf-8")
         ready = self.state_dir / "ready.json"

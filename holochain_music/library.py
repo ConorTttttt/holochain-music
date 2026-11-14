@@ -41,11 +41,13 @@ def _atomic_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     try:
+        # Owner-only before any content is written: POSIX mode bits alone do
+        # nothing on Windows, where the file would inherit its parent's DACL.
+        portable.make_private_file(Path(temp))
         with os.fdopen(fd, "wb") as f:
             f.write(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(temp, 0o600)
         portable.replace(temp, path)
     except BaseException:
         Path(temp).unlink(missing_ok=True)

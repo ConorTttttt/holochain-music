@@ -25,6 +25,7 @@ import wave
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 
+from holochain_storage import portable
 from holochain_storage.holochain_identity import HOST_PURPOSE, OWNER_PURPOSE, key_for_agent
 from holochain_storage.package import (
     StorageError, canonical, create_package, manifest_digest, public_key_bytes,
@@ -58,6 +59,13 @@ def normalise_wav(source: Path, destination: Path) -> dict:
             if not 0 < data_len <= MAX_WAV_BYTES:
                 raise ArtistError("WAV is empty or too large")
             fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+            try:
+                # The 0o600 above is ignored on Windows; set an owner-only DACL
+                # before any audio is written.
+                portable.make_private_file(Path(destination))
+            except BaseException:
+                os.close(fd)
+                raise
             with os.fdopen(fd, "wb") as out:
                 out.write(struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + data_len, b"WAVE", b"fmt ", 16, 1,
                                       channels, rate, rate * channels * 2, channels * 2, 16, b"data", data_len))
