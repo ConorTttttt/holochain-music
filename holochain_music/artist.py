@@ -35,6 +35,10 @@ from holochain_storage.package import (
     replicate_package, sha256,
 )
 from music_catalogue.content_grants import issue_content_grant, issue_personal_licence
+from music_catalogue.access_grant_v2 import (
+    issue_access_grant_v2, verify_access_grant_v2, grant_message,
+)
+from .v21_grants import commitment_from_conductor, grant_anchor_from_conductor
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA
 
 from .artwork import AlbumArtworkStore, load_cover
@@ -85,7 +89,7 @@ def normalise_wav(source: Path, destination: Path) -> dict:
 
 class ArtistService:
     def __init__(self, *, bridge: Bridge, keys: KeyStore, host_root: Path, deliver=None,
-                 key_binding: str = "v1"):
+                 key_binding: str = "v1", access_grant_v2: bool = False):
         """`key_binding="v2"` is an explicit opt-in for the separate v2 storage
         DNA (dna-v2/, proof-of-possession bindings); `"v2.1"` for the separate
         v2.1 DNA (dna-v21/, key lifecycle with rotation/revocation and
@@ -93,6 +97,9 @@ class ArtistService:
         behaviour; no existing identity is migrated."""
         if key_binding not in ("v1", "v2", "v2.1"):
             raise ArtistError("key_binding must be 'v1', 'v2' or 'v2.1'")
+        if type(access_grant_v2) is not bool or (access_grant_v2 and key_binding != "v2.1"):
+            raise ArtistError("access-grant/v2 requires explicit v2.1 lifecycle opt-in")
+        self.access_grant_v2 = access_grant_v2
         self.key_binding = key_binding
         self.bridge, self.keys = bridge, keys
         # Delivery may be queued by the app's outbox when the listener is offline.
@@ -446,14 +453,43 @@ class ArtistService:
         recipient = bytes.fromhex(request["x25519_public_hex"])
         X25519PublicKey.from_public_bytes(recipient)
         listener_agent = request["listener_agent"]
-        common = dict(owner_signer=self._grant_signer(manifest), owner_agent=self.me, listener_agent=listener_agent,
-                      recipient_public=recipient, signed_manifest=manifest,
-                      content_key=self.keys.content_key(file_id))
-        grant = issue_personal_licence(**common) if kind == "perpetual-personal" else \
-            issue_content_grant(**common, lifetime_seconds=86400)
+        if self.access_grant_v2:
+            # Authenticate the immutable g1 manifest against its historical
+            # commitment; issue a NEW grant under the active g2+ owner key.
+            lifecycle = self.lifecycle_v21(OWNER_PURPOSE)
+            commitment = commitment_from_conductor(self.bridge, self.me, manifest, lifecycle)
+            issuer = self._signer(OWNER_PURPOSE)
+            rights = (["export", "managed-offline", "stream"] if kind == "perpetual-personal"
+                      else ["stream"])
+            grant = issue_access_grant_v2(
+                issuer_signer=issuer, owner_lifecycle=lifecycle, signed_manifest=manifest,
+                commitment=commitment, listener_agent=listener_agent,
+                recipient_public=recipient, content_key=self.keys.content_key(file_id),
+                rights=rights, term="perpetual" if kind == "perpetual-personal" else "window",
+                expires_at=0 if kind == "perpetual-personal" else int(time.time()) + 86400,
+            )
+            anchor_entry = kl.make_grant_anchor(
+                dna_hash=lifecycle.dna_hash, grant_id=grant["body"]["grant_id"],
+                grant_message=grant_message(grant["body"]),
+                issuer_key_action=grant["body"]["issuer_key_action"])
+            anchor_action = self.bridge.call("publish_grant_anchor_v2", entry=anchor_entry)["action_hash"]
+            anchor = grant_anchor_from_conductor(self.bridge, anchor_action, self.me)
+            # A published anchor is NOT proof: verify complete content,
+            # signature, ownership, recipient and ordered authority.
+            verify_access_grant_v2(
+                grant, signed_manifest=manifest, owner_lifecycle=lifecycle,
+                commitment=commitment, anchor=anchor, listener_agent=listener_agent,
+                recipient_public=recipient)
+            delivery = {"grant": grant, "anchor_action": anchor_action}
+        else:
+            common = dict(owner_signer=self._grant_signer(manifest), owner_agent=self.me,
+                          listener_agent=listener_agent, recipient_public=recipient,
+                          signed_manifest=manifest, content_key=self.keys.content_key(file_id))
+            delivery = issue_personal_licence(**common) if kind == "perpetual-personal" else \
+                issue_content_grant(**common, lifetime_seconds=86400)
         outcome = self.deliver("send_grant", listener=listener_agent, grant={
             "file_id": file_id, "manifest_sha256": manifest_digest(manifest), "kind": kind,
-            "grant_json": canonical(grant).decode()})
+            "grant_json": canonical(delivery).decode()})
         log = self.issued()
         log.append({"listener_agent": listener_agent, "file_id": file_id, "kind": kind, "issued_at": int(time.time())})
         _atomic_json(self._issued_log(), log[-5000:])
