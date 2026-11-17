@@ -386,7 +386,12 @@ class MusicApp:
                 self.require_online()
                 meta = self.library.meta(file_id)
                 artist, track_id = self._split_key(meta["track_key"])
-                d.replace_hosts(self.catalogue.resolve(artist, track_id).hosts)
+                refreshed = self.catalogue.resolve(artist, track_id)
+                if (refreshed.digest != meta["manifest_sha256"]
+                        or refreshed.digest != d.trusted.digest
+                        or refreshed.artist_key != d.trusted.artist_key):
+                    raise AppError("catalogue changed this track's encrypted file; re-add it")
+                d.replace_hosts(refreshed.hosts)
             if start:
                 d.start()
             return d
@@ -394,13 +399,30 @@ class MusicApp:
     def _require_offline_download_licence(self, file_id: str) -> None:
         """These manual controls are distinct from streaming fetches."""
         file_key(file_id)
-        if self.library.meta(file_id) is None:
+        meta = self.library.meta(file_id)
+        if meta is None:
             raise AppError("track is not in your library")
         grant = self.library.grant(file_id)
         if grant is None:
             raise AppError("you need access from the artist before downloading")
-        if grant_kind(grant) != "perpetual-personal":
+        try:
+            kind = grant_kind(grant)
+        except (StorageError, ValueError, KeyError, TypeError) as exc:
+            raise AppError("The saved offline licence has an invalid format.") from exc
+        if kind != "perpetual-personal":
             raise AppError("Download for Offline currently requires a permanent personal-use licence")
+        # grant_kind() classifies *untrusted* display metadata. Managed offline
+        # transfers must authenticate the artist's signature, exact manifest,
+        # recipient identity and licence terms before starting/resuming.
+        try:
+            key = unwrap_content_grant(
+                grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
+                recipient_private=self.keys.listener_x25519(),
+                signed_manifest=self.library.manifest(file_id))
+            del key
+        except (StorageError, ValueError, KeyError, TypeError, OSError) as exc:
+            raise AppError("The saved permanent licence could not be verified for this track and listener.") from exc
 
     def download(self, file_id: str) -> dict:
         """Begin a permanent-licence download; keep existing streaming separate."""
