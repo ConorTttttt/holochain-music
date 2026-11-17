@@ -325,6 +325,7 @@ def issue_access_grant_v2(
     rights: list[str], term: str, issued_at: int | None = None,
     not_before: int | None = None, expires_at: int = 0,
     grant_id: bytes | None = None, entitlement_ref: str = "",
+    recovered_policy: str = kl.RECOVERED_ISSUER_REJECT,
 ) -> dict:
     """Only issue with the active *current* owner key; verify historical S1 content."""
     if not isinstance(issuer_signer, Ed25519PrivateKey):
@@ -337,6 +338,12 @@ def issue_access_grant_v2(
         _fail("unauthenticated", "IssuerNotActive")
     if public_key_bytes(issuer_signer) != issuer.key:
         _fail("unauthenticated", "IssuerNotActive")
+    if recovered_policy not in (kl.RECOVERED_ISSUER_REJECT, kl.RECOVERED_ISSUER_ACCEPT):
+        _fail("unsupported", "RecoveryPolicy")
+    if (recovered_policy == kl.RECOVERED_ISSUER_REJECT and
+            any(g.kind == kl.RECOVERY for g in owner_lifecycle.generations
+                if g.generation <= issuer.generation)):
+        _fail("unauthenticated", "RecoveredIssuerRefused")
     file_id, digest, manifest_key_hex = _historical_manifest(
         signed_manifest, owner_lifecycle, commitment)
     if not isinstance(content_key, bytes) or len(content_key) != 32:
