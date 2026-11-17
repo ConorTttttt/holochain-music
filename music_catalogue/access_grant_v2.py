@@ -318,9 +318,13 @@ def verify_access_grant_v2(
             _fail("unauthenticated", "AnchorMismatch")
         _fail("unauthenticated", "InvalidAnchor")
     _terms(b, int(time.time()) if now is None else _int(now))
+    # owner_assurance describes the HISTORICAL authenticated S1 content.
+    # A later recovered grant issuer has separate continuity and must not
+    # silently relabel the original manifest's authentication generation.
+    historical_generation = owner_lifecycle.find(bytes.fromhex(historical_key))
     assurance = ("KeyLifecycleRecoveredV21"
                  if any(g.kind == kl.RECOVERY for g in owner_lifecycle.generations
-                        if g.generation <= generation.generation)
+                        if g.generation <= historical_generation.generation)
                  else "KeyLifecycleV21")
     return VerifiedAccessGrantV2(canonical(b), anchor.action_seq, generation.continuity,
                                  assurance, grant_wrap_context(b))
