@@ -170,6 +170,19 @@ class RealMoqHostTests(unittest.TestCase):
         assert_private(self, self.root / "cert" / "host.key", 0o600)
         self.fetch(self.root / "after-restart")
 
+    def test_existing_windows_tls_key_rejects_permissive_acl(self):
+        if os.name != "nt":
+            self.skipTest("Windows ACL check only")
+        import subprocess
+        from holochain_storage import portable
+        self.host.stop()
+        key = self.root / "cert" / "host.key"
+        subprocess.run(["icacls", str(key), "/grant", "*S-1-5-32-545:R"],
+                       check=True, capture_output=True)
+        self.assertFalse(portable.is_private(key))
+        with self.assertRaises(portable.PortabilityError):
+            self.host.start()
+
     def test_host_offline_then_resume_from_first_missing_object(self):
         store = self.root / "bob"
         middle = len(self.fx.chunks) // 2
