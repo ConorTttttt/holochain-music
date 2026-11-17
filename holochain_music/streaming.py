@@ -127,6 +127,24 @@ class Download:
             self.trusted.hosts = list(hosts)
             self.host_index = 0
 
+    def reopen_after_failed_verification(self) -> None:
+        """Allow an in-session completed transfer to repair later CAS damage.
+
+        The app calls this only after independently verifying that the local
+        signed package is no longer complete. Never reuse an old in-memory
+        available set or start a second worker during completion teardown.
+        """
+        with self._cv:
+            if self.state != "complete":
+                return
+            if self._thread and self._thread.is_alive():
+                raise TrackUnavailable("previous completed download worker is still finishing")
+            self.available.clear()
+            self._position = None
+            self._priority = None
+            self.state, self.error = "idle", None
+            self._cv.notify_all()
+
     def stop(self) -> None:
         self._stop.set()
         self._restart.set()
@@ -285,7 +303,10 @@ class Download:
                 try:
                     if self.on_complete and self.on_complete() is False:
                         raise StorageError("library could not verify the completed package")
-                except (StorageError, OSError) as exc:
+                except Exception as exc:
+                    # Disk/library callbacks can fail with LibraryError or
+                    # another ordinary exception. A dead worker must never
+                    # leave progress stuck at "downloading" or imply success.
                     with self._cv:
                         self.state, self.error = "unavailable", f"completion failed: {exc}"[:200]
                         self._cv.notify_all()
