@@ -1,3 +1,5 @@
+> **17 November 2026 — release status update:** Security controls below are an implementation/trust model, **not independent approval**. The two unrestricted remote-call inbox functions are provenance-authenticated by the trusted conductor, but the 500/hour cap is **per inbox type** (access requests versus grants) and inbox scans historical private entries. Perpetual licences remain non-revocable, source-chain action metadata remains observable and recipient/host key rotation remains unsupported. Agent 4's source verification and outstanding reviewer checks: [release-grant-security-verification.md](release-grant-security-verification.md). Security gate statuses: [release-gate-matrix.md](release-gate-matrix.md).
+
 # Security model (v1.0.0 release candidate)
 
 Status: describes the code on branch `feat/v1-app-integration`. Not independently
