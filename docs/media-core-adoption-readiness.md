@@ -15,7 +15,7 @@ and integrity/audit/import of existing ciphertext objects. Music remains the
 source of truth and the only holder of X25519 private keys and plaintext
 content keys. No stored package, key wrap or licence is rewritten.
 
-**NOT ready for default adoption:** Windows workflow evidence on this PR,
+**NOT ready for default adoption:** final-head Windows/Linux workflow confirmation,
 production wiring, CLI exit-1 I/O classification, schema-version negotiation
 for S1 manifests, real crash mid-atomic-write fault injection, two-device
 host failover, release signing and installation/supervision, verified v2
@@ -66,15 +66,15 @@ opt-in test; **G** = gated / no evidence in this branch; **B** = blocker.
 | Unsupported v1 S1 *manifest schema* vs corrupt content | E | B | Rust returns `InvalidManifest` for both; cannot reliably separate |
 | Unsupported legacy grant/entitlement schema | E | E/A | Rust emits entitlement `category=unsupported`; adapter raises `MediaCoreUnsupportedSchema` |
 | CLI crash, timeout, invalid stdout/exit code | n/a | A | Always-on mocked subprocess contract tests |
-| Linux native opt-in comparison | E historical | G on this PR | Matrix job added; must observe completed hosted run |
-| Windows native opt-in comparison | E historical Rust CLI units | G on this PR | Matrix job added; must observe completed hosted run |
+| Linux native opt-in comparison | E historical | E initial hosted PR revision | 28/28 enabled opt-in cases passed on 17 Nov; **latest head must rerun** |
+| Windows native opt-in comparison | E historical Rust CLI units | E initial hosted PR revision | 28/28 enabled opt-in cases passed on 17 Nov; **latest head must rerun** |
 | Real MoQ host switch and conductor recovery | E in CORE-004 upstream | G | Existing CORE-004 acceptance is separate; rerun on pinned release candidate |
 | Access-grant/v2 signed envelope after owner rotation | B | B | Agent 6 protocol not implemented at this pinned baseline |
 
 Previous repository notes (`holochain-media-core/docs/current-state.md`)
 report Linux tests on 14 Nov 2026, and explicitly state hosted CI was blocked
 by account billing. **Those historical results are not an Agent 7 run.**
-This branch has no observed Windows/Linux CI pass until the workflow completes.
+An initial Windows/Linux comparison CI pass is recorded in §6; subsequent hardening commits are awaiting their own passing run.
 
 ## 4. Error taxonomy and safeguards
 
