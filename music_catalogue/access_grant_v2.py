@@ -119,8 +119,9 @@ def parse_access_grant_v2(value: bytes | str | dict) -> dict:
                 raise
             _fail("malformed", "Json")
     if not isinstance(value, dict) or set(value) != {"body", "signature_hex"}:
-        _fail("unsupported", "WrongVersion" if isinstance(value, dict) and
-              "signer" in value else "malformed")
+        if isinstance(value, dict) and "signer" in value:
+            _fail("unsupported", "WrongVersion")
+        _fail("malformed", "Structure")
     body = value["body"]
     if not isinstance(body, dict) or set(body) != FIELDS:
         _fail("malformed", "Structure")
@@ -230,6 +231,8 @@ class VerifiedAccessGrantV2:
 def _terms(body: dict, now: int) -> None:
     rights = frozenset(body["rights"])
     issued, start, end = body["issued_at"], body["not_before"], body["expires_at"]
+    if issued > now + 120:
+        _fail("validity", "NotYetValid")
     if body["term"] == "perpetual":
         if end != 0 or start != issued:
             _fail("unsupported", "Terms")
@@ -244,8 +247,6 @@ def _terms(body: dict, now: int) -> None:
             _fail("validity", "Expired")
     else:
         _fail("unsupported", "Terms")
-    if issued > now + 120:
-        _fail("validity", "NotYetValid")
 
 
 def verify_access_grant_v2(
@@ -261,6 +262,8 @@ def verify_access_grant_v2(
     local conductor, not a remote sender or a grant's untrusted fields.
     """
     env = parse_access_grant_v2(grant)
+    if recovered_policy not in (kl.RECOVERED_ISSUER_REJECT, kl.RECOVERED_ISSUER_ACCEPT):
+        _fail("unsupported", "RecoveryPolicy")
     b = env["body"]
     file_id, digest, historical_key = _historical_manifest(signed_manifest, owner_lifecycle, commitment)
     if b["owner_agent"] != owner_lifecycle.agent or b["issuer_agent"] != owner_lifecycle.agent:
@@ -273,7 +276,8 @@ def verify_access_grant_v2(
         _fail("denied", "ManifestMismatch")
     if b["listener_agent"] != _identity(listener_agent, "listener_agent"):
         _fail("denied", "ListenerMismatch")
-    if b["recipient_key_hex"] != recipient_public.hex() if isinstance(recipient_public, bytes) and len(recipient_public) == 32 else True:
+    if (not isinstance(recipient_public, bytes) or len(recipient_public) != 32 or
+            b["recipient_key_hex"] != recipient_public.hex()):
         _fail("denied", "RecipientKeyMismatch")
     generation = next((g for g in owner_lifecycle.generations
                        if g.action_hash == b["issuer_key_action"]), None)
@@ -306,8 +310,12 @@ def verify_access_grant_v2(
             _fail("unauthenticated", "AnchorMismatch")
         _fail("unauthenticated", "InvalidAnchor")
     _terms(b, int(time.time()) if now is None else _int(now))
+    assurance = ("KeyLifecycleRecoveredV21"
+                 if any(g.kind == kl.RECOVERY for g in owner_lifecycle.generations
+                        if g.generation <= generation.generation)
+                 else "KeyLifecycleV21")
     return VerifiedAccessGrantV2(b, anchor.action_seq, generation.continuity,
-                                 "KeyLifecycleV21", grant_wrap_context(b))
+                                 assurance, grant_wrap_context(b))
 
 
 def issue_access_grant_v2(
@@ -321,7 +329,12 @@ def issue_access_grant_v2(
     """Only issue with the active *current* owner key; verify historical S1 content."""
     if not isinstance(issuer_signer, Ed25519PrivateKey):
         _fail("malformed", "IssuerKey")
-    issuer = owner_lifecycle.active()
+    if not isinstance(owner_lifecycle, kl.KeyLifecycle):
+        _fail("unauthenticated", "IssuerNotInLifecycle")
+    try:
+        issuer = owner_lifecycle.active()
+    except kl.LifecycleError:
+        _fail("unauthenticated", "IssuerNotActive")
     if public_key_bytes(issuer_signer) != issuer.key:
         _fail("unauthenticated", "IssuerNotActive")
     file_id, digest, manifest_key_hex = _historical_manifest(
