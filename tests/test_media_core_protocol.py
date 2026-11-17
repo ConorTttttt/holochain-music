@@ -48,6 +48,7 @@ class AdapterProtocolTests(unittest.TestCase):
     def test_invalid_and_oversized_cli_output_is_unavailable(self):
         for rc, data in ((0, b"not JSON"), (0, b"[]"),
                          (0, b'{"ok":false}'), (2, b'{"ok":true}'),
+                         (-9, b'{"ok":true}'), (3, b'{"ok":false}'),
                          (0, b"x" * (core.MAX_OUTPUT_BYTES + 1))):
             with self.subTest(rc=rc, size=len(data)):
                 with self.assertRaises(core.MediaCoreUnavailable):
@@ -147,7 +148,8 @@ class AdapterProtocolTests(unittest.TestCase):
         # Deliberately malformed public input may be compared by the Rust
         # verifier, but never if it carries a named private field.
         for field in ("content_key", "content-key-b64", "recipient_private_key",
-                      "private_signing_key", "owner_signer"):
+                      "recipientPrivateKey", "PRIVATE-KEY-PEM",
+                      "plaintextContentKey", "private_signing_key", "owner_signer"):
             with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
                 secret_manifest = {"body": {"schema": "public", field: "SENSITIVE"}}
                 with mock.patch.object(core, "_run", side_effect=AssertionError("spawned")):
