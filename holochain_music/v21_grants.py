@@ -89,3 +89,75 @@ def grant_anchor_from_conductor(bridge, action_hash: str, owner_agent: str) -> k
     if record.action_hash != action_hash or record.author != owner_agent:
         raise StorageError("grant anchor action or author mismatch")
     return record
+
+
+def verify_delivery_from_conductor(bridge, delivery: dict, signed_manifest: dict,
+                                   owner_agent: str, listener_agent: str,
+                                   recipient_public: bytes, *, now: int | None = None):
+    """Accept a delivered v2 grant ONLY after fetching independent chain evidence.
+
+    Returns the verified entitlement plus a local-only offline evidence snapshot.
+    The snapshot must be written only after success, never accepted from peers.
+    """
+    from music_catalogue.access_grant_v2 import (
+        parse_access_grant_v2, verify_access_grant_v2,
+    )
+
+    if not isinstance(delivery, dict) or set(delivery) != {"grant", "anchor_action"}:
+        raise StorageError("invalid access-grant/v2 delivery wrapper")
+    grant = parse_access_grant_v2(delivery["grant"])
+    lifecycle = lifecycle_from_conductor(bridge, owner_agent)
+    commitment = commitment_from_conductor(bridge, owner_agent, signed_manifest, lifecycle)
+    anchor = grant_anchor_from_conductor(bridge, delivery["anchor_action"], owner_agent)
+    verified = verify_access_grant_v2(
+        grant, signed_manifest=signed_manifest, owner_lifecycle=lifecycle,
+        commitment=commitment, anchor=anchor, listener_agent=listener_agent,
+        recipient_public=recipient_public, now=now)
+    rows = bridge.call("get_key_lifecycle_v21", agent=owner_agent)
+    # Re-resolve exactly what is stored for offline use. DHT views may differ
+    # between calls; no mixed or incomplete lifecycle is accepted.
+    cached = kl.resolve_key_lifecycle([_row(row) for row in rows], owner_agent,
+                                      OWNER_PURPOSE, lifecycle.dna_hash)
+    confirmed = verify_access_grant_v2(
+        grant, signed_manifest=signed_manifest, owner_lifecycle=cached,
+        commitment=commitment, anchor=anchor, listener_agent=listener_agent,
+        recipient_public=recipient_public, now=now)
+    snapshot = {
+        "schema": "holochain-music/local-v2-verified-evidence/v1",
+        "owner_agent": owner_agent, "dna_hash": lifecycle.dna_hash,
+        "lifecycle": rows,
+        "commitment": {"author": commitment.author, "action_hash": commitment.action_hash,
+                       "action_seq": commitment.action_seq, "body": commitment.body},
+        "anchor": {"author": anchor.author, "action_hash": anchor.action_hash,
+                   "action_seq": anchor.action_seq, "body": anchor.body},
+    }
+    return confirmed, snapshot
+
+
+def verify_cached_delivery(evidence: dict, delivery: dict, signed_manifest: dict,
+                           owner_agent: str, dna_hash: str, listener_agent: str,
+                           recipient_public: bytes, *, now: int | None = None):
+    """Offline replay of a successful prior online acceptance, fail closed.
+
+    The local library must never import this snapshot from a remote request.
+    It represents the reader's last validated conductor view; it cannot prove
+    that newer revocations have arrived during offline playback.
+    """
+    from music_catalogue.access_grant_v2 import verify_access_grant_v2
+
+    if (not isinstance(evidence, dict) or set(evidence) !=
+            {"schema", "owner_agent", "dna_hash", "lifecycle", "commitment", "anchor"} or
+            evidence["schema"] != "holochain-music/local-v2-verified-evidence/v1" or
+            evidence["owner_agent"] != owner_agent or evidence["dna_hash"] != dna_hash or
+            not isinstance(delivery, dict) or set(delivery) != {"grant", "anchor_action"} or
+            not isinstance(evidence["lifecycle"], list)):
+        raise StorageError("no trusted offline v2 authority snapshot")
+    lifecycle = kl.resolve_key_lifecycle([_row(row) for row in evidence["lifecycle"]],
+                                         owner_agent, OWNER_PURPOSE, dna_hash)
+    commitment, anchor = _row(evidence["commitment"]), _row(evidence["anchor"])
+    if delivery["anchor_action"] != anchor.action_hash:
+        raise StorageError("offline anchor differs from verified delivery")
+    return verify_access_grant_v2(
+        delivery["grant"], signed_manifest=signed_manifest, owner_lifecycle=lifecycle,
+        commitment=commitment, anchor=anchor, listener_agent=listener_agent,
+        recipient_public=recipient_public, now=now)
