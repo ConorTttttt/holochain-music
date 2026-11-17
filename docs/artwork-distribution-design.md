@@ -1,78 +1,93 @@
-# Album artwork: local groundwork and peer-delivery design
+# Album artwork over authenticated Holochain/MoQ
 
-## Implemented in phase 1 (this branch)
+## Phase 1 (merged previously)
 
-- Artists can create an album and optionally select an **absolute PNG file path**
-  in Artist Studio. The app reads the file on the same computer, not through a
-  browser upload endpoint.
-- Only non-interlaced **8-bit RGB/RGBA PNG** up to 1200 × 1200 and 768 KiB
-  is accepted. The importer validates CRCs and compressed pixel stream, strips
-  ancillary PNG chunks (including EXIF, GPS text and metadata), and stores a
-  canonical file mode 0600 under the per-user host directory.
-- A separate **session-token-authenticated** GET endpoint on the loopback
-  server returns these local cover bytes as `image/png`. The API never accepts
-  arbitrary user-supplied filesystem paths or sends tokens in image URLs.
-- The browser fetches the image with an Authorization header and displays it
-  via a temporary `blob:` URL. Player and library thumbnails fall back to the
-  local Phosphor vinyl icon when no cover is available.
-- Artist-owned tracks persist their `album_id` in the local self-licence
-  metadata, so their images appear in the player even while offline.
-- The static player preview can load a user's own local PNG into a visual-only
-  player sample without making any requests to the backend.
-- Existing audio encryption, playback/grant logic, colour themes and fonts
-  are unchanged.
+Artists import stripped, bounded 8-bit RGB/RGBA PNGs, attach tracks to albums
+and see their covers on their own machine. See `holochain_music/artwork.py`.
+The original v1 album records used `artwork_manifest_sha256: null`.
 
-## Not yet implemented
+## Phase 2 (this pull request; pending testing)
 
-**This feature does not distribute cover images over Holochain/MoQ.** Remote
-listeners therefore see vinyl placeholders, not the artist's cover. Album
-records still have `artwork_manifest_sha256: null` because a raw PNG hash
-would **not** satisfy the intended signed manifest commitment; publishing such
-a value would imply a false security guarantee.
+**New albums only:** The artist's existing Ed25519 S2 owner signing key signs an
+S1-format manifest for the scrubbed PNG. The new v1 album's
+`artwork_manifest_sha256` field pins SHA-256 of the **full signed manifest**,
+not a naked PNG digest. This needs **no new Holochain entry type, no DNA
+migration and no change to existing audio ciphertext/grants.**
 
-Additionally, this first importer intentionally excludes JPEG, animated PNG,
-SVG, GIF, huge/metadata-rich images and editing/replacing a published cover.
-Converting other artwork formats to a standards-compliant PNG is a separate
-step, ideally with pixel re-encoding in a sandboxed image decoder.
+The artwork file ID and its S1 AES-GCM wrapping key are **publicly derived**
+from a domain-separated hash of the authenticated Holochain artist agent and
+32-character album ID. This is a transport-compatibility layer and **does not
+protect artwork confidentiality**. The key is intentionally unrelated to and
+cannot derive any audio content key. Fresh random nonces are used per chunk;
+album IDs are immutable in v1.
 
-## Phase 2: authenticated cross-peer artwork (design, not shipping)
+The resulting package is uploaded to the artist's existing S1 ciphertext CAS.
+As with music, the artist authors an S2 file commitment and host replica claim;
+the host serves a signed manifest and signed storage receipt and publishes its
+MoQ endpoint with the existing pinned self-signed TLS certificate.
 
-1. Define a **public-artwork package manifest** with image media type, length,
-   pixel dimensions and a SHA-256 digest for each bounded chunk. Use a
-   cryptographic signature from the artist's trusted S2 owner signing key.
-   Artwork is public and has **no audio decryption key**; music grants must not
-   be exposed or reused for it.
-2. Bind the signed artwork manifest digest to the authenticated album record
-   using the existing `artwork_manifest_sha256` field **only after the manifest
-   scheme is specified and verifiable**. Ensure same-artist ownership and
-   prevent file substitution.
-3. The current Holochain album v1 records are append-only and `list_albums`
-   uses the first record seen per album ID. **Updating an existing album's
-   artwork reference requires an explicitly versioned album metadata model**
-   and coordinated DNA migration; simply republishing the v1 ID is unsafe.
-4. Retrieve public artwork over authenticated/pinned MoQ/QUIC endpoints or a
-   similarly verified content-addressed transport. Do not trust arbitrary
-   artist-provided HTTP URLs; always verify the manifest signature and content
-   hashes and enforce transfer/decoding size limits.
-5. Cache verified cover bytes for offline display in the listener's library.
-   Handle missing/offline artist hosts, changes to cover versions and local
-   cache eviction without blocking audio playback.
-6. Test with two separate Holochain agents/computers, including mismatched
-   hashes, forged authors, malformed images, offline restarts and Windows
-   packaging, before claiming listener-side artwork availability.
+A listener resolves the album from their **local validating conductor** and
+verifies the authenticated author, manifest digest, the artist's unambiguous
+S2 signing-key binding and Holochain file commitment, the host binding, signed
+storage receipt, replica claim, and pinned MoQ endpoint. MoQ fetch verifies
+ciphertext chunk hashes; public-key-derived decryption additionally verifies
+AES-GCM authentication and a bounded canonical PNG. No arbitrary artist HTTP
+URLs, image proxying, browser-secret query parameters or licence material are
+involved.
 
-## Review / local testing
+The UI requests the cover from the listener's own authenticated loopback app.
+The app limits concurrent MoQ image fetches to two, returns HTTP 202 while
+verification is in flight, and uses a fallback vinyl icon on failure. Cache
+entries are separated by artist identity, persisted under the user's library,
+and rechecked against signed ciphertext on subsequent offline reads.
+
+## Compatibility and limitations
+
+- **Existing published albums** cannot be upgraded safely by reposting album
+  v1 metadata; `list_albums` currently deduplicates by first record observed.
+  Such albums retain a local-only cover unless recreated as a new album.
+  A separately designed/versioned album-update model and DNA migration is
+  needed to edit existing album artwork without ambiguous DHT order.
+- This is limited to RGB/RGBA PNG (no JPEG, SVG, GIF or APNG) at maximum
+  1200 × 1200 and 768 KiB. The first-stage importer removes ancillary chunks.
+- To fetch artwork from a peer, the artist's MoQ host must be reachable.
+  LAN playback uses the same explicit `allow_lan` setting and IPv4
+  restrictions as the current audio stack. The cover can be public even
+  when the audio itself requires a grant.
+- Cached public artwork is **not an audio decryption key** and does not change
+  any listener licence, offline rental or music access policy.
+- This implementation **has not yet been tested with two live conductors
+  and MoQ hosts**. The branch must remain unmerged until local Python suites,
+  security regression checks and at least one real two-device test are run.
+- Per-cover cache limits exist, but no global artwork cache eviction policy,
+  cover replacement UI, source-image conversion or cross-device migration
+  has been implemented.
+
+## Suggested local verification
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_album_artwork.py' -v
+python3 -m unittest discover -s tests -p 'test_artwork_transport.py' -v
+python3 -m unittest discover -s tests -p 'test_artwork_catalogue.py' -v
 python3 -m unittest discover -s tests -p 'test_ui_player_polish.py' -v
+python3 -m unittest discover -s tests -p 'test_ui_typography.py' -v
+python3 -m unittest discover -s tests -p 'test_ui_ocean_signal.py' -v
+python3 -m unittest discover -s tests -p 'test_ui_phosphor_icons.py' -v
+node --check holochain_music/ui/app.js
 ```
 
-For a browser-only preview (works without Holochain):
+### Two-device smoke test (must run before merge)
 
-```bash
-python3 -m http.server 8766 --bind 127.0.0.1 --directory holochain_music/ui
-```
-
-Open `http://127.0.0.1:8766/player-preview.html`, select a PNG from your
-computer and inspect the new artwork slot in Ocean Signal and Amethyst themes.
+1. Use two separate Holochain agents/data directories, Alice (artist) and
+   Bob (listener). Confirm both are on the same compatible DNA and can
+   already see normal music catalogue and pinned MoQ endpoints.
+2. Alice creates a **new** album with a stripped PNG cover and publishes an
+   audio track assigned to that album. Verify Alice's host is running.
+3. Bob opens **Browse** or Alice's artist page. When connectivity allows,
+   the cover should replace the vinyl placeholder. Without a music grant Bob
+   should still be able to see the public cover.
+4. Restart Bob in `--offline` mode and open a cached library track from that
+   album. Its verified artwork should still display.
+5. Reject compromised/corrupted CAS chunks, forged artist signatures,
+   wrong album IDs, wrong host certificate fingerprint and mismatched
+   catalogue pins. Confirm none is shown and music playback continues.

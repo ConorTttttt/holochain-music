@@ -24,6 +24,9 @@ from music_catalogue.moq_host import MoqHost
 from . import binaries
 from .artist import ArtistError, ArtistService
 from .artwork import AlbumArtworkStore
+from .artwork_transport import (VerifiedArtworkCache, public_artwork_file_id,
+                                recover_public_artwork)
+from music_catalogue.moq_host import MoqFetchError, fetch_ciphertext
 from .bridge import Bridge, BridgeError
 from .catalogue import Catalogue, ResolveError
 from .conductor import APP_ID, BootstrapServer, Conductor, ConductorError
@@ -68,6 +71,12 @@ class MusicApp:
         self.keys = KeyStore(self.paths.keys)
         self.library = Library(self.paths.library)
         self.album_art = AlbumArtworkStore(self.paths.host / 'artwork')
+        self.artwork_cache = VerifiedArtworkCache(self.paths.library / "artwork",
+                                                  cas=self.paths.library / "artwork-cas")
+        self._artwork_jobs: set[tuple[str, str]] = set()
+        self._artwork_cooldown: dict[tuple[str, str], float] = {}
+        self._artwork_lock = threading.Lock()
+        self._artwork_slots = threading.BoundedSemaphore(2)
         self.conductor: Conductor | None = None
         self.bootstrap: BootstrapServer | None = None
         self.bridge: Bridge | None = None
@@ -255,6 +264,88 @@ class MusicApp:
                 "host": {"url": self.host.url, "fingerprint": self.host.fingerprint}
                 if self.host and self.host.ready else None,
                 "settings": {k: v for k, v in self.settings.items() if k != "pins"}}
+
+    # ---- remote PUBLIC album covers; never delay the audio player --------
+    def create_album(self, *args, **kwargs) -> dict:
+        self.require_online()
+        result = self.artist.create_album(*args, **kwargs)
+        if result.get("artwork_manifest_sha256") and self.settings["host_enabled"]:
+            self.restart_host()
+        return result
+
+    def album_artwork(self, artist_agent: str, album_id: str) -> tuple[bytes | None, bool]:
+        """Return cached cover or schedule a bounded verified MoQ fetch.
+
+        The bool indicates that the browser can poll again; failed/offline
+        retrieval leaves the existing vinyl placeholder intact.
+        """
+        public_artwork_file_id(artist_agent, album_id)  # validates inputs
+        if artist_agent == self.agent:
+            return self.album_art.read(album_id), False
+        image = self.artwork_cache.read(artist_agent, album_id)
+        if image is not None:
+            return image, False
+        if not self.online or self.catalogue is None:
+            return None, False
+        key = (artist_agent, album_id)
+        with self._artwork_lock:
+            if key in self._artwork_jobs:
+                return None, True
+            if self._artwork_cooldown.get(key, 0) > time.monotonic():
+                return None, False
+            if not self._artwork_slots.acquire(blocking=False):
+                return None, True
+            self._artwork_jobs.add(key)
+        thread = threading.Thread(target=self._fetch_album_artwork, args=key, daemon=True,
+                                  name="holochain-artwork-fetch")
+        try:
+            thread.start()
+        except RuntimeError:
+            with self._artwork_lock:
+                self._artwork_jobs.discard(key)
+            self._artwork_slots.release()
+            return None, False
+        return None, True
+
+    def _fetch_album_artwork(self, artist_agent: str, album_id: str) -> None:
+        key = (artist_agent, album_id)
+        succeeded = False
+        try:
+            trusted = self.catalogue.resolve_artwork(artist_agent, album_id)
+            cas = self.paths.library / "artwork-cas"
+            for host in trusted.hosts[:3]:
+                try:
+                    fetch_ciphertext(
+                        moq_binary=binaries.find("holochain-music-moq"),
+                        signed_manifest=trusted.manifest, trusted_artist=trusted.artist_key,
+                        expected_manifest_sha256=trusted.digest, store=cas,
+                        url=host.url, cert_fingerprint_hex=host.fingerprint,
+                        allow_lan=self.settings["allow_lan"],
+                        stall_timeout=8, total_timeout=25)
+                    image = recover_public_artwork(
+                        trusted.manifest, store=cas, artist_agent=artist_agent,
+                        album_id=album_id, trusted_artist=trusted.artist_key,
+                        expected_digest=trusted.digest)
+                    self.artwork_cache.save(
+                        artist_agent=artist_agent, album_id=album_id, manifest=trusted.manifest,
+                        trusted_artist=trusted.artist_key, expected_digest=trusted.digest,
+                        image=image, store=cas)
+                    succeeded = True
+                    break
+                except (MoqFetchError, ValueError, OSError):
+                    continue
+        except Exception:
+            # Artwork is optional. Never surface a network failure as an audio
+            # error, and never show unverifiable bytes.
+            pass
+        finally:
+            with self._artwork_lock:
+                self._artwork_jobs.discard(key)
+                if succeeded:
+                    self._artwork_cooldown.pop(key, None)
+                else:
+                    self._artwork_cooldown[key] = time.monotonic() + 45
+            self._artwork_slots.release()
 
     # ---- library + grants -----------------------------------------------
     def _meta_from_trusted(self, trusted) -> dict:
