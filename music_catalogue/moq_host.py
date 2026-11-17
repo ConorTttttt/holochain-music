@@ -250,8 +250,23 @@ def fetch_ciphertext(
                         raise MoqFetchError("unknown MoQ progress event")
             if pending.strip():
                 raise MoqFetchError("MoQ emitted output after completion")
-            if proc.wait(timeout=max(1.0, deadline - time.monotonic())) != 0:
-                raise MoqFetchError("MoQ fetch exited with an error")
+            # The native receiver may emit fetch_complete and then linger
+            # during shutdown. A single hour-long wait would ignore Pause.
+            # Poll in bounded intervals so the same cancellation event still
+            # terminates the child promptly after its final progress report.
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise MoqFetchCancelled("fetch cancelled during receiver shutdown")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MoqFetchError("MoQ fetch did not exit before its deadline")
+                try:
+                    exit_code = proc.wait(timeout=min(0.2, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                if exit_code != 0:
+                    raise MoqFetchError("MoQ fetch exited with an error")
+                break
             return {"received_chunks": position, "indices": expected_order,
                     "transport": "pinned-moq-quic-host-v1"}
         except subprocess.TimeoutExpired as exc:
