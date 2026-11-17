@@ -13,7 +13,7 @@ linked here. Do not fabricate or copy hashes from the historical packages.
 | Repository | `ConorTttttt/holochain-music` |
 | Main at audit | `bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637` |
 | Python version (pyproject + package) | `1.0.0rc3` |
-| Combined CI draft PR #49 | `b86ab9f6530075787338884497faf991c26349f9` — **NOT APPROVED**, remaining CI pending at review |
+| Combined CI draft PR #49 | `435b88d36095feb68b4ee32c159b7d64d0b0bf5d` — **NOT APPROVED**, remaining CI pending at review |
 | Final integrated tested SHA | **PENDING: combined CI approval + RC preparation merge** |
 | Final Git tree SHA and SOURCE_DATE_EPOCH | **PENDING: exact final commit** |
 | Public release/tag/upload permission | **NOT GRANTED** |

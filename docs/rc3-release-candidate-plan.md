@@ -13,7 +13,7 @@ Audit reference: `main` = `bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637`
 (isolated real-conductor test groups) were **open, not integrated** at audit.
 The Agent 3 provenance draft is stacked on Agent 2's combined-CI branch
 `ci/rc1-combined-ci-baseline-agent2` (PR #49) at
-`b86ab9f6530075787338884497faf991c26349f9`. This review-only
+`435b88d36095feb68b4ee32c159b7d64d0b0bf5d`. This review-only
 integration dependency is **NOT an approved release baseline**. Rebase
 and review this candidate against the accepted source SHA after the required
 same-SHA CI gates pass; do not merge or package a public release on the
