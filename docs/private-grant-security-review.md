@@ -1,3 +1,5 @@
+> **17 November 2026 — Agent 4 status: INDEPENDENT REVIEW PENDING, NOT APPROVED.** Audited source main bd7aabc implements the documented provenance, private entry, grant verification and refusal paths; the final candidate still needs independent threat-model review and real-conductor retests. The 500/all-senders/hour limit applies **separately to the request and grant inbox entry types**, and inbox-rate checks scan stored private history; this is a residual storage/query DoS consideration. Public source-chain action timing/count, relay peer metadata, Sybil spam, missing key rotation and plain-HTTP relay framing remain explicit acceptance decisions. See [release-grant-security-verification.md](release-grant-security-verification.md) and [release-gate-matrix.md](release-gate-matrix.md). Do not treat the approval requested below as already granted.
+
 # Private grant workflow — security review for approval (rc1)
 
 Scope: storage DNA coordinator functions `send_access_request`,
