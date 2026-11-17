@@ -167,3 +167,11 @@ gates](https://github.com/ConorTttttt/holochain-media-core/pull/7)
 three-real-conductor offline-delivery acceptance (artist, listener, attacker),
 platform testing, a key-rotation policy, privacy and independent security
 review, and an explicit migration/rollback decision.
+
+### 8a. Agent 10 follow-up: test gates and integration warning (17 November 2026)
+
+The Media Core proposal now has an [independent three-conductor acceptance specification](https://github.com/ConorTttttt/holochain-media-core/blob/docs/agent10-core009-acceptance-20261117/docs/CORE-009-PROTOTYPE-ACCEPTANCE.md), based on [Media Core PR #7](https://github.com/ConorTttttt/holochain-media-core/pull/7). It requires no online overlap between artist and listener, a real third DHT peer that independently serves published actions after the publisher exits, authenticated create-action authorship, recipient mailbox-key assurance, restart/idempotency tests and adversarial rejection cases. It is a **proposal**, not evidence of functioning offline delivery; no CORE-009 tests have run.
+
+The Delivery Zome reference's PendingItem.author is a body field, **not** Holochain-verified sender provenance. Public inbox links are observable and can reveal the sender–recipient graph. The current Media Core security policy forbids DHT encrypted private grants; changing it would require an explicit, independently reviewed exception. Current S2 v2.1 keys cover Ed25519 manifest and receipt signing, **not** a mailbox X25519 key with proven possession and rotation. Neither copying older CAL-1.0/HDK code nor treating publication as recipient acknowledgement is approved.
+
+**Do not retrofit this into RC1.** The existing 7-day local outbox assigns an 8-byte retry-only ID after call_remote fails; it is not a shared authenticated logical message ID across transports. Any future isolated protocol must create a 32-byte random ID *before* direct-vs-DHT transport selection, preserve one idempotent recipient effect after duplicated/replayed delivery, and keep all current Music grant/verifier, key unwrap, CAS/MoQ and private-inbox behaviour unchanged. Until the owner accepts the DHT metadata exposure and encrypted-grant policy exception, no production mailbox is authorised.
