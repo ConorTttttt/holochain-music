@@ -1,3 +1,5 @@
+> **17 November 2026 — candidate identity and evidence caution:** This is the **historical RC1 Ubuntu procedure**, not proof that physical tests have passed on current main (bd7aabc) or any later RC3 build. Its RC1 filename, version, source-tree path and checksum references MUST be replaced with a separately verified, owner-approved package identity before installing. A complete current acceptance pack—including physical Windows WASAPI issue #26, denial/outage, exact binaries, device/log fields and signed evidence—is at [hardware-acceptance-evidence-pack.md](hardware-acceptance-evidence-pack.md). All those gates remain NOT RUN or BLOCKED for a new candidate. Never delete existing library CAS data to simulate a host outage; use a newly licensed, not-yet-downloaded track.
+
 # Hardware test plan — v1.0.0-rc1 (release candidate)
 
 These four tests need a person and real hardware. Run them in order and paste
