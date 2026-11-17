@@ -1,3 +1,5 @@
+> **17 November 2026 — Agent 4 update (nonfinal):** This audit's historical RC1/SBOM observations remain useful but do not establish completeness for main at bd7aabc or a new package. The application now declares 1.0.0rc3. A proposed per-platform dependency inventory, owner/legal decision record, exact source-obligation checklist and **unapproved** notices are in [release-dependency-inventory.md](release-dependency-inventory.md), [release-licensing-decision-record.md](release-licensing-decision-record.md) and [../packaging/proposed-notices/](../packaging/proposed-notices/). Both packages bundle Inter WOFF2 fonts licensed SIL OFL-1.1; the complete font licence is at holochain_music/ui/fonts/Inter-OFL.txt. The Linux .deb currently lacks a copyright file/notices/source offer and the Windows Rust transitive notices remain incomplete. No licence or legal approval has been granted; public distribution is **BLOCKED**.
+
 # Licensing audit (v1.0.0-rc1) — NOT legal advice, NOT final
 
 Status: **draft for the owner's decision and legal review.** No licence has been
