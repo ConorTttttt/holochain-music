@@ -201,6 +201,13 @@ def issue_personal_licence(
 
 def grant_kind(grant: dict) -> str:
     """Public, *unauthenticated* classification for display/routing only."""
+    # v2 delivery wrapper has a distinct envelope. This is a DISPLAY hint,
+    # never authority: app code must verify the signature and chain anchor.
+    if isinstance(grant, dict) and set(grant) == {"grant", "anchor_action"}:
+        body = grant["grant"].get("body") if isinstance(grant["grant"], dict) else None
+        if isinstance(body, dict) and body.get("schema") == "holochain-music/access-grant/v2":
+            return ("perpetual-personal" if body.get("term") == "perpetual" and
+                    isinstance(body.get("rights"), list) and "export" in body["rights"] else "stream")
     schema = grant.get("body", {}).get("schema") if isinstance(grant, dict) else None
     if schema == LICENCE_SCHEMA:
         return "perpetual-personal"
