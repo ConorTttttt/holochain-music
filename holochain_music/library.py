@@ -128,6 +128,13 @@ class Library:
                 (d / "grant-v2-evidence.json").unlink(missing_ok=True)
             self.update_meta(file_id, grant_kind=kind, grant_received_at=int(time.time()))
 
+    def set_v2_evidence(self, file_id: str, grant: dict, evidence: dict) -> None:
+        """Refresh a validated-conductor snapshot for the exact saved grant."""
+        with self._lock:
+            if self.grant(file_id) != grant:
+                raise LibraryError("v2 authority snapshot no longer belongs to saved grant")
+            _atomic_json(self._dir(file_id) / "grant-v2-evidence.json", evidence)
+
     def update_meta(self, file_id: str, **fields) -> None:
         with self._lock:
             meta = self.meta(file_id)
