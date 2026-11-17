@@ -41,11 +41,16 @@ def _atomic_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     try:
+        # Owner-only before any content is written: POSIX mode bits alone do
+        # nothing on Windows, where the file would inherit its parent's DACL.
         with os.fdopen(fd, "wb") as f:
+            # Closing the handle on ACL failure allows Windows to remove the
+            # empty temporary file; sensitive bytes are still written only after
+            # the owner-only ACL has been applied.
+            portable.make_private_file(Path(temp))
             f.write(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
             f.flush()
             os.fsync(f.fileno())
-        os.chmod(temp, 0o600)
         portable.replace(temp, path)
     except BaseException:
         Path(temp).unlink(missing_ok=True)
