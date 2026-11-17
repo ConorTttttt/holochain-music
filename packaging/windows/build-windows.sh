@@ -122,6 +122,9 @@ cp "$stage/SHA256SUMS.txt" "$root/SHA256SUMS.txt"
 touch -h -d "@$SOURCE_DATE_EPOCH" "$root/SHA256SUMS.txt"
 size_kb=$(find "$root" -type f -printf '%s\n' | awk '{s+=$1} END {print int((s+1023)/1024)}')
 mkdir -p "$out"
+# makensis changes into the .nsi directory, so a relative OUTDIR (CI passes
+# "dist") must be resolved first.
+out=$(cd "$out" && pwd)
 ${MAKENSIS:-makensis} -V2 -DVERSION="$version" -DSTAGE="$root" -DSIZE_KB="$size_kb" \
   -DOUTFILE="$out/$artefact" "$here/installer.nsi"
 cp "$stage/SHA256SUMS.txt" "$out/${artefact%.exe}.contents.sha256"
