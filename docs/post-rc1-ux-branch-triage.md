@@ -136,6 +136,30 @@ Do **not** use the same close-as-integrated claim for [#5](https://github.com/Co
 
 **Suggested closure comment for an ancestry-proven PR:** “Closing as integrated into `main`: the exact historical head `<SHA>` is an ancestor of current `main` `bd7aabc` (GitHub compare: `behind_by=0` from historical head to main). Historical commits and regression tests remain traceable through the PR and repository. No re-merge is required. Post-RC1 follow-up work is tracked in PR #53.”
 
+
+### Historical acceptance-evidence lookup (retain when closing #9–#22)
+
+These are **existing source/test pointers on main**, not freshly executed assertions. Each closure comment should link its historical PR/head commit above **and** the relevant test/doc location below. Reviewers must consult each PR's original test log and the current CI result before making any stronger “verified operationally” claim.
+
+| PR | Current-main regression / design evidence pointers |
+|---|---|
+| #9 | [catalogue tests](../tests/test_music_catalogue.py), [storage validation](../tests/test_storage_validation.py), [S5 retrieval design](s5-s2-s4-integration.md) |
+| #10 | [live conductor tests](../tests/test_live_conductor.py), [S6 design](s6-live-conductor-bridge.md) |
+| #11 | [S7 fixture tests](../tests/test_s7_fixture.py), [S7 design](s7-live-end-to-end.md) |
+| #12 | [S8 transport tests](../tests/test_s8_moq.py), [S8 design](s8-moq-encrypted-transport.md) |
+| #13 | [S9 endpoint tests](../tests/test_s9_moq.py), [S9 design](s9-holochain-moq-endpoint.md) |
+| #14 | [S10 grant/audio tests](../tests/test_s10_granted_audio.py), [S10 design](s10-granted-wav-playback.md) |
+| #15 | [S11 buffering tests](../tests/test_s11_buffered_playback.py), [S11 design](s11-buffered-alsa-playback.md) |
+| #16 | [S12 streaming tests](../tests/test_s12_streaming_playback.py), [S12 design](s12-playback-while-moq-arrives.md) |
+| #17 | [S13 jitter tests](../tests/test_s13_adaptive_playback.py), [S13 design](s13-adaptive-moq-jitter.md) |
+| #18 | [S14 repair tests](../tests/test_s14_seek_repair.py), [S14 design](s14-verified-cas-repair-seek-replay.md) |
+| #19 | [S15 selective recovery tests](../tests/test_s15_selective_moq_repair.py), [S15 design](s15-selective-moq-quic-repair.md) |
+| #20 | [S16 in-flight seek tests](../tests/test_s16_inflight_seek.py), [S16 design](s16-inflight-moq-seek.md) |
+| #21 | [S17 pinned-LAN tests](../tests/test_s17_lan_moq.py), [S17 design](s17-private-lan-moq.md) |
+| #22 | [S18 local player tests](../tests/test_s18_local_player.py), [S18 design](s18-local-authorised-music-player.md) |
+
+A current-main Storage protocol workflow [completed successfully](https://github.com/ConorTttttt/holochain-music/actions/runs/44074316970) at this audit; that single result must **not** be reported as a successful run of the above complete matrix. New CI is pending on this documentation PR.
+
 ### Updated feature conflict and implementation evidence
 
 - **#38 signed peer artwork:** `holochain_music/artwork_transport.py` and `tests/test_artwork_transport.py` are added only on its branch. The current `main` uses `albumArtworkUrl(albumId)` for **local-only** art; old #38 changes it to `albumArtworkUrl(albumId, artistAgent)`. Main's `ui/app.js` is now approximately **922 lines** versus **542 lines** on the old #38 branch. Port this API/call-site and validated transport/controller paths selectively; never replace the current JS, playback, offline, playlist, or collection implementation. Preserve independent album-author and S2 signer verification, endpoint/certificate pinning and revalidation of offline cache; test public visibility with no audio grant.
