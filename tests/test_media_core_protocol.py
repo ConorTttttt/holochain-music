@@ -63,6 +63,13 @@ class AdapterProtocolTests(unittest.TestCase):
                 core._write(Path("/unused"), "public.json", {"x": 1})
         self.assertEqual(cm.exception.error_class, "local-io")
 
+    def test_temporary_directory_failure_is_local_io(self):
+        with mock.patch.object(core.tempfile, "TemporaryDirectory",
+                               side_effect=PermissionError("temp directory unavailable")):
+            with self.assertRaises(core.MediaCoreLocalIO) as cm:
+                core.verify_manifest({"body": {}}, bytes(32))
+        self.assertEqual(cm.exception.error_class, "local-io")
+
     def test_only_public_material_crosses_cli_invocation(self):
         """Inspect both arguments and staged files for every adapter operation."""
         signing_private = Ed25519PrivateKey.generate()
