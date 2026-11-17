@@ -106,3 +106,71 @@ For every proposed UI integration, verify with mouse **and keyboard alone**: Tab
 ## Change management
 
 This document is itself **documentation-only**. No feature branch was merged, closed or modified and no successful test runs are claimed. Close superseded PRs in separate administrative actions after their review notes are recorded. Create one separately reviewable implementation PR per feature; do not rewrite original historical feature branches and do not reset the release baseline.
+
+## Agent 9 execution addendum — ancestry, CI and review disposition
+
+Rechecked **2026-11-17**, baseline `main` = [`bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637`](https://github.com/ConorTttttt/holochain-music/commit/bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637). This addendum verifies **each** original S9–S22 branch head, not just representative examples. These checks use GitHub's `compare/<historical-branch>...main` ancestry API. No feature code was rebased or run; the evidence records branch history, **not** new physical acceptance.
+
+### Exact historical S-series ancestry / proposed PR closure record
+
+Every row below returned `status=ahead`, `behind_by=0`: `main` contains the exact PR head commit as an ancestor. The PRs are still open drafts and may be **administratively closed as integrated**, after the maintainer confirms no in-flight discussion or review requires preserving them open. Do not delete historical branches or re-merge them.
+
+| Historical PR | Head commit contained in current `main` | Proposed close note |
+|---|---|---|
+| [#9](https://github.com/ConorTttttt/holochain-music/pull/9) | [`864e895`](https://github.com/ConorTttttt/holochain-music/commit/864e895984ad9f790ee23f4618dbeeea91b66899) | Integrated in `main`; preserve verified S5→S2→S4 retrieval history |
+| [#10](https://github.com/ConorTttttt/holochain-music/pull/10) | [`c9ba6ac`](https://github.com/ConorTttttt/holochain-music/commit/c9ba6aca8d474522e4d82764cbeebb5932af7583) | Integrated; conductor bridge |
+| [#11](https://github.com/ConorTttttt/holochain-music/pull/11) | [`e398508`](https://github.com/ConorTttttt/holochain-music/commit/e398508f299445fb6179ce36b09096b35a4d6f8d) | Integrated; live verified retrieval |
+| [#12](https://github.com/ConorTttttt/holochain-music/pull/12) | [`7b6916a`](https://github.com/ConorTttttt/holochain-music/commit/7b6916a0ef5634c5c916aee339a89e0d0b04b644) | Integrated; MoQ ciphertext transport |
+| [#13](https://github.com/ConorTttttt/holochain-music/pull/13) | [`b047038`](https://github.com/ConorTttttt/holochain-music/commit/b0470387b0863f5063f8ec0b65075f3fe9c4de54) | Integrated; authenticated endpoint |
+| [#14](https://github.com/ConorTttttt/holochain-music/pull/14) | [`30fb1ad`](https://github.com/ConorTttttt/holochain-music/commit/30fb1adc5415fbdbeaa24b4d97a76fb3bc1397b9) | Integrated; owner-granted WAV |
+| [#15](https://github.com/ConorTttttt/holochain-music/pull/15) | [`5765ddb`](https://github.com/ConorTttttt/holochain-music/commit/5765ddb2c18b44c16ea7d0b33e3501a8e74ce824) | Integrated; ALSA buffering |
+| [#16](https://github.com/ConorTttttt/holochain-music/pull/16) | [`b079783`](https://github.com/ConorTttttt/holochain-music/commit/b07978339900463dcde184ffa4c61ca99c7ae18e) | Integrated; streaming overlap |
+| [#17](https://github.com/ConorTttttt/holochain-music/pull/17) | [`a0dc1c2`](https://github.com/ConorTttttt/holochain-music/commit/a0dc1c218f61c8aff978bdce19b722705642404b) | Integrated; jitter adaptation |
+| [#18](https://github.com/ConorTttttt/holochain-music/pull/18) | [`d443d47`](https://github.com/ConorTttttt/holochain-music/commit/d443d476066537d12b61919401af3113b46af36c) | Integrated; repair and seek |
+| [#19](https://github.com/ConorTttttt/holochain-music/pull/19) | [`ebc8892`](https://github.com/ConorTttttt/holochain-music/commit/ebc88925156d7fc69fb6769a91d2d548451b5168) | Integrated; selective MoQ repair |
+| [#20](https://github.com/ConorTttttt/holochain-music/pull/20) | [`9443286`](https://github.com/ConorTttttt/holochain-music/commit/94432866c359e19abc08c603f81e5341a2a0b581) | Integrated; in-flight seek |
+| [#21](https://github.com/ConorTttttt/holochain-music/pull/21) | [`4805d99`](https://github.com/ConorTttttt/holochain-music/commit/4805d997813cafda5d35f0fe8d474311978262d0) | Integrated; pinned private LAN |
+| [#22](https://github.com/ConorTttttt/holochain-music/pull/22) | [`0ac4687`](https://github.com/ConorTttttt/holochain-music/commit/0ac4687ef30c69809bc0cb113668f66e99e6f307) | Integrated; local authorised player |
+
+Do **not** use the same close-as-integrated claim for [#5](https://github.com/ConorTttttt/holochain-music/pull/5), [#6](https://github.com/ConorTttttt/holochain-music/pull/6), [#7](https://github.com/ConorTttttt/holochain-music/pull/7): GitHub reports `diverged` and **3, 2, 6 behind** respectively when comparing those heads to `main`. Inspect each branch's unique commits and security/protocol intent; then describe any close as **superseded** with current replacement evidence. [#25](https://github.com/ConorTttttt/holochain-music/pull/25), [#28](https://github.com/ConorTttttt/holochain-music/pull/28) and [#29](https://github.com/ConorTttttt/holochain-music/pull/29) likewise diverge (19, 28 and 42 commits behind `main` as compared from the old heads); require residual-diff review before marking superseded.
+
+**Suggested closure comment for an ancestry-proven PR:** “Closing as integrated into `main`: the exact historical head `<SHA>` is an ancestor of current `main` `bd7aabc` (GitHub compare: `behind_by=0` from historical head to main). Historical commits and regression tests remain traceable through the PR and repository. No re-merge is required. Post-RC1 follow-up work is tracked in PR #53.”
+
+### Updated feature conflict and implementation evidence
+
+- **#38 signed peer artwork:** `holochain_music/artwork_transport.py` and `tests/test_artwork_transport.py` are added only on its branch. The current `main` uses `albumArtworkUrl(albumId)` for **local-only** art; old #38 changes it to `albumArtworkUrl(albumId, artistAgent)`. Main's `ui/app.js` is now approximately **922 lines** versus **542 lines** on the old #38 branch. Port this API/call-site and validated transport/controller paths selectively; never replace the current JS, playback, offline, playlist, or collection implementation. Preserve independent album-author and S2 signer verification, endpoint/certificate pinning and revalidation of offline cache; test public visibility with no audio grant.
+- **#39 Now Playing:** Main's `ui/app.js` already contains `applyPlayer`, `lastSeq`, `pendingSeek`, `requestSeek(frame)`, `renderPlayer()`, queue, playlist and offline-control handlers. Old PR adds a side panel/dialog, `renderLayers()` and focus handlers. Keep these as **view-only projections**, not a second player or remote API. The old `server.py` syntax correction is already on main. PR #39 currently reports `mergeable=false`; do not merge wholesale.
+- **#23 request decisions:** Main `ArtistService` has `requests()` and `grant()` but no `reject()` or `decide_batch()`. Old PR uses a local atomic decision ledger, reentrant request lock, explicit 1–25 hashes per batch and partial-result reporting. Its single-request and bulk decisions need replay/idempotency/queue-delivery and kind-immutability testing on the **current** grant code before port; declines must not revoke a prior grant.
+- **#24 metadata/DNA:** The old PR changes `dna/`, `music-dna/`, the native bridge, request reply protocol and public DHT cover entries. No subset that modifies DNA may be adopted until versioned schema, backward compatibility, package migration and the conflict with #38's MoQ artwork model are agreed.
+
+### CI evidence snapshot (not a fresh test run)
+
+| Source/head | Observed workflow status from GitHub Actions | Interpretation |
+|---|---|---|
+| `main` `bd7aabc` | Several completed **successful** Storage protocol push runs; another Storage protocol run **queued** at this audit | Does not establish all release gates |
+| PR #53 `0077594` | v1 application, Windows port and Storage protocol runs **queued** | Documentation branch has **no concluded CI** in this snapshot |
+| PR #38 `f7311d6` | v1 application, Storage protocol, Windows port, catalogue/storage integration: **failed** | Old CI fails; no current-baseline integrated acceptance |
+| PR #39 `4b2b43e` | v1 application and Storage protocol **succeeded**; integration **cancelled**; Windows **failed** | Old-head partial green is insufficient |
+| PR #23 `61b6818` | v1 application and Storage protocol **succeeded**; integration **cancelled** | Old-head partial green is insufficient |
+| PR #24 `2c49f1c` | v1, catalogue, Sweettest, storage and integration workflow runs **succeeded** on the **old stacked DNA** | No migration or current-main compatibility proof |
+
+These statuses were read from the respective GitHub Actions workflow runs on 2026-11-17; queued and cancelled are neither successes nor failures. The earlier #38 failure classifications described above remain diagnostic hypotheses tied to selected logs; no new failing code was executed in this audit.
+
+### Ready-for-implementation backlog and merge gates
+
+| Sequence | Independent proposed PR (from a **fresh current-main branch**) | Dependencies / mandatory gate | Status as audited |
+|---|---|---|---|
+| P2-A | **Now Playing presentation only**, port #39's panel/dialog and adapted static tests; do not copy old state handlers | Canonical `applyPlayer` / seek / queue; current JS syntax and UI regression checks; actual keyboard, screen reader, zoom and physical audio | **Not implemented on current main; blocked on selective port** |
+| P2-B | **Signed peer artwork**, port #38's public package / resolver / app endpoint and artist-scoped UI calls; no DNA change | Signed provenance, manifest pin, MoQ host/TLS verification, offline cache tamper rejection; **physical Alice/Bob two-device test required** | **Not implemented on current main; live acceptance NOT RUN** |
+| P2-C | **Artist request inbox decisions**, port #23 server, ledger and filters in isolation | Exact requested kind, stale/duplicate request and existing-grant invariants; persistent file permissions; max-25 partial results, accessible confirmations | **Not implemented on current main** |
+| P2-D | **Versioned metadata migration design** for #24; no production migration | Pick MoQ-versus-DHT artwork model, additive DNA types, old-app/hApp compatibility and rollback, two-conductor matrix | **Blocked on architecture decision** |
+| P2-E | Future artwork replacement/global cache eviction and additional album/genre UI | Versioned album revisions and explicit cache bounds | **Deferred** |
+
+A full runnable [Alice/Bob artwork acceptance runbook](post-rc1-artwork-two-device-acceptance.md) supplies required evidence IDs, rejection cases and pass/fail capture. A successful unit test alone is **not** a substitute for the two-device demonstration.
+
+### Agent 9 execution status / residual risks
+
+- **GitHub inspections actually performed:** latest main, PR #53/#38/#39/#23/#24 metadata and patches, code paths, each #9–#22 ancestry comparison, divergent branch checks, selected CI run metadata.
+- **Tests actually run by this agent:** **none**. Shell access to the remote GitHub checkout and suitable physical conductors/devices was not available through this execution environment. Earlier contributors' PR test claims and CI runs are listed as *previous evidence*, not this agent's executions.
+- **Changed files in this PR:** this triage document and the linked two-device acceptance runbook only. No Holochain identities, DNAs, audio grants, MoQ trust roots, signed manifests, user data, UI, or player code was changed.
+- **Recommended next maintainer action:** review these closure recommendations; then create **separate** main-based feature PRs only after suitable local tooling and hardware test slots are available. Explicitly preserve draft status until all merge gates pass. Do not merge PR #53 into RC1 as a feature.
