@@ -114,8 +114,10 @@ For all private flows use two separate short-path sandbox roots, e.g. `HOLOCHAIN
 # Preconditions: app stopped; disposable test root; selected object unshared.
 OBJ=/absolute/path/to/DISPOSABLE-CAS-OBJECT
 test -f "$OBJ" && test ! -L "$OBJ" || exit 1
-cp -p -- "$OBJ" "$OBJ.agent5-backup"
-sha256sum "$OBJ" "$OBJ.agent5-backup" > before-corruption.sha256
+BACKUP=$(mktemp "${TMPDIR:-/tmp}/hm-agent5-cipher.XXXXXX")
+chmod 600 "$BACKUP"
+cp -p -- "$OBJ" "$BACKUP"
+sha256sum "$OBJ" "$BACKUP" > before-corruption.sha256
 python3 - "$OBJ" <<'PY'
 import sys
 from pathlib import Path
@@ -130,7 +132,7 @@ PY
 sha256sum "$OBJ" > tampered-object.sha256
 ```
 
-While A remains stopped, restart B offline and attempt to open/play the affected object, then try WAV export. **Expected:** an integrity/availability error; no unauthenticated PCM or completed export. Record app state, stderr, audio/bridge logs, exact object digest before/after. A mismatch-triggered *safe refusal* is acceptable; never claim the screen must display a particular text. Stop B, restore the original test object with `mv -- "$OBJ.agent5-backup" "$OBJ"` and verify its hash matches `before-corruption.sha256`; restart and confirm authenticated local playback. Optionally repeat with the bad object and A online to confirm authenticated repair (no stale/unauthorised audio during repair); record repair separately. **Do not tamper artist manifests, private grants, keystores or any production data.** If a sandbox cannot be isolated, mark H09 **BLOCKED**, do not run a destructive test.
+While A remains stopped, restart B offline and attempt to open/play the affected object, then try WAV export. **Expected:** an integrity/availability error; no unauthenticated PCM or completed export. Record app state, stderr, audio/bridge logs, exact object digest before/after. A mismatch-triggered *safe refusal* is acceptable; never claim the screen must display a particular text. Stop B, restore the original test object from the **external** backup with `cp -p -- "$BACKUP" "$OBJ"`, confirm `cmp -s "$BACKUP" "$OBJ"` succeeds and the restored object SHA-256 matches the recorded original, then remove the extra backup when the test is closed; restart and confirm authenticated local playback. Optionally repeat with the bad object and A online to confirm authenticated repair (no stale/unauthorised audio during repair); record repair separately. **Do not tamper artist manifests, private grants, keystores or any production data.** If a sandbox cannot be isolated, mark H09 **BLOCKED**, do not run a destructive test.
 
 ## 3. Required result reporting and go/no-go
 
