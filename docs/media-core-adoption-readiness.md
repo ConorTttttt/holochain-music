@@ -142,8 +142,34 @@ every adapter CLI invocation, and the real Rust CLI rejects unknown flags.
 
 ## 6. Startup and transfer performance observations
 
-**No new measurements are asserted**: this execution environment cannot
-build Rust or fetch repositories via a shell. The opt-in benchmark captures:
+**Initial hosted CI evidence (17 Nov 2026):** run
+[44071515157](https://github.com/ConorTttttt/holochain-music/actions/runs/44071515157)
+on PR revision `e98cc910` completed **success on Linux and Windows**:
+native CLI build, CLI unit tests, disabled-default tests, 28/28 opt-in test
+results and benchmark completed on both runners. The 28 tests include
+10 executed checks with the CLI disabled (18 skipped) and 28 executed checks
+after explicit opt-in (zero skips). This result **predates** subsequent
+private-field boundary hardening on the same PR; run the matrix again against
+the final head before declaring acceptance.
+
+Measured 3-sample medians (milliseconds; hosted runners, 128 KiB / 4 MiB):
+
+| Runner / payload | Python metadata | Rust CLI metadata | Python integrity | Rust CLI audit | Python replicate + sign | Rust CLI import |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux / 128 KiB | 0.110 | 0.794 | 0.222 | 0.917 | 1.372 | 1.775 |
+| Linux / 4 MiB | 0.142 | 0.830 | 2.957 | 3.582 | 19.433 | 16.421 |
+| Windows / 128 KiB | 0.236 | 20.791 | 0.506 | 21.451 | 13.600 | 32.737 |
+| Windows / 4 MiB | 0.222 | 20.984 | 5.436 | 26.840 | 178.167 | 192.973 |
+
+First CLI manifest verification: Linux 0.960 ms (128 KiB) / 0.993 ms
+(4 MiB); Windows 21.280 / 21.566 ms. Native build hashes in CI logs:
+Linux `c4f23d3b17ba7a84506887078b1d8ecfb11885e809e2377b4f4cbca1ea6def23`;
+Windows `1b8b991be17099975ce65ff8c69561dd908798ebe9eb409a81511a42c7f1b7e1`.
+These are identification hashes, not independently replicated
+bit-for-bit deterministic build proofs. GitHub image revisions and host
+conditions can affect output/performance.
+
+The opt-in benchmark captures:
 
 - First CLI `verify-manifest` latency (includes process launch), median of
   repeated CLI verification, versus Music in-process S1 metadata verification.
