@@ -469,6 +469,18 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         self.assertEqual(calls[1], [1], "only damaged ciphertext must be refetched")
         self.assertEqual(victim.read_bytes(), original)
 
+    def test_completed_corrupt_download_does_not_start_repair_offline(self):
+        d = self.make_download()
+        d.state = "complete"
+        app = self.fake_app()
+        app.library.verify_complete.return_value = False
+        app.downloads[self.file_id] = d
+        app.online = False
+        with self.assertRaisesRegex(AppError, "offline"):
+            app._ensure_download(self.file_id)
+        self.assertEqual(d.progress()["state"], "complete")
+        self.assertFalse(d.is_running())
+
     def test_completed_worker_cannot_be_rearmed_before_exit(self):
         d = self.make_download()
         with d._cv:
