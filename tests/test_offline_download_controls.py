@@ -6,6 +6,8 @@ NOT claim to validate real host connectivity, transfer rate or native audio.
 from pathlib import Path
 import shutil
 import copy
+import json
+import subprocess
 import tempfile
 import threading
 import time
@@ -23,7 +25,7 @@ from holochain_music.streaming import Download, TrackUnavailable
 from holochain_storage.package import create_package, manifest_digest, object_path, public_key_bytes
 from music_catalogue.content_grants import (LICENCE_SCHEMA, GRANT_SCHEMA,
     issue_content_grant, issue_personal_licence)
-from music_catalogue.moq_host import MoqFetchCancelled, MoqFetchError
+from music_catalogue.moq_host import MoqFetchCancelled, MoqFetchError, fetch_ciphertext
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "holochain_music/ui/app.js").read_text(encoding="utf-8")
@@ -388,6 +390,41 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             self.assertEqual(len(calls), 1)
             self.assertEqual(d.pause()["state"], "paused")
             self.assertFalse(d.is_running())
+
+
+    def test_native_receiver_shutdown_wait_is_cancellable(self):
+        # Simulate a receiver that truthfully reports all verified chunks,
+        # then hangs before exiting. Pause must not wait for the hour deadline.
+        for chunk in self.chunks:
+            saved = object_path(self.destination, chunk["sha256"])
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(object_path(self.source, chunk["sha256"]), saved)
+        lines = [dict(kind="chunk_verified", index=chunk["index"],
+            sha256=chunk["sha256"], cipher_bytes=chunk["cipher_bytes"])
+            for chunk in self.chunks]
+        lines.append(dict(kind="fetch_complete", received_chunks=len(self.chunks),
+            manifest_sha256=manifest_digest(self.manifest), file_id=self.file_id))
+        events = b"".join(json.dumps(line).encode() + b"\\n" for line in lines)
+        receiver = MagicMock()
+        cancel = threading.Event()
+        def wait_for_exit(timeout=None):
+            if timeout is None:
+                return 0
+            cancel.set()
+            raise subprocess.TimeoutExpired(cmd="fake-receiver", timeout=timeout)
+        receiver.wait.side_effect = wait_for_exit
+        reader = MagicMock()
+        reader.read.return_value = events
+        with patch("music_catalogue.moq_host.subprocess.Popen", return_value=receiver), \
+             patch("music_catalogue.moq_host.portable.PipeReader", return_value=reader), \
+             patch("music_catalogue.moq_host.portable.supervise"):
+            with self.assertRaises(MoqFetchCancelled):
+                fetch_ciphertext(moq_binary="fake-receiver", signed_manifest=self.manifest,
+                    trusted_artist=public_key_bytes(self.artist),
+                    expected_manifest_sha256=manifest_digest(self.manifest),
+                    store=self.destination, url="https://127.0.0.1:12345",
+                    cert_fingerprint_hex="00" * 32, cancel=cancel)
+        receiver.kill.assert_called_once()
 
     def test_paused_download_stays_protected_from_removal_until_worker_exits(self):
         d = self.make_download()
