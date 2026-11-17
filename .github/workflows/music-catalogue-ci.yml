@@ -1,20 +1,12 @@
 name: Music catalogue tests
 
+# Required release gates run on every PR and main push; shared Python,
+# packaging, or workflow changes must not silently omit catalogue checks.
 on:
   pull_request:
-    paths:
-      - 'music-dna/**'
-      - 'music_catalogue/**'
-      - 'tests/test_music_catalogue.py'
-      - 'tests/test_s18_local_player.py'
-      - '.github/workflows/music-catalogue-ci.yml'
   push:
-    paths:
-      - 'music-dna/**'
-      - 'music_catalogue/**'
-      - 'tests/test_music_catalogue.py'
-      - 'tests/test_s18_local_player.py'
-      - '.github/workflows/music-catalogue-ci.yml'
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
