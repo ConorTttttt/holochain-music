@@ -410,6 +410,8 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             manifest_sha256=manifest_digest(self.manifest), file_id=self.file_id))
         events = b"".join(json.dumps(line).encode() + b"\n" for line in lines)
         receiver = MagicMock()
+        # A running Popen.poll() returns None until the child exits.
+        receiver.poll.return_value = None
         cancel = threading.Event()
         def wait_for_exit(timeout=None):
             if timeout is None:

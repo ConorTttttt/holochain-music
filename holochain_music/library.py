@@ -24,7 +24,7 @@ import time
 
 from holochain_storage import portable
 from holochain_storage.package import (
-    StorageError, _assert_manifest, _verify_signed, canonical, manifest_digest, object_path, verify_package,
+    StorageError, _assert_manifest, _read_verified_chunk, _verify_signed, canonical, manifest_digest, object_path, verify_package,
 )
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
