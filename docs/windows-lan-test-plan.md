@@ -1,3 +1,5 @@
+> **17 November 2026 — note:** This document contains historical rc2/rc3 Windows+Ubuntu test planning and partial earlier hardware observations. Neither an old installer hash nor same-machine Windows CI establishes current physical acceptance. The current evidence protocol and open issue #26 are tracked in [hardware-acceptance-evidence-pack.md](hardware-acceptance-evidence-pack.md) and [release-gate-matrix.md](release-gate-matrix.md). Reverse Windows→Ubuntu LAN remains unverified for any new candidate.
+
 # Windows ↔ Ubuntu LAN test plan (Windows rc2, existing Ubuntu rc1)
 
 These tests need two physical computers and a person listening. CI cannot
