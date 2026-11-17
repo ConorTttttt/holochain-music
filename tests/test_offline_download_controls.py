@@ -404,7 +404,7 @@ class OfflineDownloadControlsTests(unittest.TestCase):
             for chunk in self.chunks]
         lines.append(dict(kind="fetch_complete", received_chunks=len(self.chunks),
             manifest_sha256=manifest_digest(self.manifest), file_id=self.file_id))
-        events = b"".join(json.dumps(line).encode() + b"\\n" for line in lines)
+        events = b"".join(json.dumps(line).encode() + b"\n" for line in lines)
         receiver = MagicMock()
         cancel = threading.Event()
         def wait_for_exit(timeout=None):
