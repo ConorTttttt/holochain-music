@@ -119,6 +119,26 @@ class V2ContractTests(unittest.TestCase):
             verified.authorize("export")
         self.assertEqual((exc.exception.category, exc.exception.reason), ("denied", "RightNotGranted"))
 
+    def test_verified_grant_body_is_immutable_after_validation(self):
+        # A signed grant arrives as a mutable JSON dict. Neither mutation of
+        # the input nor of the exposed body view may change an authorisation
+        # already checked against the issuer signature and public anchor.
+        verified = checked(self.w, self.grant, self.anchor)
+        self.assertEqual(verified.rights, frozenset({"stream"}))
+        self.grant["body"]["rights"].append("export")
+        self.grant["body"]["recipient_key_hex"] = "00" * 32
+        view = verified.body
+        view["rights"].append("export")
+        view["recipient_key_hex"] = "ff" * 32
+        self.assertEqual(verified.rights, frozenset({"stream"}))
+        self.assertEqual(verified.body["recipient_key_hex"], pub(self.w["bob"]).hex())
+        with self.assertRaises(AccessGrantV2Error) as denied:
+            verified.authorize("export")
+        self.assertEqual((denied.exception.category, denied.exception.reason),
+                         ("denied", "RightNotGranted"))
+        self.assertEqual(unwrap_access_grant_v2(verified, self.w["bob"]),
+                         self.w["content_key"])
+
     def test_perpetual_rights_and_recipient(self):
         grant, anchor = signed_grant(
             self.w, rights=["export", "managed-offline", "stream"], term="perpetual",
