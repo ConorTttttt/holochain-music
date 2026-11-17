@@ -88,6 +88,11 @@ class MoqHost:
         # so make the directory owner-only (inherited by the key) first.
         self.cert_dir.mkdir(parents=True, exist_ok=True)
         portable.make_private_dir(self.cert_dir)
+        # Previously created keys can retain explicit, permissive ACEs even
+        # after the parent is protected. Refuse to reuse such a key on Windows.
+        existing_key = self.cert_dir / "host.key"
+        if portable.IS_WINDOWS and (existing_key.exists() or existing_key.is_symlink()):
+            portable.check_secret_file(existing_key)
         served = self.state_dir / "served.json"
         served.write_text(json.dumps({"files": self.files}), encoding="utf-8")
         ready = self.state_dir / "ready.json"
