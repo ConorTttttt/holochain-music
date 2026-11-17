@@ -26,7 +26,7 @@ jobs:
           python-version: '3.12'
       - name: Shell syntax and whitespace
         run: |
-          sh -n packaging/rc-build.sh packaging/build-deb.sh packaging/windows/build-windows.sh
+          for script in packaging/rc-build.sh packaging/build-deb.sh packaging/windows/build-windows.sh; do sh -n "$script"; done
           git diff --check
       - name: Provenance validation unit tests
         run: python3 -m unittest discover -s tests -p test_rc_evidence.py -v
