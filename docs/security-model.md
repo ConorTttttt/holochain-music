@@ -1,3 +1,5 @@
+> **17 November 2026 — release status update:** Security controls below are an implementation/trust model, **not independent approval**. The two unrestricted remote-call inbox functions are provenance-authenticated by the trusted conductor, but the 500/hour cap is **per inbox type** (access requests versus grants) and inbox scans historical private entries. Perpetual licences remain non-revocable, source-chain action metadata remains observable and recipient/host key rotation remains unsupported. Agent 4's source verification and outstanding reviewer checks: [release-grant-security-verification.md](release-grant-security-verification.md). Security gate statuses: [release-gate-matrix.md](release-gate-matrix.md).
+
 # Security model (v1.0.0 release candidate)
 
 Status: describes the code on branch `feat/v1-app-integration`. Not independently
@@ -48,9 +50,12 @@ project owner's sign-off before release.
   - The grant itself is still verified with the artist's Ed25519 key, so a
     forged delivery cannot authorise playback.
   - Only `receive_access_request` and `receive_grant` are remote-callable (an
-    unrestricted capability grant). Inboxes are rate-limited: 20 per sender per
-    24 h and 500 from all senders per hour. Refusals are explicit and are never
-    retried as if the recipient were offline.
+    unrestricted capability grant). **Each inbox entry class separately** enforces
+    20 per sender per 24 h and 500 across senders per hour; these are **not**
+    aggregate cross-class bounds, and every receive scans the class's retained
+    private-entry history. The outbox intends to retry busy/offline deliveries
+    while treating permanent refusal as terminal; mixed-error behaviour still
+    requires adversarial verification.
   - Undeliverable messages (recipient offline or busy) wait in a local outbox
     and are retried every 30 s for up to 7 days while the app runs.
   - Full review for approval: [private-grant-security-review.md](private-grant-security-review.md).
