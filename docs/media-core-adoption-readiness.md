@@ -28,8 +28,19 @@ baseline evidence*, not a pass claim for the subsequent commits:
   ACL and must be verified on real installed targets.
 - `tests/test_media_core_protocol.py`: assert collision refusal, POSIX file
   and directory modes, missing/relative executable failure, recursive secret
-  rejection from Holochain bridge records and grant JSON, and actual native
-  CLI exit-1 parity for usage, missing file, and missing CAS directory.
+  rejection from Holochain bridge records and grant JSON, native CLI exit-1
+  parity for usage versus local I/O, and a no-spawn test for unapproved flags.
+- **Additional audited defect corrected:** the previous comparison-only
+  `test_adapter_interface_accepts_no_secret_material` passed a **real
+  Music-generated plaintext content key in argv** with a deliberately invalid
+  Rust flag. Even a rejected command has exposed that key to the child
+  process and potentially OS process listings. The negative test now uses
+  a public sentinel; `_run` additionally whitelists each CLI command's
+  public flags *before* invoking a child. No production Music caller used
+  this test-specific raw-key command. The correction changes
+  `tests/test_media_core_adapter.py` and
+  `holochain_storage/media_core_adapter.py`. CI at the corrected head must
+  still pass.
 - Companion Media Core [draft PR #18](https://github.com/ConorTttttt/holochain-media-core/pull/18)
   adds a `cfg(test)`-only, synchronized **actual half-written CAS temporary
   file** pause; a parent test kills the parked Rust writer before publish,
