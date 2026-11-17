@@ -461,12 +461,14 @@ class ArtistService:
             issuer = self._signer(OWNER_PURPOSE)
             rights = (["export", "managed-offline", "stream"] if kind == "perpetual-personal"
                       else ["stream"])
+            issued_at = int(time.time())
             grant = issue_access_grant_v2(
                 issuer_signer=issuer, owner_lifecycle=lifecycle, signed_manifest=manifest,
                 commitment=commitment, listener_agent=listener_agent,
                 recipient_public=recipient, content_key=self.keys.content_key(file_id),
                 rights=rights, term="perpetual" if kind == "perpetual-personal" else "window",
-                expires_at=0 if kind == "perpetual-personal" else int(time.time()) + 86400,
+                issued_at=issued_at,
+                expires_at=0 if kind == "perpetual-personal" else issued_at + 86400,
             )
             anchor_entry = kl.make_grant_anchor(
                 dna_hash=lifecycle.dna_hash, grant_id=grant["body"]["grant_id"],
