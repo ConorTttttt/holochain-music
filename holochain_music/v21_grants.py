@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from holochain_storage import key_lifecycle as kl
-from holochain_storage.holochain_identity import OWNER_PURPOSE
+from holochain_storage.holochain_identity import OWNER_PURPOSE, HOST_PURPOSE
 from holochain_storage.package import StorageError, manifest_digest
 
 from music_catalogue.access_grant_v2 import _historical_manifest
@@ -27,9 +27,11 @@ def _row(value: Any) -> kl.SequencedRecord:
                               value["action_seq"], value["body"])
 
 
-def lifecycle_from_conductor(bridge, owner_agent: str) -> kl.KeyLifecycle:
+def lifecycle_from_conductor(bridge, owner_agent: str, purpose: str = OWNER_PURPOSE) -> kl.KeyLifecycle:
     """Resolve the owner's complete verified lifecycle against the reader DNA."""
-    context = bridge.call("key_lifecycle_v21_context", purpose=OWNER_PURPOSE)
+    if purpose not in (OWNER_PURPOSE, HOST_PURPOSE):
+        raise StorageError("unsupported lifecycle purpose")
+    context = bridge.call("key_lifecycle_v21_context", purpose=purpose)
     if (not isinstance(context, dict) or not isinstance(context.get("dna_hash"), str)
             or not context["dna_hash"]):
         raise StorageError("v2.1 storage lifecycle unavailable")
@@ -37,7 +39,7 @@ def lifecycle_from_conductor(bridge, owner_agent: str) -> kl.KeyLifecycle:
     if not isinstance(rows, list):
         raise StorageError("incomplete v2.1 lifecycle")
     return kl.resolve_key_lifecycle([_row(row) for row in rows],
-                                    owner_agent, OWNER_PURPOSE, context["dna_hash"])
+                                    owner_agent, purpose, context["dna_hash"])
 
 
 def commitment_from_conductor(bridge, owner_agent: str, signed_manifest: dict,
