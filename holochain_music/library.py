@@ -109,7 +109,8 @@ class Library:
     def has_manifest(self, file_id: str) -> bool:
         return (self._dir(file_id) / "manifest.json").is_file()
 
-    def set_grant(self, file_id: str, grant: dict, kind: str) -> None:
+    def set_grant(self, file_id: str, grant: dict, kind: str, *,
+                  v2_evidence: dict | None = None) -> None:
         with self._lock:
             d = self._dir(file_id)
             if not (d / "meta.json").is_file() or not (d / "manifest.json").is_file():
@@ -119,7 +120,20 @@ class Library:
             if current.get("grant_kind") == "perpetual-personal" and kind != "perpetual-personal":
                 return
             _atomic_json(d / "grant.json", grant)
+            if v2_evidence is not None:
+                # Source: this device's own validating conductor AFTER full
+                # grant verification, never a sender-provided evidence field.
+                _atomic_json(d / "grant-v2-evidence.json", v2_evidence)
+            else:
+                (d / "grant-v2-evidence.json").unlink(missing_ok=True)
             self.update_meta(file_id, grant_kind=kind, grant_received_at=int(time.time()))
+
+    def set_v2_evidence(self, file_id: str, grant: dict, evidence: dict) -> None:
+        """Refresh a validated-conductor snapshot for the exact saved grant."""
+        with self._lock:
+            if self.grant(file_id) != grant:
+                raise LibraryError("v2 authority snapshot no longer belongs to saved grant")
+            _atomic_json(self._dir(file_id) / "grant-v2-evidence.json", evidence)
 
     def update_meta(self, file_id: str, **fields) -> None:
         with self._lock:
@@ -139,6 +153,12 @@ class Library:
     def grant(self, file_id: str) -> dict | None:
         path = self._dir(file_id) / "grant.json"
         return _read_json(path, 16 * 1024) if path.is_file() else None
+
+    def v2_evidence(self, file_id: str) -> dict | None:
+        path = self._dir(file_id) / "grant-v2-evidence.json"
+        # Local-only validated lifecycle snapshots may contain a bounded set
+        # of records. Never send them to the DHT, MoQ or storage hosts.
+        return _read_json(path, 256 * 1024) if path.is_file() else None
 
     def all(self) -> list[dict]:
         rows = []

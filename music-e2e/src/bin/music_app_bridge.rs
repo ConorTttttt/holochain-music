@@ -310,6 +310,11 @@ impl Bridge {
                 let row: Option<SequencedRecord> = self.call(false, "get_grant_anchor_v2", &hash).await?;
                 Ok(row.map(SequencedRecord::out).unwrap_or(Value::Null))
             }
+            "get_action_position_v21" => {
+                let hash = ActionHash::try_from(arg_str(args, "action_hash")?.as_str())?;
+                let row: Option<Value> = self.call(false, "get_action_position_v21", &hash).await?;
+                Ok(row.unwrap_or(Value::Null))
+            }
             "get_key_lifecycle_v21" => {
                 let rows: Vec<SequencedRecord> =
                     self.call(false, "get_key_lifecycle_v21", &arg_agent(args, "agent")?).await?;

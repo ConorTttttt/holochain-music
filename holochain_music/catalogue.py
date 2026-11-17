@@ -23,6 +23,9 @@ from holochain_storage.holochain_identity import (
     verify_owned_manifest, verify_replica_claim,
 )
 from holochain_storage.package import StorageError, manifest_digest
+from holochain_storage import key_lifecycle as kl
+from music_catalogue.access_grant_v2 import _historical_manifest
+from .v21_grants import lifecycle_from_conductor, commitment_from_conductor
 from music_catalogue.contract import CatalogueError, validate_track, verify_track_manifest
 from music_catalogue.moq_conductor import MOQ_ENDPOINT_SCHEMA, _bound_local_url
 from music_catalogue.moq_host import MoqFetchError, fetch_document
@@ -80,7 +83,11 @@ def _binding_record(records: list[AuthoredRecord], agent: str, purpose: str, key
 
 
 class Catalogue:
-    def __init__(self, bridge: Bridge, *, moq_binary, allow_lan: bool = False):
+    def __init__(self, bridge: Bridge, *, moq_binary, allow_lan: bool = False,
+                 key_binding: str = "v1"):
+        if key_binding not in ("v1", "v2.1"):
+            raise ResolveError("unsupported catalogue identity mode")
+        self.key_binding = key_binding
         self.bridge = bridge
         self.moq_binary = moq_binary
         self.allow_lan = allow_lan
@@ -156,15 +163,22 @@ class Catalogue:
         if track is None or track.author != artist_agent:
             raise ResolveError("track not found in the authenticated catalogue")
         validate_track(track.body, author=artist_agent)
-        owner_bindings = self.bridge.records("get_signing_keys", agent=artist_agent)
-        artist_key = _unique_key(owner_bindings, artist_agent, OWNER_PURPOSE)
-        owner_binding = _binding_record(owner_bindings, artist_agent, OWNER_PURPOSE, artist_key)
+        if self.key_binding == "v2.1":
+            owner_lifecycle = lifecycle_from_conductor(self.bridge, artist_agent)
+            artist_key = None   # Only the historical validated manifest may supply this.
+            owner_binding = None
+            owner_bindings = []
+        else:
+            owner_lifecycle = None
+            owner_bindings = self.bridge.records("get_signing_keys", agent=artist_agent)
+            artist_key = _unique_key(owner_bindings, artist_agent, OWNER_PURPOSE)
+            owner_binding = _binding_record(owner_bindings, artist_agent, OWNER_PURPOSE, artist_key)
         file_id, digest = track.body["file_id"], track.body["manifest_sha256"]
         commitments = [c for c in self.bridge.records("get_file_commitments", agent=artist_agent)
                        if c.body.get("file_id") == file_id and c.body.get("manifest_sha256") == digest]
         if not commitments:
             raise ResolveError("artist has not committed to this encrypted file")
-        commitment = commitments[0]
+        commitment = commitments[0] if self.key_binding != "v2.1" else None
         claims = self.bridge.records("get_replica_claims", owner_agent=artist_agent, file_id=file_id)
         trusted: TrustedTrack | None = None
         errors = []
@@ -178,9 +192,15 @@ class Catalogue:
                 break
             tried += 1
             try:
-                host_bindings = self.bridge.records("get_signing_keys", agent=node)
-                node_key = _unique_key(host_bindings, node, HOST_PURPOSE)
-                node_binding = _binding_record(host_bindings, node, HOST_PURPOSE, node_key)
+                if self.key_binding == "v2.1":
+                    host_lifecycle = lifecycle_from_conductor(self.bridge, node, HOST_PURPOSE)
+                    node_key = host_lifecycle.tip.key
+                    node_binding = None
+                else:
+                    host_lifecycle = None
+                    host_bindings = self.bridge.records("get_signing_keys", agent=node)
+                    node_key = _unique_key(host_bindings, node, HOST_PURPOSE)
+                    node_binding = _binding_record(host_bindings, node, HOST_PURPOSE, node_key)
                 endpoints = []
                 for e in reversed(self.bridge.records("get_moq_endpoints", host=node)):
                     b = e.body
@@ -203,15 +223,37 @@ class Catalogue:
                                                       allow_lan=self.allow_lan)
                             if manifest_digest(manifest) != digest:
                                 raise ResolveError("host served a manifest that does not match the artist's pin")
-                            verify_track_manifest(track.body, manifest, author=artist_agent, trusted_signer=artist_key)
-                            verify_owned_manifest(manifest, artist_agent, owner_binding, commitment)
+                            if self.key_binding == "v2.1":
+                                commitment = commitment_from_conductor(
+                                    self.bridge, artist_agent, manifest, owner_lifecycle)
+                                _, _, key_hex = _historical_manifest(
+                                    manifest, owner_lifecycle, commitment)
+                                artist_key = bytes.fromhex(key_hex)
+                            verify_track_manifest(track.body, manifest, author=artist_agent,
+                                                  trusted_signer=artist_key)
+                            if self.key_binding != "v2.1":
+                                verify_owned_manifest(manifest, artist_agent, owner_binding, commitment)
                         else:
                             manifest = trusted.manifest
                         receipt = fetch_document(moq_binary=self.moq_binary, url=candidate.url,
                                                  cert_fingerprint_hex=candidate.fingerprint,
                                                  file_id=file_id, document="receipt", allow_lan=self.allow_lan)
-                        verify_replica_claim(receipt, manifest, artist_agent, node, owner_binding,
-                                             node_binding, commitment, claim)
+                        if self.key_binding == "v2.1":
+                            kl.verify_replica_receipt_v2(
+                                receipt, manifest, trusted_artist=artist_key,
+                                dna_hash=owner_lifecycle.dna_hash, host_agent=node,
+                                owner_agent=artist_agent, host_lifecycle=host_lifecycle)
+                            if (claim.body.get("schema") != "holochain-storage/replica-claim/v1" or
+                                    claim.body.get("owner_agent") != artist_agent or
+                                    claim.body.get("node_agent") != node or
+                                    claim.body.get("file_id") != file_id or
+                                    claim.body.get("manifest_sha256") != digest or
+                                    claim.body.get("receipt_sha256") != kl.receipt_v2_digest(receipt)):
+                                raise ResolveError("v2 host receipt does not match the validated replica claim")
+                            candidate.node_key = bytes.fromhex(receipt["host_key_hex"])
+                        else:
+                            verify_replica_claim(receipt, manifest, artist_agent, node, owner_binding,
+                                                 node_binding, commitment, claim)
                         if trusted is None:
                             trusted = TrustedTrack(artist_agent, track.body, artist_key, manifest, digest)
                         trusted.hosts.append(candidate)
