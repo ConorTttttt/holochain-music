@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -37,18 +38,55 @@ from .package import canonical
 ENV_BINARY = "HOLOCHAIN_MEDIA_CORE_BIN"
 MAX_OUTPUT_BYTES = 64 * 1024
 
+# Deliberately closed subprocess interface: callers may not add flags that
+# could transport private keys, even for an expected CLI usage failure.
+# A new Rust CLI verb or option requires an explicit adapter/security review.
+_ALLOWED_CLI_FLAGS = {
+    "verify-manifest": frozenset(("--manifest", "--trusted-artist-hex",
+                                  "--expected-manifest-sha256")),
+    "verify-receipt": frozenset(("--manifest", "--receipt", "--trusted-artist-hex",
+                                 "--trusted-host-hex")),
+    "verify-bindings": frozenset(("--bridge-json", "--manifest", "--receipt",
+                                  "--owner-agent", "--node-agent")),
+    "check-access": frozenset(("--bridge-json", "--manifest", "--owner-agent",
+                               "--grant", "--listener-agent", "--recipient-x25519-hex",
+                               "--right", "--now")),
+    "import": frozenset(("--manifest", "--trusted-artist-hex", "--source-store", "--cas")),
+    "audit": frozenset(("--manifest", "--trusted-artist-hex", "--cas")),
+}
+
 
 class MediaCoreUnavailable(RuntimeError):
-    """Adapter not configured or the binary could not run (not a rejection)."""
+    """CLI disabled, not launchable, timed out, or returned a protocol failure."""
+
+    error_class = "unavailable-service"
+
+
+class MediaCoreLocalIO(MediaCoreUnavailable):
+    """Music could not stage public inputs in its local temporary directory."""
+
+    error_class = "local-io"
 
 
 class MediaCoreRejected(ValueError):
-    """Media Core rejected the input at a named verification boundary."""
+    """An authenticated verification/policy rejection (not a subprocess error)."""
 
     def __init__(self, result: dict):
         super().__init__(f"{result.get('boundary')}: {result.get('error')}")
         self.boundary = result.get("boundary")
         self.result = result
+        self.error_class = ("access-denied"
+                            if self.boundary == "entitlement"
+                            and result.get("category") in ("denied", "validity")
+                            else "invalid-content")
+
+
+class MediaCoreUnsupportedSchema(MediaCoreRejected):
+    """CLI explicitly identified an unsupported entitlement schema version."""
+
+    def __init__(self, result: dict):
+        super().__init__(result)
+        self.error_class = "unsupported-schema"
 
 
 def binary() -> Path | None:
@@ -67,6 +105,12 @@ def enabled() -> bool:
 
 
 def _run(args: list[str], timeout: float = 120) -> dict:
+    allowed = _ALLOWED_CLI_FLAGS.get(args[0]) if args else None
+    if allowed is None or len(args) % 2 != 1 or any(
+        args[index] not in allowed or not isinstance(args[index + 1], str)
+        for index in range(1, len(args), 2)
+    ):
+        raise MediaCoreUnavailable("unapproved Media Core CLI argument")
     exe = binary()
     if exe is None:
         raise MediaCoreUnavailable(f"{ENV_BINARY} is not set")
@@ -86,20 +130,72 @@ def _run(args: list[str], timeout: float = 120) -> dict:
     if done.returncode == 0 and result.get("ok") is True:
         return result
     if done.returncode == 2 and result.get("ok") is False:
+        if result.get("boundary") == "entitlement" and result.get("category") == "unsupported":
+            raise MediaCoreUnsupportedSchema(result)
         raise MediaCoreRejected(result)
     # Exit 1 (usage/I/O) or anything unexpected is NOT a verification result.
     raise MediaCoreUnavailable(f"Media Core failed: {result.get('error')}")
 
 
+# These are *private inputs*, unlike "signing_key_hex" (the public S2
+# binding) and "wrapped_key_b64" (ciphertext for one recipient). Refuse
+# accidental secret-bearing JSON before any child process can read it.
+_PRIVATE_FIELD_NAMES = frozenset({
+    "private_key", "private_key_hex", "private_key_b64",
+    "recipient_private", "recipient_private_key", "recipient_private_hex",
+    "signing_private_key", "private_signing_key", "owner_signer",
+    "content_key", "content_key_hex", "content_key_b64",
+    "plaintext_content_key", "plaintext_key", "secret_key",
+})
+_PRIVATE_FIELD_COMPACT = frozenset(field.replace("_", "") for field in _PRIVATE_FIELD_NAMES)
+
+
+def _assert_public_document(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str):
+                # Normalize hyphen/underscore and camelCase spellings without
+                # mistaking the public S2 "signing_key_hex" for a private key.
+                name = "".join(char for char in key.casefold() if char.isalnum())
+                if name in _PRIVATE_FIELD_COMPACT or "privatekey" in name:
+                    raise MediaCoreUnavailable(
+                        "private field is forbidden at the Media Core boundary"
+                    )
+            _assert_public_document(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _assert_public_document(child)
+
+
+@contextmanager
+def _staging():
+    try:
+        with tempfile.TemporaryDirectory(prefix="hm-core-") as directory:
+            yield Path(directory)
+    except OSError as exc:
+        raise MediaCoreLocalIO("unable to create or clean up Media Core input staging") from exc
+
+
 def _write(directory: Path, name: str, value: Any) -> str:
+    _assert_public_document(value)
     path = directory / name
-    path.write_bytes(canonical(value))
+    payload = canonical(value)
+    # TemporaryDirectory is private, but per-file permissions must also be
+    # restrictive. O_EXCL refuses any pre-existing path instead of clobbering
+    # or following it, including if another local process plants a symlink.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "wb") as staged:
+            staged.write(payload)
+    except OSError as exc:
+        raise MediaCoreLocalIO("unable to stage public Media Core inputs") from exc
     return str(path)
 
 
 def verify_manifest(signed_manifest: dict, trusted_artist: bytes,
                     expected_manifest_sha256: str | None = None) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         args = ["verify-manifest", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                 "--trusted-artist-hex", trusted_artist.hex()]
         if expected_manifest_sha256 is not None:
@@ -109,7 +205,7 @@ def verify_manifest(signed_manifest: dict, trusted_artist: bytes,
 
 def verify_receipt(receipt: dict, signed_manifest: dict, trusted_node: bytes,
                    trusted_artist: bytes) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["verify-receipt",
                      "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--receipt", _write(Path(tmp), "r.json", receipt),
@@ -135,7 +231,7 @@ def verify_replica_claim(receipt: dict, signed_manifest: dict, owner_agent: str,
               "owner_commitment": _record(owner_commitment),
               "node_key_binding": _record(node_key_binding),
               "replica_claim": _record(node_claim)}
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["verify-bindings",
                      "--bridge-json", _write(Path(tmp), "bridge.json", bridge),
                      "--manifest", _write(Path(tmp), "m.json", signed_manifest),
@@ -167,7 +263,7 @@ def check_access(grant: dict, signed_manifest: dict, owner_agent: str,
         raise MediaCoreUnavailable("recipient X25519 public key must have 32 bytes")
     bridge = {"owner_key_binding": _record(owner_key_binding),
               "owner_commitment": _record(owner_commitment)}
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         args = ["check-access",
                 "--bridge-json", _write(Path(tmp), "bridge.json", bridge),
                 "--manifest", _write(Path(tmp), "m.json", signed_manifest),
@@ -186,13 +282,13 @@ def check_access(grant: dict, signed_manifest: dict, owner_agent: str,
 def import_into_cas(signed_manifest: dict, trusted_artist: bytes, source_store: str | Path,
                     cas_root: str | Path) -> dict:
     """Copy verified ciphertext from a Music store into a Media Core CAS."""
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["import", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--trusted-artist-hex", trusted_artist.hex(),
                      "--source-store", str(source_store), "--cas", str(cas_root)])
 
 
 def audit_cas(signed_manifest: dict, trusted_artist: bytes, cas_root: str | Path) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["audit", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--trusted-artist-hex", trusted_artist.hex(), "--cas", str(cas_root)])

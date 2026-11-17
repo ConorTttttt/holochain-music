@@ -1,0 +1,72 @@
+# Agent 7: opt-in cross-platform adoption evidence. Not used by the app.
+# CI fetches an immutable Media Core commit; it must not silently float to a
+# concurrently changing feature branch. Advance this pin only after review.
+name: Media Core comparison (opt-in)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/media-core-comparison.yml'
+      - 'holochain_storage/media_core_adapter.py'
+      - 'tests/test_media_core_*.py'
+      - 'scripts/benchmark_media_core_comparison.py'
+      - 'docs/media-core-adoption-readiness.md'
+
+permissions:
+  contents: read
+
+jobs:
+  native-comparison:
+    name: Native CLI and Music comparison (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Checkout Music PR
+        uses: actions/checkout@v4
+      - name: Checkout pinned Media Core CLI source
+        uses: actions/checkout@v4
+        with:
+          repository: ConorTttttt/holochain-media-core
+          ref: a74a8aec32da03962788ad92810c413103b2ffd3
+          path: media-core
+          persist-credentials: false
+      - name: Install fixed Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.97.0'
+      - name: Build reproducible native CLI from Cargo.lock
+        working-directory: media-core
+        run: cargo +1.97.0 build --release --locked -p holochain-content-cli
+      - name: Run CLI crate unit tests
+        working-directory: media-core
+        run: cargo +1.97.0 test --locked -p holochain-content-cli --all-targets
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Music (no production flag)
+        run: python -m pip install -e . cryptography==46.0.4
+      - name: Verify disabled-default and CLI boundary tests
+        run: python -m unittest -v tests.test_media_core_protocol tests.test_media_core_adapter tests.test_media_core_entitlements tests.test_media_core_resilience
+      - name: Set opt-in CLI path and record exact binary hash
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          exe = Path("media-core/target/release") / ("holochain-media-core.exe" if os.name == "nt" else "holochain-media-core")
+          assert exe.is_file(), exe
+          print("Media Core CLI SHA256:", hashlib.sha256(exe.read_bytes()).hexdigest())
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as output:
+              output.write(f"HOLOCHAIN_MEDIA_CORE_BIN={exe.resolve()}\n")
+          PY
+      - name: Real native CLI cross-language and recovery comparisons
+        run: python -m unittest -v tests.test_media_core_protocol tests.test_media_core_adapter tests.test_media_core_entitlements tests.test_media_core_resilience
+      - name: Diagnostic benchmark (no speed threshold)
+        run: python scripts/benchmark_media_core_comparison.py --rounds 3 --sizes-kib 128 4096

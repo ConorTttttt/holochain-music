@@ -1,0 +1,300 @@
+# Agent 7 — Music / Media Core production-adoption readiness
+
+Status: **comparison-only; not production-adopted** (17 November 2026).
+Baseline: Music `feat/grant-anchor-v21` @ `b4173fc31317e8563f6f7bd18de73dbe5c47f014`;
+Media Core `feat/grant-anchor-v21` @ `a74a8aec32da03962788ad92810c413103b2ffd3`.
+The native comparison workflow pins the *exact* Media Core commit above.
+Agent 6's access-grant/v2 implementation is a separate, unfinished dependency;
+these checks must not mistake legacy CORE-005 policy verification for v2 issuance.
+
+## Review continuation — 17 November 2026
+
+**Verified pre-hardening head:** Music PR #50 at
+`5a46fa5287d29b89a18cda99633816602541031b`, with a **successful**
+native `ubuntu-24.04` and `windows-2022` comparison matrix in
+[run 44072782524](https://github.com/ConorTttttt/holochain-music/actions/runs/44072782524).
+Both jobs built the pinned Rust CLI, ran its unit tests, verified default-off
+Python operation and completed opt-in comparisons and diagnostics. Storage
+protocol and v1 application workflows also passed on that commit. Separate
+Windows-port and catalogue workflows were still queued when inspected.
+
+**This continuation changes the head**, so the above results are *historical
+baseline evidence*, not a pass claim for the subsequent commits:
+
+- `holochain_storage/media_core_adapter.py`: stage public JSON with an
+  exclusive file create and mode `0600` on POSIX (in addition to the
+  private `0700` temporary directory); refuse colliding pre-existing paths.
+  Windows effective file protection still depends on the staging directory's
+  ACL and must be verified on real installed targets.
+- `tests/test_media_core_protocol.py`: assert collision refusal, POSIX file
+  and directory modes, missing/relative executable failure, recursive secret
+  rejection from Holochain bridge records and grant JSON, native CLI exit-1
+  parity for usage versus local I/O, and a no-spawn test for unapproved flags.
+- **Additional audited defect corrected:** the previous comparison-only
+  `test_adapter_interface_accepts_no_secret_material` passed a **real
+  Music-generated plaintext content key in argv** with a deliberately invalid
+  Rust flag. Even a rejected command has exposed that key to the child
+  process and potentially OS process listings. The negative test now uses
+  a public sentinel; `_run` additionally whitelists each CLI command's
+  public flags *before* invoking a child. No production Music caller used
+  this test-specific raw-key command. The correction changes
+  `tests/test_media_core_adapter.py` and
+  `holochain_storage/media_core_adapter.py`. CI at the corrected head must
+  still pass.
+- Companion Media Core [draft PR #18](https://github.com/ConorTttttt/holochain-media-core/pull/18)
+  adds a `cfg(test)`-only, synchronized **actual half-written CAS temporary
+  file** pause; a parent test kills the parked Rust writer before publish,
+  checks the unfinished temporary file was observed, and verifies the next
+  CAS instance audits missing and can write authentic ciphertext. This is not
+  a power-loss/disk-reordering test or a release-binary fault hook. The
+  Music comparison workflow **remains pinned** to `a74a8aec32da03962788ad92810c413103b2ffd3`
+  until the separate test receives CI evidence and review.
+
+**Disposition: comparison-only, NO-GO for production adoption.** The
+uncorrected Rust exit-1 contract, S1 schema/error conflation, executable
+provenance/install and supervision, exact-candidate two-real-host MoQ tests,
+disk-full and hostile path-race hardening, and Agent 6 v2 grants remain
+explicit gates. GitHub-hosted checks on any new head must be recorded rather
+than inferred from previous passing commits.
+
+### Required future error wire contract
+
+The current CLI combines all command misuse and internal filesystem failures
+into exit `1`, `boundary=usage-or-io`. The Music adapter correctly treats
+the whole class as unavailable rather than as a cryptographic denial.
+A future independently versioned JSON contract should distinguish:
+
+| Stable kind | Example stable code | Retryable | App behaviour |
+| --- | --- | --- | --- |
+| `usage` | `missing-required-flag` | no | Diagnose integration defect; fail closed |
+| `local-io` | `cannot-read-source` / `cannot-publish-object` | conditional | Keep verified existing objects; surface file or disk failure |
+| `unavailable-service` | `backend-unavailable` / `child-crash` | yes with limits | Degrade shadow comparison; never interpret as access denial |
+| `unsupported-schema` | `manifest-version-unsupported` | no | Refuse with explicit version negotiation, no legacy downgrade |
+
+Require a bounded, machine-readable output envelope (version, kind, code,
+retryability, boundary and safe diagnostics) independent of prose errors.
+Proof of a grant entitlement remains distinct from Music recipient unwrap.
+Before pilot packaging: pin the reviewed CLI source and exact executable
+digest, verify distribution signatures and dependency manifest, constrain
+path permissions and process concurrency, apply timeout/kill/reap and restart
+budgets, redact diagnostics, and reject unintended executable substitution.
+Retain an `off` switch and test instant rollback to Python without schema
+migration or key rewrites.
+
+## 1. Decision
+
+**Ready for further opt-in evaluation:** native CLI verification of Music v1
+manifests, replica receipts, authenticated S2 identities, legacy grant policy
+and integrity/audit/import of existing ciphertext objects. Music remains the
+source of truth and the only holder of X25519 private keys and plaintext
+content keys. No stored package, key wrap or licence is rewritten.
+
+**NOT ready for default adoption:** final-head Windows/Linux workflow confirmation,
+production wiring, CLI exit-1 I/O classification, schema-version negotiation
+for S1 manifests, real crash mid-atomic-write fault injection, two-device
+host failover, release signing and installation/supervision, verified v2
+grant and key lifecycle/anchor integration, or a defined performance budget.
+No source or manifest migration is needed for the existing v1 CAS.
+
+## 2. Interface inventory (audit of current adapter)
+
+| Adapter operation | CLI verb | Authenticated input | Returned decision | Missing Music wiring |
+| --- | --- | --- | --- | --- |
+| `verify_manifest` | `verify-manifest` | S1 signed manifest; independently pinned artist Ed25519 public key; optional exact manifest digest | S1 authenticity, content identity and chunk metadata | Shadow-compare on catalogue import, library admission and before download |
+| `verify_receipt` | `verify-receipt` | S1 host receipt, S1 manifest, trusted artist/host public keys | Host acceptance at one instant, **not** continuing custody | Host selection/receipt check in storage-node and catalogue flows |
+| `verify_replica_claim` | `verify-bindings` | Trusted conductor-bridge `AuthoredRecord` owner/host key bindings, commitment and claim | S2 owner/replica identity binding | Bridge retrieval, trusted conductor author, action provenance and lifecycle awareness at app call site |
+| `check_access` | `check-access` | Wrapped owner-signed **v1** grant/licence, S1 manifest, conductor-authenticated owner records, listener agent + X25519 **public** key, requested right and clock | Policy check only (`stream`, `managed-offline`, `export`) | Application per-operation authorisation after policy decision; must independently invoke Music AES-GCM unwrap |
+| `import_into_cas` | `import` | Signed manifest, trusted artist key, ciphertext-only source/destination directories | Verified chunk reuse/import/repair or named integrity failure with partial progress | Disposable download staging and controlled promotion into the listener library, supervision and cancellation |
+| `audit_cas` | `audit` | Signed manifest, trusted artist key and CAS | Counts verified/missing/corrupt ciphertext; `offline_ready` | Compare with `Library.verify_complete` during offline readiness, host repair and startup |
+| `binary` / `enabled` | n/a | `HOLOCHAIN_MEDIA_CORE_BIN` absolute existing executable path | CLI opt-in gating | Install discovery, secure signed release, process supervision, diagnostics and OS integration |
+
+All paths are currently **unwired** from `holochain_music/app.py`,
+`holochain_music/server.py`, `holochain_music/library.py`,
+`music_catalogue/granted_audio.py`,
+`music_catalogue/content_grants.py`, and
+`holochain_storage/network_client.py`. They remain Music-owned.
+Calling a verifier directly is **not** a production integration.
+
+The CAS path convention is already shared:
+`objects/sha256/<2 hex>/<64-hex SHA256>`.
+Local ciphertext may be reused; Music's authenticated decryption and
+playback logic must remain unchanged.
+
+## 3. Compatibility and evidence matrix
+
+Legend: **E** = existing code/tests on baseline; **A** = Agent 7 added
+opt-in test; **G** = gated / no evidence in this branch; **B** = blocker.
+
+| Scenario | Music/Python | Media Core/Rust | Evidence / decision |
+| --- | --- | --- | --- |
+| Manifest signature, digest, tamper, wrong signer | E | E | Existing `test_media_core_adapter` comparisons |
+| Receipt pin, forged host and Holochain S2 binding | E | E | Existing comparisons; **A** host-switched receipts |
+| Existing v1 streaming/managed-offline/export rights | E | E | Existing `test_media_core_entitlements` asserts *each* right |
+| Wrong recipient, expired/replayed grant or licence | E | E | Existing adversarial comparisons |
+| Signed but corrupted wrapped key | E: AES-GCM refuses | E: **policy can accept** | Existing intentional boundary test; never release plaintext on Rust-only decision |
+| Verified ciphertext import, corrupt/truncated object, repair | E | E | Existing CAS tests; **A** multi-step recovery cases |
+| Interrupted transfer, missing host A and restart from host B | E | A | New `test_media_core_resilience`: partial progress not ready, second source completes |
+| Host-signature switch | E | A | Verify pinned host keys separately; swapped receipts fail |
+| Local staging debris and same-length corruption | E | A | New tests: incomplete temp file ignored, damaged committed object repaired |
+| Killed CLI process and a fresh process retry | E | A | Kill attempted; fast process may finish or be killed before first write. **Not proof of actual mid-write crash** |
+| Unsupported v1 S1 *manifest schema* vs corrupt content | E | B | Rust returns `InvalidManifest` for both; cannot reliably separate |
+| Unsupported legacy grant/entitlement schema | E | E/A | Rust emits entitlement `category=unsupported`; adapter raises `MediaCoreUnsupportedSchema` |
+| CLI crash, timeout, invalid stdout/exit code | n/a | A | Always-on mocked subprocess contract tests |
+| Linux native opt-in comparison | E historical | E hosted baseline | PR #50 `5a46fa5` succeeded (run 44072782524); **new head must rerun** |
+| Windows native opt-in comparison | E historical Rust CLI units | E hosted baseline | PR #50 `5a46fa5` succeeded (run 44072782524); **new head must rerun** |
+| Real MoQ host switch and conductor recovery | E in CORE-004 upstream | G | Existing CORE-004 acceptance is separate; rerun on pinned release candidate |
+| Access-grant/v2 signed envelope after owner rotation | B | B | Agent 6 protocol not implemented at this pinned baseline |
+
+Previous repository notes (`holochain-media-core/docs/current-state.md`)
+report Linux tests on 14 Nov 2026, and explicitly state hosted CI was blocked
+by account billing. **Those historical results are not an Agent 7 run.**
+An initial Windows/Linux comparison CI pass is recorded in §6; subsequent hardening commits are awaiting their own passing run.
+
+## 4. Error taxonomy and safeguards
+
+The adapter preserves current public exceptions and adds *backwards-compatible*
+subclasses/fields. Never treat exit 1, timeout, or malformed stdout as a
+cryptographic rejection.
+
+| Category | Current mapping | Safe caller behaviour |
+| --- | --- | --- |
+| `invalid-content` | CLI exit 2 at S1/S2/integrity boundaries, or malformed/unauthenticated entitlement: `MediaCoreRejected.error_class` | Reject package or claim; quarantine bad ciphertext; do not retry same bytes without a new source |
+| `access-denied` | CLI exit 2, entitlement `denied`/`validity`: `MediaCoreRejected.error_class` | Refuse operation, do not imply purchase/permission |
+| `unsupported-schema` | CLI exit 2 entitlement `category=unsupported`: `MediaCoreUnsupportedSchema` | Refuse; initiate explicit version negotiation; never fall back to an older parser |
+| `unavailable-service` | Missing CLI, launch error, timeout, unexpected exit, invalid/oversized stdout: `MediaCoreUnavailable` | Shadow mode: log degraded comparison; enforce mode: fail closed unless a separate *reviewed* fallback policy exists |
+| `local-io` | Python input staging failure: `MediaCoreLocalIO` | Report filesystem error, avoid overwriting any verified copy |
+
+**Outstanding interface defect:** CLI exit 1 exposes only
+`boundary=usage-or-io` and an untyped string. Remote CLI file I/O,
+invalid CLI flags and parse failures cannot yet be separated reliably.
+Before enforcement, Media Core should return stable structured machine codes
+(`kind=usage|local-io|unavailable-service`, `code`, `retryable`) and
+distinct signed-schema errors *after* authenticity checks. No fragile
+error-string matching is allowed. Also enforce a bounded subprocess
+concurrency budget and public-only staging file permissions before rollout.
+
+No caller may infer access from `offline_ready`, `verified`,
+`decision=authorized`, manifest validity, receipt validity, or possession
+of ciphertext. Music must authenticate the recipient private key and unwrap
+the AES-GCM wrapped content key (and authenticate actual ciphertext on
+decrypt) **for each permitted operation**.
+
+## 5. Reproducible native builds and test commands
+
+CI: `.github/workflows/media-core-comparison.yml`; native
+`ubuntu-24.04` and `windows-2022`, Python 3.12, cryptography 46.0.4,
+Rust 1.97.0, Media Core pinned commit, `Cargo.lock` enforced by
+`--locked`. It prints each built executable's SHA256. The workflow is
+separate from all existing Music CI and never sets the adapter as default.
+
+Manually, in a checked-out Music tree beside a Media Core checkout at
+`a74a8aec32da03962788ad92810c413103b2ffd3`:
+
+```bash
+cd ../holochain-media-core
+cargo +1.97.0 build --release --locked -p holochain-content-cli
+cargo +1.97.0 test --locked -p holochain-content-cli --all-targets
+cd ../holochain-music
+python -m pip install -e . cryptography==46.0.4
+
+# With HOLOCHAIN_MEDIA_CORE_BIN unset, normal tests skip all real CLI tests.
+python -m unittest -v tests.test_media_core_protocol tests.test_media_core_adapter \
+    tests.test_media_core_entitlements tests.test_media_core_resilience
+
+# Linux: set absolute path to the Rust target/release/holochain-media-core.
+# Windows: use the absolute path to target/release/holochain-media-core.exe.
+export HOLOCHAIN_MEDIA_CORE_BIN=/absolute/path/to/holochain-media-core
+python -m unittest -v tests.test_media_core_protocol tests.test_media_core_adapter \
+    tests.test_media_core_entitlements tests.test_media_core_resilience
+python scripts/benchmark_media_core_comparison.py --rounds 5 --sizes-kib 128 4096
+```
+
+Windows PowerShell: `$env:HOLOCHAIN_MEDIA_CORE_BIN = 'C:\\absolute\\path\\holochain-media-core.exe'`;
+use the same Python commands. No private key or plaintext content key is
+an allowed CLI argument, stdin value or staged file. The tests inspect
+every adapter CLI invocation, and the real Rust CLI rejects unknown flags.
+
+## 6. Startup and transfer performance observations
+
+**Initial hosted CI evidence (17 Nov 2026):** run
+[44071515157](https://github.com/ConorTttttt/holochain-music/actions/runs/44071515157)
+on PR revision `e98cc910` completed **success on Linux and Windows**:
+native CLI build, CLI unit tests, disabled-default tests, 28/28 opt-in test
+results and benchmark completed on both runners. The 28 tests include
+10 executed checks with the CLI disabled (18 skipped) and 28 executed checks
+after explicit opt-in (zero skips). This result **predates** subsequent
+private-field boundary hardening on the same PR; run the matrix again against
+the final head before declaring acceptance.
+
+Measured 3-sample medians (milliseconds; hosted runners, 128 KiB / 4 MiB):
+
+| Runner / payload | Python metadata | Rust CLI metadata | Python integrity | Rust CLI audit | Python replicate + sign | Rust CLI import |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linux / 128 KiB | 0.110 | 0.794 | 0.222 | 0.917 | 1.372 | 1.775 |
+| Linux / 4 MiB | 0.142 | 0.830 | 2.957 | 3.582 | 19.433 | 16.421 |
+| Windows / 128 KiB | 0.236 | 20.791 | 0.506 | 21.451 | 13.600 | 32.737 |
+| Windows / 4 MiB | 0.222 | 20.984 | 5.436 | 26.840 | 178.167 | 192.973 |
+
+First CLI manifest verification: Linux 0.960 ms (128 KiB) / 0.993 ms
+(4 MiB); Windows 21.280 / 21.566 ms. Native build hashes in CI logs:
+Linux `c4f23d3b17ba7a84506887078b1d8ecfb11885e809e2377b4f4cbca1ea6def23`;
+Windows `1b8b991be17099975ce65ff8c69561dd908798ebe9eb409a81511a42c7f1b7e1`.
+These are identification hashes, not independently replicated
+bit-for-bit deterministic build proofs. GitHub image revisions and host
+conditions can affect output/performance.
+
+The opt-in benchmark captures:
+
+- First CLI `verify-manifest` latency (includes process launch), median of
+  repeated CLI verification, versus Music in-process S1 metadata verification.
+- Full ciphertext audit (both) over the same generated payload.
+- Full fresh-target transfer (Music `replicate_package` vs Media Core
+  `import`), measuring wall-clock medians and individual samples.
+- Host OS, Python version, payload KiB, chunk counts and samples.
+
+Important difference: `replicate_package` signs a host receipt; `import`
+does not. Results are **not** apples-to-apples end-to-end streaming or MoQ
+throughput and need a separate whole-workflow benchmark before selection.
+CI records output but imposes no arbitrary speed gate. Set thresholds only
+after Linux and Windows baselines are reviewed (startup p50/p95, copy
+throughput, extra per-chunk IO, peak resident memory, kill/restart impact).
+
+## 7. Proposed production adoption and rollback
+
+1. **Evidence gate (now, non-production):** run both native builds, all
+   opt-in comparison and failure tests, baseline performance, reproducible
+   binary provenance; fix schema and I/O taxonomy. Keep CLI opt-in.
+2. **Shadow only:** propose new app config flag
+   `MEDIA_CORE_VERIFY_MODE=off|shadow` (default `off`).
+   Shadow verified metadata/receipt/grant checks with a timeout and metrics.
+   Music Python determines *every* result; mismatches never affect users.
+   Do not enable it in this Agent 7 branch.
+3. **Read-only narrow adoption:** after zero security-relevant comparison
+   mismatches across a defined release window, add an explicitly separate
+   `MEDIA_CORE_MANIFEST_VERIFY=off|enforce` flag for manifest/receipt
+   verification. Keep Music as the authoritative fallback only when the
+   review explicitly allows it; untrusted content must always fail closed.
+4. **CAS-only staged writes:** add `MEDIA_CORE_CAS_MODE=off|shadow|pilot`,
+   using a dedicated staging directory and verifying Music's offline state
+   before atomic promotion. Pilot on fresh downloads only; no migration or
+   rewrite of existing packages. Maintain verified host repair/rollback.
+5. **Grant policy shadow:** compare Rust CORE-005 legacy policy with Music
+   `unwrap_content_grant` but **never** use Rust `authorized` to bypass
+   Music unwrap, AES-GCM or the per-right application gate. Versioned
+   `access-grant/v2` must receive a separate security review and rollout.
+6. **Broader adoption decision:** only after real-conductor, MoQ, offline,
+   two-device and Windows signed-packaging tests, plus observed user-visible
+   error categories, service lifecycle and monitored performance.
+
+Rollback: turn proposed flags to `off`, stop invoking the CLI and use
+Music's unchanged Python read/write and licence paths. Already authenticated
+CAS objects remain in the same layout; never downgrade an unsupported schema
+or accept unsigned bytes during rollback. Stop the pilot on any false
+positive, wrong-right grant, data loss, non-repeatable crash recovery,
+unexpected public/private material crossing the CLI, or unclassified exit 1.
+
+**Explicitly experimental:** new access-grant/v2, payment-backed policy,
+rental/subscription enforcement, lifecycle-aware post-rotation licences,
+trust-bound Holochain record acquisition inside the adapter, hostile
+concurrent directory-swap protection, crash fault injection during atomic
+publish, and signed native binary distribution.
