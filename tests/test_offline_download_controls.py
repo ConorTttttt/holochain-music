@@ -206,11 +206,15 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         app = self.fake_app()
         d = MagicMock()
         d.state = "unavailable"
+        d.is_running.return_value = False
         app.downloads[self.file_id] = d
         app._ensure_download = MagicMock(return_value=d)
         result = app.retry_download(self.file_id)
         self.assertIs(result, d.progress.return_value)
         app._ensure_download.assert_called_once_with(self.file_id)
+        d.is_running.return_value = True
+        with self.assertRaisesRegex(AppError, "worker is still finishing"):
+            app.retry_download(self.file_id)
         d.state = "downloading"
         with self.assertRaisesRegex(AppError, "No failed download"):
             app.retry_download(self.file_id)
