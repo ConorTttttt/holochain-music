@@ -1,3 +1,10 @@
+> **HISTORICAL CHECKSUM RECORD ONLY — 2026-11-06.** These bytes were built
+> from `958b23d`; they do not match the repository's 17 November main commit
+> `bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637`. Do not reuse this
+> checksum or call it a newly rebuilt RC. Current unbuilt RC3 packaging plan,
+> provenance requirements and NO-GO gates:
+> [rc3-release-candidate-plan.md](rc3-release-candidate-plan.md).
+>
 # v1.0.0-rc1 checksums (release candidate — not a release)
 
 Built 2026-11-06T12:37Z from commit `958b23d` with `packaging/build-deb.sh --skip-build`.
