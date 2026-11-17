@@ -200,7 +200,27 @@ jobs:
           Start-Process -FilePath $exe.FullName -ArgumentList '/S' -Wait
           $hm = 'C:\Program Files\Holochain Music\holochain-music.exe'
           if (-not (Test-Path $hm)) { throw 'not installed' }
-          & $hm --version
+          # Require exact installed source, CLI version and installer metadata.
+          # On PRs the checkout SHA may be GitHub's synthetic merge commit.
+          $expectedVersion = python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])'
+          $installedVersion = $expectedVersion -replace 'rc', '-rc'
+          $gotVersion = (& $hm --version | Out-String).Trim()
+          if ($gotVersion -ne $expectedVersion) { throw "installed CLI version $gotVersion != $expectedVersion" }
+          $marker = 'C:\Program Files\Holochain Music\docs\SOURCE_COMMIT.txt'
+          if (-not (Test-Path $marker)) { throw 'installed SOURCE_COMMIT.txt absent' }
+          $parts = @(Get-Content $marker)
+          $expectedCommit = (git rev-parse HEAD).Trim()
+          $expectedEpoch = (git show -s --format=%ct HEAD).Trim()
+          if ($parts.Count -ne 3 -or $parts[0] -ne "commit=$expectedCommit" -or
+              $parts[1] -ne "version=$installedVersion" -or
+              $parts[2] -ne "source_date_epoch=$expectedEpoch") {
+            throw 'installed commit/version/timestamp does not match CI checkout'
+          }
+          $arp = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\HolochainMusic'
+          if ($arp.DisplayVersion -ne $installedVersion) { throw 'Windows ARP version mismatch' }
+          if ((Get-Item $exe.FullName).VersionInfo.ProductVersion -ne $installedVersion) {
+            throw 'installer binary ProductVersion mismatch'
+          }
           & $hm status
           $rules = Get-NetFirewallRule -DisplayName 'Holochain Music*'
           if ($rules.Count -ne 3) { throw "expected 3 firewall rules, got $($rules.Count)" }

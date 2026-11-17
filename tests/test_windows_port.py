@@ -59,14 +59,17 @@ class FakeStream:
     def start(self):
         self.active = True
         self._run.set()
-        threading.Thread(target=self._clock, daemon=True).start()
+        if self.sd.speed is not None:
+            threading.Thread(target=self._clock, daemon=True).start()
+
+    def tick(self):
+        buf = bytearray(self.period * 2 * self.channels)
+        self.callback(buf, self.period, None, None)
+        self.sd.played.extend(buf)
 
     def _clock(self):
-        frame = 2 * self.channels
         while self._run.is_set():
-            buf = bytearray(self.period * frame)
-            self.callback(buf, self.period, None, None)
-            self.sd.played.extend(buf)
+            self.tick()
             time.sleep(self.period / self.rate / self.sd.speed)
 
     def stop(self, ignore_errors=True):
@@ -89,7 +92,7 @@ class FakeSd:
     """Stands in for the `sounddevice` module."""
 
     def __init__(self, *, speed=20.0, fail_hostapis=(), wasapi_auto_convert=True):
-        self.speed = speed  # >1: the fake device consumes faster than real time
+        self.speed = speed  # None lets the test advance the device clock manually.
         self.fail_hostapis = set(fail_hostapis)
         self.current_hostapi = None
         self.played = bytearray()
@@ -176,24 +179,27 @@ class PortAudioOutputTests(unittest.TestCase):
             PortAudioOutput(FMT, sd=FakeSd(), device="Bluetooth")
 
     def test_delivers_exactly_the_written_pcm_in_order_and_bounded(self):
-        sd = FakeSd(speed=4.0)
+        sd = FakeSd(speed=None)
         out = PortAudioOutput(FMT, sd=sd, buffer_us=100_000)
+        self.addCleanup(out.abort)
+        stream = FakeStream.instances[-1]
         data = pcm(1.0)
         limit = out._limit
-        high = 0
-        for i in range(0, len(data), 4096):
-            out.write(data[i:i + 4096])
-            high = max(high, len(out._ring))
+        period_bytes = stream.period * FMT.frame_size
+        # Fill to capacity, then refill exactly what each callback can consume.
+        # The test drives both sides so scheduler stalls cannot starve the device.
+        out.write(data[:limit])
+        for offset in range(0, len(data), period_bytes):
+            stream.tick()
+            self.assertEqual(out.delivered, min(offset + period_bytes, len(data)))
+            refill = limit + offset
+            out.write(data[refill:refill + period_bytes])
         out.close()
-        self.assertLessEqual(high, limit)
+        self.assertEqual(out.queue_high, limit)
         self.assertEqual(out.delivered, len(data))
         self.assertEqual(out.delivered_sha256, hashlib.sha256(data).hexdigest())
-        # The device saw the PCM contiguously (leading silence allowed only).
-        played = bytes(sd.played)
-        start = played.find(data[:64])
-        self.assertGreaterEqual(start, 0)
-        self.assertEqual(played[start:start + len(data)], data)
-        self.assertTrue(FakeStream.instances[-1].stopped and FakeStream.instances[-1].closed)
+        self.assertEqual(sd.played[:len(data)], data)
+        self.assertTrue(stream.stopped and stream.closed)
 
     def test_abort_is_immediate_and_wakes_a_blocked_writer(self):
         sd = FakeSd(speed=0.05)  # device consumes very slowly: the writer will block

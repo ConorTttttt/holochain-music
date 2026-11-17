@@ -1,0 +1,35 @@
+name: RC provenance checks (no package publishing)
+
+on:
+  push:
+    branches: [main, ci/rc3-provenance-packaging-agent3]
+  pull_request:
+    paths:
+      - 'packaging/rc-*'
+      - 'packaging/build-deb.sh'
+      - 'packaging/windows/build-windows.sh'
+      - 'tests/test_rc_evidence.py'
+      - '.github/workflows/rc-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-and-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Shell syntax and whitespace
+        run: |
+          for script in packaging/rc-build.sh packaging/build-deb.sh packaging/windows/build-windows.sh; do sh -n "$script"; done
+          git diff --check
+      - name: Provenance validation unit tests
+        run: python3 -m unittest discover -s tests -p test_rc_evidence.py -v
+      - name: Exact checkout / metadata preflight
+        run: python3 packaging/rc-evidence.py preflight --commit "$GITHUB_SHA"
+      # This job deliberately does NOT build/upload packages or tag releases.
