@@ -15,10 +15,11 @@ Current `main` contains the v1 music application, S1 encrypted CAS and S2/S4/S5�
 | PR(s) | Evidence and current disposition | Next action |
 |---|---|---|
 | #4 (S1), #8 (S5) | Merged; historical foundations | Retain closed |
-| #5–#7 (early S2/S3/S4) | Open, divergent from `main`; function areas have since been implemented, but branch ancestry does **not** prove every original change is present | Inspect any unique security/protocol differences, then close as **superseded** with cross-reference to current code; never merge blindly |
+| #5 (early S2) | Closed as superseded by the v1 integration merge after comparing the agent-binding implementation and the replacement WASM and integrity checks | Use the current v1 implementation |
+| #6–#7 (early S3/S4) | Open, divergent from `main`. #6 retains standalone audit and repair code. #7 retains distinct local secret-file ignore rules | Preserve the branches for separate review |
 | #9–#22 (S5 integration through S18) | Closed as already integrated. All 14 exact heads are ancestors of `main` through the v1 integration merge | Use the historical PRs and their linked tests for reference |
 | #25 (UI semantic controls) | Open divergent trial; current theme/control implementation is newer | Compare residual changes; close as superseded if no independently useful behaviour remains |
-| #28 (Plus Jakarta Sans) | Open divergent font trial; current accepted UI uses locally bundled **Inter** via merged #35 | Close as superseded; do not reintroduce competing font |
+| #28 (Plus Jakarta Sans) | Closed as superseded by the locally bundled Inter typography in #35 | Keep the historical trial branch available |
 | #29 (Phosphor icon trial) | Open divergent trial; Phosphor implemented through merged #30/#33 | Close as superseded after residual-diff check |
 | #30–#37 (UI and local artwork) | Closed/merged: Phosphor, Ocean Signal, appearance, v1 integration, Amethyst, Inter, player polish, local PNG art | Retain closed; avoid duplicate implementation |
 | #40–#42 (Library/offline/storage) | Closed/merged; present on `main` | Retain closed; maintain library and verified-readiness contracts |
@@ -134,7 +135,7 @@ Every row below returned `status=ahead`, `behind_by=0`: `main` contains the exac
 | [#21](https://github.com/ConorTttttt/holochain-music/pull/21) | [`4805d99`](https://github.com/ConorTttttt/holochain-music/commit/4805d997813cafda5d35f0fe8d474311978262d0) | Integrated; pinned private LAN |
 | [#22](https://github.com/ConorTttttt/holochain-music/pull/22) | [`0ac4687`](https://github.com/ConorTttttt/holochain-music/commit/0ac4687ef30c69809bc0cb113668f66e99e6f307) | Integrated; local authorised player |
 
-Do **not** use the same close-as-integrated claim for [#5](https://github.com/ConorTttttt/holochain-music/pull/5), [#6](https://github.com/ConorTttttt/holochain-music/pull/6), [#7](https://github.com/ConorTttttt/holochain-music/pull/7): GitHub reports `diverged` and **3, 2, 6 behind** respectively when comparing those heads to `main`. Inspect each branch's unique commits and security/protocol intent; then describe any close as **superseded** with current replacement evidence. [#25](https://github.com/ConorTttttt/holochain-music/pull/25), [#28](https://github.com/ConorTttttt/holochain-music/pull/28) and [#29](https://github.com/ConorTttttt/holochain-music/pull/29) likewise diverge (19, 28 and 42 commits behind `main` as compared from the old heads); require residual-diff review before marking superseded.
+The original audit found divergent heads for [#5](https://github.com/ConorTttttt/holochain-music/pull/5), [#6](https://github.com/ConorTttttt/holochain-music/pull/6), [#7](https://github.com/ConorTttttt/holochain-music/pull/7), [#25](https://github.com/ConorTttttt/holochain-music/pull/25), [#28](https://github.com/ConorTttttt/holochain-music/pull/28) and [#29](https://github.com/ConorTttttt/holochain-music/pull/29). The disposition table above records the subsequent source comparisons and closures.
 
 **Suggested closure comment for an ancestry-proven PR:** “Closing as integrated into `main`: the exact historical head `<SHA>` is an ancestor of current `main` `bd7aabc` (GitHub compare: `behind_by=0` from historical head to main). Historical commits and regression tests remain traceable through the PR and repository. No re-merge is required. Post-RC1 follow-up work is tracked in PR #53.”
 
