@@ -38,6 +38,23 @@ from .package import canonical
 ENV_BINARY = "HOLOCHAIN_MEDIA_CORE_BIN"
 MAX_OUTPUT_BYTES = 64 * 1024
 
+# Deliberately closed subprocess interface: callers may not add flags that
+# could transport private keys, even for an expected CLI usage failure.
+# A new Rust CLI verb or option requires an explicit adapter/security review.
+_ALLOWED_CLI_FLAGS = {
+    "verify-manifest": frozenset(("--manifest", "--trusted-artist-hex",
+                                  "--expected-manifest-sha256")),
+    "verify-receipt": frozenset(("--manifest", "--receipt", "--trusted-artist-hex",
+                                 "--trusted-host-hex")),
+    "verify-bindings": frozenset(("--bridge-json", "--manifest", "--receipt",
+                                  "--owner-agent", "--node-agent")),
+    "check-access": frozenset(("--bridge-json", "--manifest", "--owner-agent",
+                               "--grant", "--listener-agent", "--recipient-x25519-hex",
+                               "--right", "--now")),
+    "import": frozenset(("--manifest", "--trusted-artist-hex", "--source-store", "--cas")),
+    "audit": frozenset(("--manifest", "--trusted-artist-hex", "--cas")),
+}
+
 
 class MediaCoreUnavailable(RuntimeError):
     """CLI disabled, not launchable, timed out, or returned a protocol failure."""
@@ -88,6 +105,12 @@ def enabled() -> bool:
 
 
 def _run(args: list[str], timeout: float = 120) -> dict:
+    allowed = _ALLOWED_CLI_FLAGS.get(args[0]) if args else None
+    if allowed is None or len(args) % 2 != 1 or any(
+        args[index] not in allowed or not isinstance(args[index + 1], str)
+        for index in range(1, len(args), 2)
+    ):
+        raise MediaCoreUnavailable("unapproved Media Core CLI argument")
     exe = binary()
     if exe is None:
         raise MediaCoreUnavailable(f"{ENV_BINARY} is not set")
