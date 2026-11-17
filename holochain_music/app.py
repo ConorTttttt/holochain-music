@@ -16,7 +16,9 @@ from holochain_storage.package import (
 from music_catalogue.content_grants import (
     ContentGrantError, grant_kind, issue_personal_licence, unwrap_content_grant,
 )
+from music_catalogue.access_grant_v2 import unwrap_access_grant_v2
 from music_catalogue.audio_output import available_backends, default_backend
+from .v21_grants import verify_delivery_from_conductor, verify_cached_delivery
 from music_catalogue.contract import CatalogueError, validate_track
 from music_catalogue.granted_audio import PlaybackError
 from music_catalogue.moq_host import MoqHost
@@ -41,6 +43,8 @@ DEFAULTS = {
     "run_local_bootstrap": True,
     "bootstrap_poll_max_ms": 30_000,
     "allow_lan": False,
+    "key_binding": "v1",
+    "access_grant_v2": False,
     "host_enabled": True,
     "host_bind": "127.0.0.1:0",
     "host_advertise_ip": None,
@@ -123,7 +127,9 @@ class MusicApp:
                 raise AppError("host_bind must look like 0.0.0.0:47100 or 127.0.0.1:47100")
             if key == "audio_device" and (not isinstance(value, str) or not value or len(value) > 128):
                 raise AppError("invalid audio device name")
-            if key in ("allow_lan", "host_enabled", "run_local_bootstrap") and not isinstance(value, bool):
+            if key == "key_binding" and value not in ("v1", "v2", "v2.1"):
+                raise AppError("unsupported key binding policy")
+            if key in ("access_grant_v2", "allow_lan", "host_enabled", "run_local_bootstrap") and type(value) is not bool:
                 raise AppError(f"{key} must be true or false")
             if key == "host_max_rate" and (type(value) is not int or not 64 * 1024 <= value <= 1024**3):
                 raise AppError("host rate must be between 64 KiB/s and 1 GiB/s")
@@ -132,6 +138,8 @@ class MusicApp:
             if key == "audio_backend" and value not in available_backends():
                 raise AppError("audio backend must be one of: " + ", ".join(available_backends()))
             self.settings[key] = value
+        if self.settings["access_grant_v2"] and self.settings["key_binding"] != "v2.1":
+            raise AppError("access-grant/v2 needs explicit key_binding=v2.1")
         _atomic_json(self.paths.settings_file, self.settings)
         return self.settings
 
@@ -186,14 +194,18 @@ class MusicApp:
         elif self.settings["pins"].get("agent") not in (None, who["agent"]):
             raise BridgeError("conductor agent changed unexpectedly; refusing to continue")
         moq = binaries.find("holochain-music-moq")
-        self.catalogue = Catalogue(self.bridge, moq_binary=moq, allow_lan=self.settings["allow_lan"])
+        self.catalogue = Catalogue(
+            self.bridge, moq_binary=moq, allow_lan=self.settings["allow_lan"],
+            key_binding="v2.1" if self.settings["key_binding"] == "v2.1" else "v1")
         # Wait at most 15 s for a peer; slower deliveries are queued and retried.
         bridge = self.bridge
         self.outbox = Outbox(self.paths.data / "outbox.json",
                              lambda op, **kw: bridge.call(op, timeout=15, **kw))
         self.outbox.start()
-        self.artist = ArtistService(bridge=self.bridge, keys=self.keys, host_root=self.paths.host,
-                                    deliver=self.outbox.deliver)
+        self.artist = ArtistService(
+            bridge=self.bridge, keys=self.keys, host_root=self.paths.host,
+            deliver=self.outbox.deliver, key_binding=self.settings["key_binding"],
+            access_grant_v2=self.settings["access_grant_v2"])
         self.online = True
         self.status_message = "online"
         if self.settings["host_enabled"]:
@@ -296,16 +308,50 @@ class MusicApp:
                     if meta["artist_agent"] != owner:
                         continue
                     kind = grant_kind(grant)
-                    unwrap_content_grant(grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
-                                         owner_agent=owner, listener_agent=self.agent,
-                                         recipient_private=self.keys.listener_x25519(),
-                                         signed_manifest=self.library.manifest(file_id))
+                    evidence = None
+                    if isinstance(grant, dict) and set(grant) == {"grant", "anchor_action"}:
+                        if not self.settings["access_grant_v2"] or self.settings["key_binding"] != "v2.1":
+                            continue
+                        verified, evidence = verify_delivery_from_conductor(
+                            self.bridge, grant, self.library.manifest(file_id), owner, self.agent,
+                            self.keys.listener_x25519().public_key().public_bytes_raw())
+                        # UI routing is not a licence check. The typed result
+                        # must grant the right claimed by the inbox kind.
+                        verified.authorize("export" if kind == "perpetual-personal" else "stream")
+                    else:
+                        unwrap_content_grant(grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                                             owner_agent=owner, listener_agent=self.agent,
+                                             recipient_private=self.keys.listener_x25519(),
+                                             signed_manifest=self.library.manifest(file_id))
                     if self.library.grant(file_id) != grant:
-                        self.library.set_grant(file_id, grant, kind)  # never downgrades a licence
+                        self.library.set_grant(file_id, grant, kind, v2_evidence=evidence)
                         added += self.library.grant(file_id) == grant
+                    elif evidence is not None:
+                        self.library.set_v2_evidence(file_id, grant, evidence)
                 except (KeyError, TypeError, ValueError, *USER_ERRORS):
                     continue
         return added
+
+    def _verified_v2(self, file_id: str, delivery: dict, meta: dict):
+        """Re-check v2 on every online use or against local offline snapshot."""
+        if not self.settings["access_grant_v2"] or self.settings["key_binding"] != "v2.1":
+            raise AppError("access-grant/v2 is not enabled on this device")
+        recipient = self.keys.listener_x25519()
+        public = recipient.public_key().public_bytes_raw()
+        manifest = self.library.manifest(file_id)
+        owner = meta["artist_agent"]
+        listener = meta["listener_agent"]
+        if self.online and self.bridge is not None:
+            verified, evidence = verify_delivery_from_conductor(
+                self.bridge, delivery, manifest, owner, listener, public)
+            self.library.set_v2_evidence(file_id, delivery, evidence)
+            return verified
+        pinned = (self.settings.get("pins") or {}).get("storage_dna")
+        if not pinned:
+            raise AppError("offline v2 requires a pinned storage DNA")
+        return verify_cached_delivery(
+            self.library.v2_evidence(file_id), delivery, manifest, owner, pinned,
+            listener, public)
 
     def request_access(self, track_key: str, kind: str, note: str = "") -> dict:
         """Send a private request to the artist's cell (artist must be online)."""
@@ -476,11 +522,16 @@ class MusicApp:
         try:
             if not self.library.verify_complete(file_id):
                 return {"state": "incomplete", "message": "The full authenticated encrypted download is not available locally."}
-            key = unwrap_content_grant(
-                grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
-                owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
-                recipient_private=self.keys.listener_x25519(),
-                signed_manifest=self.library.manifest(file_id))
+            if isinstance(grant, dict) and set(grant) == {"grant", "anchor_action"}:
+                verified = self._verified_v2(file_id, grant, meta)
+                verified.authorize("managed-offline")
+                key = unwrap_access_grant_v2(verified, self.keys.listener_x25519())
+            else:
+                key = unwrap_content_grant(
+                    grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                    owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
+                    recipient_private=self.keys.listener_x25519(),
+                    signed_manifest=self.library.manifest(file_id))
             del key
         except (StorageError, ValueError, KeyError, TypeError):
             return {"state": "missing_key", "message": "This licence or decryption key could not be verified. Check your identity backup."}
@@ -496,11 +547,15 @@ class MusicApp:
             raise AppError("track is not in your library")
         if grant is None:
             raise AppError("you do not have access to this track yet; request it from the artist")
+        verified_v2 = None
+        if isinstance(grant, dict) and set(grant) == {"grant", "anchor_action"}:
+            verified_v2 = self._verified_v2(file_id, grant, meta)
+            verified_v2.authorize("stream")
         download = self._ensure_download(file_id)
         return SessionSpec(key=file_id, manifest=self.library.manifest(file_id), grant=grant,
                            artist_key=bytes.fromhex(meta["artist_key_hex"]), owner_agent=meta["artist_agent"],
                            listener_agent=meta["listener_agent"], recipient=self.keys.listener_x25519(),
-                           store=self.library.cas, download=download,
+                           store=self.library.cas, download=download, verified_v2=verified_v2,
                            source="streaming" if download else "offline")
 
     def _record_play(self, file_id: str) -> None:
@@ -544,10 +599,15 @@ class MusicApp:
             raise AppError("export requires a perpetual personal-use licence")
         if not self.library.verify_complete(file_id):
             raise AppError("download the track completely before exporting")
-        key = unwrap_content_grant(grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
-                                   owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
-                                   recipient_private=self.keys.listener_x25519(),
-                                   signed_manifest=self.library.manifest(file_id))
+        if isinstance(grant, dict) and set(grant) == {"grant", "anchor_action"}:
+            verified = self._verified_v2(file_id, grant, meta)
+            verified.authorize("export")
+            key = unwrap_access_grant_v2(verified, self.keys.listener_x25519())
+        else:
+            key = unwrap_content_grant(grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                                       owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
+                                       recipient_private=self.keys.listener_x25519(),
+                                       signed_manifest=self.library.manifest(file_id))
         destination = Path(destination).expanduser()
         if destination.exists():
             raise AppError("destination already exists")
