@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
-from holochain_storage.package import StorageError, _read_verified_chunk, verify_package
+from holochain_storage.package import StorageError, _read_verified_chunk, object_path, verify_package
 from music_catalogue.granted_audio import PlaybackError
 from music_catalogue.moq_host import MoqFetchCancelled, MoqFetchError, fetch_ciphertext
 
@@ -52,7 +53,7 @@ class Download:
         self._restart = threading.Event()
         self._priority: int | None = None
         self._position: int | None = None  # next index the active stream will deliver
-        self.state = "complete" if len(self.available) == self.total else "idle"
+        self.state = "idle"  # even a full restored cache must pass final authentication
         self.error: str | None = None
         self.attempts = 0
         self.failures = 0
@@ -182,6 +183,43 @@ class Download:
                 buffering(False)
 
     # ---- worker ------------------------------------------------------
+    def _refresh_verified_cache(self) -> int:
+        """Recheck restored and in-memory chunks, repairing only corrupt CAS objects.
+
+        A same-size corrupt object is not reusable and prevents the native
+        receiver from writing the correct object at the same digest path.
+        Never follow a symlink, delete a valid object, or infer completion
+        solely from a saved chunk count.
+        """
+        store = Path(self.store)
+        valid = set()
+        for chunk in self.chunks:
+            path = object_path(store, chunk["sha256"])
+            if any(parent.is_symlink() for parent in (
+                    store, store / "objects", store / "objects" / "sha256", path.parent)):
+                raise StorageError("unsafe encrypted-object directory")
+            if path.is_symlink():
+                raise StorageError("unsafe encrypted-object link")
+            if not path.exists():
+                continue
+            if not path.is_file():
+                raise StorageError("unsafe encrypted-object type")
+            try:
+                _read_verified_chunk(store, chunk)
+            except StorageError as exc:
+                if not str(exc).startswith("corrupt chunk "):
+                    raise
+                # A wrong digest is never valid for any track sharing this CAS.
+                # The manifest pins the expected digest; native MoQ may now
+                # replace the unusable object with authenticated ciphertext.
+                path.unlink()
+                continue
+            valid.add(chunk["index"])
+        with self._cv:
+            self.available = valid
+            self._cv.notify_all()
+        return len(valid)
+
     def _mark(self, index: int) -> None:
         _read_verified_chunk(self.store, self.chunks[index])
         with self._cv:
@@ -220,21 +258,41 @@ class Download:
 
     def _run(self) -> None:
         backoff = 1.0
+        try:
+            self._refresh_verified_cache()
+        except (StorageError, OSError) as exc:
+            with self._cv:
+                self.state, self.error = "unavailable", f"local ciphertext check failed: {exc}"[:200]
+                self._cv.notify_all()
+            return
         while not self._stop.is_set():
             start, objects = self._plan()
             if start is None and objects is None:
                 try:
                     verify_package(self.trusted.manifest, self.store, self.trusted.artist_key)
                 except StorageError as exc:
+                    # A chunk can be damaged after receipt. Drop only the
+                    # damaged local object and request the missing index again.
+                    try:
+                        if self._refresh_verified_cache() < self.total:
+                            continue
+                    except (StorageError, OSError) as repair_exc:
+                        exc = repair_exc
                     with self._cv:
                         self.state, self.error = "unavailable", f"verification failed: {exc}"[:200]
+                        self._cv.notify_all()
+                    return
+                try:
+                    if self.on_complete and self.on_complete() is False:
+                        raise StorageError("library could not verify the completed package")
+                except (StorageError, OSError) as exc:
+                    with self._cv:
+                        self.state, self.error = "unavailable", f"completion failed: {exc}"[:200]
                         self._cv.notify_all()
                     return
                 with self._cv:
                     self.state = "complete"
                     self._cv.notify_all()
-                if self.on_complete:
-                    self.on_complete()
                 return
             host = self.trusted.hosts[self.host_index % len(self.trusted.hosts)]
             self._restart.clear()
@@ -260,6 +318,8 @@ class Download:
                     self.metrics["retries"] += 1
                     self.host_index += 1
                     if self.failures >= MAX_ATTEMPTS:
+                        if self._stop.is_set():
+                            break
                         self.state = "unavailable"
                         self.error = f"hosts unreachable after {self.failures} attempts: {exc}"[:200]
                         self._cv.notify_all()
