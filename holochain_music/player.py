@@ -89,10 +89,11 @@ class SessionSpec:
 
     def __init__(self, *, key: str, manifest: dict, grant: dict, artist_key: bytes, owner_agent: str,
                  listener_agent: str, recipient: X25519PrivateKey, store, download=None,
-                 source: str = "offline"):
+                 source: str = "offline", verified_v2=None):
         self.key, self.manifest, self.grant = key, manifest, grant
         self.artist_key, self.owner_agent, self.listener_agent = artist_key, owner_agent, listener_agent
         self.recipient, self.store, self.download, self.source = recipient, store, download, source
+        self.verified_v2 = verified_v2
 
 
 DEVICE_BUFFER_US = 200_000   # ALSA/WASAPI ring: bounds queued (unheard) audio
@@ -321,7 +322,8 @@ class Player:
         reader = InflightWavSeeker(signed_manifest=spec.manifest, ciphertext_store=spec.store,
                                    grant=spec.grant, trusted_artist=spec.artist_key,
                                    owner_agent=spec.owner_agent, listener_agent=spec.listener_agent,
-                                   recipient_private=spec.recipient, chunk_waiter=lambda chunk: None)
+                                   recipient_private=spec.recipient, chunk_waiter=lambda chunk: None,
+                                   verified_v2=spec.verified_v2)
         if spec.download is not None:
             download = spec.download
             reader._waiter = lambda chunk: download.wait_for(chunk)
