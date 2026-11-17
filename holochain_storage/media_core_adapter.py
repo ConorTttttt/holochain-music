@@ -149,8 +149,15 @@ def _staging():
 def _write(directory: Path, name: str, value: Any) -> str:
     _assert_public_document(value)
     path = directory / name
+    payload = canonical(value)
+    # TemporaryDirectory is private, but per-file permissions must also be
+    # restrictive. O_EXCL refuses any pre-existing path instead of clobbering
+    # or following it, including if another local process plants a symlink.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     try:
-        path.write_bytes(canonical(value))
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "wb") as staged:
+            staged.write(payload)
     except OSError as exc:
         raise MediaCoreLocalIO("unable to stage public Media Core inputs") from exc
     return str(path)
