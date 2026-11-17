@@ -396,6 +396,7 @@ class MusicApp:
                 # A previously completed worker may still be cached after
                 # independent library verification detects damaged/deleted
                 # ciphertext. Recheck and repair without restarting the app.
+                self.require_online()
                 d.reopen_after_failed_verification()
             if start:
                 d.start()
