@@ -39,16 +39,36 @@ MAX_OUTPUT_BYTES = 64 * 1024
 
 
 class MediaCoreUnavailable(RuntimeError):
-    """Adapter not configured or the binary could not run (not a rejection)."""
+    """CLI disabled, not launchable, timed out, or returned a protocol failure."""
+
+    error_class = "unavailable-service"
+
+
+class MediaCoreLocalIO(MediaCoreUnavailable):
+    """Music could not stage public inputs in its local temporary directory."""
+
+    error_class = "local-io"
 
 
 class MediaCoreRejected(ValueError):
-    """Media Core rejected the input at a named verification boundary."""
+    """An authenticated verification/policy rejection (not a subprocess error)."""
 
     def __init__(self, result: dict):
         super().__init__(f"{result.get('boundary')}: {result.get('error')}")
         self.boundary = result.get("boundary")
         self.result = result
+        self.error_class = ("access-denied"
+                            if self.boundary == "entitlement"
+                            and result.get("category") in ("denied", "validity")
+                            else "invalid-content")
+
+
+class MediaCoreUnsupportedSchema(MediaCoreRejected):
+    """CLI explicitly identified an unsupported entitlement schema version."""
+
+    def __init__(self, result: dict):
+        super().__init__(result)
+        self.error_class = "unsupported-schema"
 
 
 def binary() -> Path | None:
@@ -86,6 +106,8 @@ def _run(args: list[str], timeout: float = 120) -> dict:
     if done.returncode == 0 and result.get("ok") is True:
         return result
     if done.returncode == 2 and result.get("ok") is False:
+        if result.get("boundary") == "entitlement" and result.get("category") == "unsupported":
+            raise MediaCoreUnsupportedSchema(result)
         raise MediaCoreRejected(result)
     # Exit 1 (usage/I/O) or anything unexpected is NOT a verification result.
     raise MediaCoreUnavailable(f"Media Core failed: {result.get('error')}")
@@ -93,7 +115,10 @@ def _run(args: list[str], timeout: float = 120) -> dict:
 
 def _write(directory: Path, name: str, value: Any) -> str:
     path = directory / name
-    path.write_bytes(canonical(value))
+    try:
+        path.write_bytes(canonical(value))
+    except OSError as exc:
+        raise MediaCoreLocalIO("unable to stage public Media Core inputs") from exc
     return str(path)
 
 
