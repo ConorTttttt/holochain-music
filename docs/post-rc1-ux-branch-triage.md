@@ -2,6 +2,8 @@
 
 Audit: **2026-11-17**. Source of truth: `main` at **`bd7aabc3e9ea1fef1e8e8f674301e1b5ffecb637`**. This is a read-only code/PR/CI audit plus an integration plan; **no application tests or manual two-device tests were run as part of this audit**. PR metadata, diffs, branch ancestry and selected GitHub Actions job logs were inspected. This document must be revalidated if `main` advances.
 
+Integration follow-up, **2026-11-17**. Music PRs #9–#22 were closed after `git merge-base --is-ancestor` confirmed all 14 exact heads are in `main` through the [v1 integration merge](https://github.com/ConorTttttt/holochain-music/commit/c7aec4d318cdf3275fb1af03ef7443db3f2b6385). Closure comments link to that commit. The feature branches and their review history remain available.
+
 ## Decision
 
 **Do not merge historical draft branches wholesale, redesign the player, or change audio licence/grant semantics to reduce the PR count.** Protect the RC1 branch; deliver independent post-RC1 changes from an up-to-date baseline through reviewable, independently tested PRs.
@@ -14,7 +16,7 @@ Current `main` contains the v1 music application, S1 encrypted CAS and S2/S4/S5�
 |---|---|---|
 | #4 (S1), #8 (S5) | Merged; historical foundations | Retain closed |
 | #5–#7 (early S2/S3/S4) | Open, divergent from `main`; function areas have since been implemented, but branch ancestry does **not** prove every original change is present | Inspect any unique security/protocol differences, then close as **superseded** with cross-reference to current code; never merge blindly |
-| #9–#22 (S5 integration through S18) | Open historical drafts. GitHub `compare/<branch>...main` returns `ahead` with `behind_by=0` for representative stack heads, including S5→S4 retrieval, S6–S11, S17 and S18. S18 head `0ac4687` is an ancestor of `main` (44 commits ahead) | Close remaining drafts as **integrated/superseded** after checking no active review blockers; link back to `main` history and tests. Do not remerge |
+| #9–#22 (S5 integration through S18) | Closed as already integrated. All 14 exact heads are ancestors of `main` through the v1 integration merge | Use the historical PRs and their linked tests for reference |
 | #25 (UI semantic controls) | Open divergent trial; current theme/control implementation is newer | Compare residual changes; close as superseded if no independently useful behaviour remains |
 | #28 (Plus Jakarta Sans) | Open divergent font trial; current accepted UI uses locally bundled **Inter** via merged #35 | Close as superseded; do not reintroduce competing font |
 | #29 (Phosphor icon trial) | Open divergent trial; Phosphor implemented through merged #30/#33 | Close as superseded after residual-diff check |
@@ -113,7 +115,7 @@ Rechecked **2026-11-17**, baseline `main` = [`bd7aabc3e9ea1fef1e8e8f674301e1b5ff
 
 ### Exact historical S-series ancestry / proposed PR closure record
 
-Every row below returned `status=ahead`, `behind_by=0`: `main` contains the exact PR head commit as an ancestor. The PRs are still open drafts and may be **administratively closed as integrated**, after the maintainer confirms no in-flight discussion or review requires preserving them open. Do not delete historical branches or re-merge them.
+Every row below returned `status=ahead`, `behind_by=0`: `main` contains the exact PR head commit as an ancestor. The follow-up above records the closures. The following table preserves the evidence and proposed wording from the original audit.
 
 | Historical PR | Head commit contained in current `main` | Proposed close note |
 |---|---|---|
