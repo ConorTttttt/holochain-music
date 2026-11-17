@@ -10,6 +10,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
@@ -119,6 +120,50 @@ class V2ContractTests(unittest.TestCase):
             verified.authorize("export")
         self.assertEqual((exc.exception.category, exc.exception.reason), ("denied", "RightNotGranted"))
 
+    def test_verified_grant_body_is_immutable_after_validation(self):
+        # A signed grant arrives as a mutable JSON dict. Neither mutation of
+        # the input nor of the exposed body view may change an authorisation
+        # already checked against the issuer signature and public anchor.
+        verified = checked(self.w, self.grant, self.anchor)
+        self.assertEqual(verified.rights, frozenset({"stream"}))
+        self.grant["body"]["rights"].append("export")
+        self.grant["body"]["recipient_key_hex"] = "00" * 32
+        view = verified.body
+        view["rights"].append("export")
+        view["recipient_key_hex"] = "ff" * 32
+        self.assertEqual(verified.rights, frozenset({"stream"}))
+        self.assertEqual(verified.body["recipient_key_hex"], pub(self.w["bob"]).hex())
+        with self.assertRaises(AccessGrantV2Error) as denied:
+            verified.authorize("export")
+        self.assertEqual((denied.exception.category, denied.exception.reason),
+                         ("denied", "RightNotGranted"))
+        self.assertEqual(unwrap_access_grant_v2(verified, self.w["bob"]),
+                         self.w["content_key"])
+
+    def test_source_mutation_during_verification_cannot_add_rights(self):
+        # Reproduce the in-flight mutation window: the authentic signature and
+        # anchor have passed, but the verifier has not returned its verdict.
+        # A caller-owned dict MUST NOT be consulted again at this point.
+        grant, anchor = signed_grant(self.w, term="perpetual", expires_at=0)
+        real_verify = kl.verify_grant_anchor
+
+        def mutate_after_anchor(*args, **kwargs):
+            result = real_verify(*args, **kwargs)
+            grant["body"]["rights"][:] = ["export", "managed-offline", "stream"]
+            grant["body"]["recipient_key_hex"] = pub(self.w["carol"]).hex()
+            return result
+
+        with patch.object(kl, "verify_grant_anchor", side_effect=mutate_after_anchor):
+            verified = checked(self.w, grant, anchor)
+        self.assertEqual(verified.rights, frozenset({"stream"}))
+        self.assertEqual(verified.body["recipient_key_hex"], pub(self.w["bob"]).hex())
+        with self.assertRaises(AccessGrantV2Error) as denied:
+            verified.authorize("export")
+        self.assertEqual((denied.exception.category, denied.exception.reason),
+                         ("denied", "RightNotGranted"))
+        self.assertEqual(unwrap_access_grant_v2(verified, self.w["bob"]),
+                         self.w["content_key"])
+
     def test_perpetual_rights_and_recipient(self):
         grant, anchor = signed_grant(
             self.w, rights=["export", "managed-offline", "stream"], term="perpetual",
@@ -225,6 +270,9 @@ class V2ContractTests(unittest.TestCase):
         accepted = checked(w, grant, anchor, lifecycle=recovered,
                            recovered_policy=kl.RECOVERED_ISSUER_ACCEPT)
         self.assertEqual(accepted.issuer_continuity, kl.CONTINUITY_RECOVERED)
+        # A recovered G3 grant issuer cannot relabel an original, normally
+        # authenticated G1 S1 manifest as recovered historical content.
+        self.assertEqual(accepted.owner_assurance, "KeyLifecycleV21")
 
 
 if __name__ == "__main__":

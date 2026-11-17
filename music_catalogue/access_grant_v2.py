@@ -213,11 +213,19 @@ def _historical_manifest(signed_manifest: dict, lifecycle: kl.KeyLifecycle,
 
 @dataclass(frozen=True)
 class VerifiedAccessGrantV2:
-    body: dict
+    # Keep the authenticated body in immutable, canonical signed bytes.
+    # A frozen dataclass containing a dict is NOT immutable: mutating
+    # "body['rights']" after verification would otherwise bypass authorize().
+    _body_canonical: bytes
     anchor_seq: int
     issuer_continuity: str
     owner_assurance: str
     context: bytes
+
+    @property
+    def body(self) -> dict:
+        """Return a defensive copy; never expose mutable verified state."""
+        return json.loads(self._body_canonical)
 
     @property
     def rights(self) -> frozenset[str]:
@@ -261,7 +269,15 @@ def verify_access_grant_v2(
     All lifecycle/anchor/commitment objects must originate from a validating
     local conductor, not a remote sender or a grant's untrusted fields.
     """
-    env = parse_access_grant_v2(grant)
+    parsed = parse_access_grant_v2(grant)
+    # A dict supplied by the caller remains mutable during verification.
+    # Take and re-validate a detached canonical snapshot BEFORE checking the
+    # signature, anchor or rights; otherwise a concurrent mutation between
+    # anchor verification and construction of the verdict can add rights.
+    try:
+        env = parse_access_grant_v2(canonical(parsed))
+    except (TypeError, ValueError, OverflowError):
+        _fail("malformed", "Structure")
     if recovered_policy not in (kl.RECOVERED_ISSUER_REJECT, kl.RECOVERED_ISSUER_ACCEPT):
         _fail("unsupported", "RecoveryPolicy")
     b = env["body"]
@@ -310,11 +326,15 @@ def verify_access_grant_v2(
             _fail("unauthenticated", "AnchorMismatch")
         _fail("unauthenticated", "InvalidAnchor")
     _terms(b, int(time.time()) if now is None else _int(now))
+    # owner_assurance describes the HISTORICAL authenticated S1 content.
+    # A later recovered grant issuer has separate continuity and must not
+    # silently relabel the original manifest's authentication generation.
+    historical_generation = owner_lifecycle.find(bytes.fromhex(historical_key))
     assurance = ("KeyLifecycleRecoveredV21"
                  if any(g.kind == kl.RECOVERY for g in owner_lifecycle.generations
-                        if g.generation <= generation.generation)
+                        if g.generation <= historical_generation.generation)
                  else "KeyLifecycleV21")
-    return VerifiedAccessGrantV2(b, anchor.action_seq, generation.continuity,
+    return VerifiedAccessGrantV2(canonical(b), anchor.action_seq, generation.continuity,
                                  assurance, grant_wrap_context(b))
 
 
