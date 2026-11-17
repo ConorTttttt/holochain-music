@@ -63,7 +63,8 @@ def make_world():
 
 
 def signed_grant(world, *, rights=None, term="window", issuer=None, recipient=None,
-                 listener=BOB, expires_at=None):
+                 listener=BOB, expires_at=None,
+                 recovered_policy=kl.RECOVERED_ISSUER_REJECT):
     rights = ["stream"] if rights is None else rights
     recipient = recipient or world["bob"]
     grant = issue_access_grant_v2(
@@ -72,6 +73,7 @@ def signed_grant(world, *, rights=None, term="window", issuer=None, recipient=No
         listener_agent=listener, recipient_public=pub(recipient),
         content_key=world["content_key"], rights=rights, term=term,
         issued_at=NOW, not_before=NOW, expires_at=(NOW + 3600 if expires_at is None else expires_at),
+        recovered_policy=recovered_policy,
     )
     entry = kl.make_grant_anchor(
         dna_hash=DNA, grant_id=grant["body"]["grant_id"],
@@ -204,7 +206,11 @@ class V2ContractTests(unittest.TestCase):
         rows = w["lifecycle_rows"] + [record(ALICE, "alice-g3", 9, recovery)]
         recovered = kl.resolve_key_lifecycle(rows, ALICE, kl.OWNER_PURPOSE, DNA)
         local = {**w, "lifecycle": recovered}
-        grant, _ = signed_grant(local, issuer=g3)
+        with self.assertRaises(AccessGrantV2Error) as refused:
+            signed_grant(local, issuer=g3)
+        self.assertEqual(refused.exception.reason, "RecoveredIssuerRefused")
+        grant, _ = signed_grant(local, issuer=g3,
+                                recovered_policy=kl.RECOVERED_ISSUER_ACCEPT)
         grant["body"]["issuer_key_action"] = "alice-g3"  # Re-sign to reflect actual generation.
         grant["body"]["issuer_key_generation"] = "3"
         grant["body"]["issuer_key_hex"] = public_key_bytes(g3).hex()
