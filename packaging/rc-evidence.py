@@ -120,7 +120,8 @@ def read_manifest(path: Path) -> dict[str, str]:
     return manifest
 
 
-def linux_bundled(artifact: Path, expected: str, version: str) -> dict[str, str]:
+def linux_bundled(artifact: Path, contents: Path,
+                  expected: str, version: str) -> dict[str, str]:
     package_version = cmd("dpkg-deb", "-f", str(artifact), "Version")
     if package_version != version.replace("rc", "~rc"):
         raise ValueError(f".deb control version mismatch: {package_version}")
@@ -130,7 +131,18 @@ def linux_bundled(artifact: Path, expected: str, version: str) -> dict[str, str]
         marker = root / "usr/share/doc/holochain-music/SOURCE_COMMIT.txt"
         if not marker.is_file() or f"commit={expected}\n" not in marker.read_text():
             raise ValueError("source commit marker missing/mismatched in .deb")
-        return {name: sha(root / name) for name in LINUX_PATHS}
+        # Compare every installed file against the separately generated stage
+        # checksum manifest; a stale or spliced sidecar must fail closed.
+        listed = read_manifest(contents)
+        actual = {path.relative_to(root).as_posix()
+                  for path in (root / "usr").rglob("*") if path.is_file()}
+        if set(listed) != actual:
+            raise ValueError(f".deb contents mismatch: missing={sorted(actual - set(listed))}, "
+                             f"unexpected={sorted(set(listed) - actual)}")
+        for name in sorted(actual):
+            if sha(root / name) != listed[name]:
+                raise ValueError(f".deb staged checksum mismatch: {name}")
+        return {name: listed[name] for name in LINUX_PATHS}
 
 
 def windows_bundled(contents: Path) -> dict[str, str]:
@@ -153,7 +165,7 @@ def record(args: argparse.Namespace, version: str) -> None:
                  f"HolochainMusic-{version.replace('rc', '-rc')}-windows-x64.exe")
     if artifact.name != canonical:
         raise ValueError(f"version/artefact mismatch: expected {canonical}")
-    bundled = (linux_bundled(artifact, args.commit, version) if platform_name == "linux"
+    bundled = (linux_bundled(artifact, contents, args.commit, version) if platform_name == "linux"
                else windows_bundled(contents))
     inputs = {}
     for raw in args.input:
