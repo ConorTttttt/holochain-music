@@ -461,6 +461,8 @@ class MusicApp:
             d = self.downloads.get(file_id)
             if d is None or d.state != "unavailable":
                 raise AppError("No failed download to retry. Choose Download for Offline instead.")
+            if d.is_running():
+                raise AppError("The previous download worker is still finishing. Retry after it stops.")
             refreshed = self._ensure_download(file_id)
             return refreshed.progress() if refreshed else {"state": "complete"}
 
