@@ -269,7 +269,15 @@ def verify_access_grant_v2(
     All lifecycle/anchor/commitment objects must originate from a validating
     local conductor, not a remote sender or a grant's untrusted fields.
     """
-    env = parse_access_grant_v2(grant)
+    parsed = parse_access_grant_v2(grant)
+    # A dict supplied by the caller remains mutable during verification.
+    # Take and re-validate a detached canonical snapshot BEFORE checking the
+    # signature, anchor or rights; otherwise a concurrent mutation between
+    # anchor verification and construction of the verdict can add rights.
+    try:
+        env = parse_access_grant_v2(canonical(parsed))
+    except (TypeError, ValueError, OverflowError):
+        _fail("malformed", "Structure")
     if recovered_policy not in (kl.RECOVERED_ISSUER_REJECT, kl.RECOVERED_ISSUER_ACCEPT):
         _fail("unsupported", "RecoveryPolicy")
     b = env["body"]
