@@ -16,7 +16,7 @@
 | Source-chain privacy | Body of private entry not gossiped; authorship, action type/hash, sequence and timestamps remain visible to observers. Random 16-byte request nonce prevents straightforward guessed entry-hash testing. | Publish metadata disclosure/risk acceptance; test what a separate peer can observe, not only what UI displays. **BLOCKED — acceptance**. |
 | Local permissions/host UI | Security model claims 0700/0600 on Linux and protected DACL on Windows, loopback admin/UI token/Origin protection, private-profile firewall rules. | Inspect final Windows ACLs including WAV working files, local library and MoQ TLS key (Agent 1 changes in PR #45 not on main); attack with second OS account where possible. **REVIEW**. |
 
-**Finding register and approvals:** [release-review-approval-packet-20261117.md](release-review-approval-packet-20261117.md) gives SEC-01–09 severity, interim accountable owner, exact evidence and closure conditions. A named independent specialist must sign; no source-level review is an independent sign-off.
+**Finding register and approvals:** [release-review-approval-packet-20261117.md](release-review-approval-packet-20261117.md) gives SEC-01–09 severity, interim accountable owner, exact evidence and closure conditions; [release-independent-security-decision-record.md](release-independent-security-decision-record.md) is the **unsigned** candidate-bound reviewer form. A named independent specialist must sign; no source-level review is an independent sign-off.
 
 ## Important boundedness qualification
 
