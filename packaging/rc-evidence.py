@@ -142,6 +142,9 @@ def linux_bundled(artifact: Path, contents: Path,
         for name in sorted(actual):
             if sha(root / name) != listed[name]:
                 raise ValueError(f".deb staged checksum mismatch: {name}")
+        missing = sorted(set(LINUX_PATHS) - actual)
+        if missing:
+            raise ValueError(f".deb missing significant bundled files: {missing}")
         return {name: listed[name] for name in LINUX_PATHS}
 
 
@@ -215,7 +218,11 @@ def record(args: argparse.Namespace, version: str) -> None:
         },
         "test_logs_sha256": logs,
         "test_conclusion": "NOT EVALUATED BY THIS SCRIPT; review CI/hardware evidence",
-        "windows_archive_files_verified": platform_name != "windows",
+        "content_verification": (
+            "All extracted Debian files checked against sidecar"
+            if platform_name == "linux"
+            else "Windows stage checksum only; NSIS installation verification pending"
+        ),
     }
     if evidence["source_date_epoch"] != evidence["commit_unix_timestamp"]:
         raise ValueError("SOURCE_DATE_EPOCH must match the pinned source commit time")
