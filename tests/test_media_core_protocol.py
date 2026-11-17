@@ -54,6 +54,20 @@ class AdapterProtocolTests(unittest.TestCase):
                 with self.assertRaises(core.MediaCoreUnavailable):
                     self.run_fake(rc, data)
 
+    def test_unapproved_cli_arguments_are_rejected_before_spawn(self):
+        # Even a negative test must never hand sensitive material to a child
+        # just to observe the Rust CLI's unknown-flag usage error.
+        with mock.patch.object(core, "binary", return_value=Path("/unused/core")), \
+             mock.patch.object(core.subprocess, "run", side_effect=AssertionError("spawned")):
+            for args in (
+                ["audit", "--content-key", "public-sentinel"],
+                ["check-access", "--recipient-private-hex", "public-sentinel"],
+                ["verify-manifest", "--manifest"],
+                ["other-command"],
+            ):
+                with self.subTest(args=args), self.assertRaises(core.MediaCoreUnavailable):
+                    core._run(args)
+
     def test_timeout_and_launch_failure_are_unavailable(self):
         with mock.patch.object(core, "binary", return_value=Path("/unused/core")):
             for exc in (subprocess.TimeoutExpired(["core"], 1), OSError("exec failed")):
