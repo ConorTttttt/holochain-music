@@ -37,3 +37,14 @@ TODO shared with the Linux .deb, see docs/licensing-audit.md):
   python\                       holochain_music, music_catalogue, holochain_storage
 
 Not bundled: lair-keystore.exe (the conductor runs lair in-process).
+
+
+# 17 November 2026 Agent 4 addendum (still PRIVATE ONLY):
+# Four Inter WOFF2 font weights are copied to python/holochain_music/ui/fonts/.
+# Copyright 2020 The Inter Project Authors; SIL Open Font License 1.1.
+# Its full Inter-OFL.txt is currently copied with font assets; before public
+# packaging, retain complete licence/copyright in the discoverable licenses/
+# area as well and verify the actual font provenance. Rust transitive
+# attribution, CAL-1.0/source/autonomy review and MSVC/MinGW review remain OPEN.
+# See docs/release-dependency-inventory.md and proposed-notices/ (unapproved).
+#
