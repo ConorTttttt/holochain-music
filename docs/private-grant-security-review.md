@@ -106,8 +106,11 @@ residual risks in §8, or ask for changes.
   listing only `receive_access_request` and `receive_grant`).
 - **Fixed in this review:** a lifetime cap of 2000 inbox entries let a few
   throwaway agents block an artist forever. It is replaced by 20 per sender per
-  24 h and 500 from all senders per hour. "Busy" is retried; "rate limited" and
-  "invalid" are refused and **not** retried. *Fixed:* such refusals used to
+  24 h and 500 from all senders per hour **for each entry class separately**.
+  A sender using both receive functions may reach 40/day combined and Sybil
+  agents may approach 1,000/hour combined across the two classes, subject to
+  other Holochain limits. "Busy" is intended for retries; "rate limited" and
+  "invalid" are intended as permanent refusal and require mixed-error retests. *Fixed:* such refusals used to
   arrive as network errors and would have been retried as "offline".
 - Residual: Sybil spam can still add up to 500 private entries per hour to an
   artist's chain (growth of roughly tens of MB per day) and delay legitimate
