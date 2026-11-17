@@ -154,7 +154,7 @@ function trackActions(fileId, catalogueRow) {
       box.append(el('button', { class: 'btn', type: 'button',
         text: busy ? 'Downloading…' : item.download && item.download.state === 'unavailable' ? 'Retry download' :
           item.download && item.download.state === 'paused' ? 'Resume download' : 'Download for Offline',
-        disabled: !state.online || Boolean(busy),
+        disabled: !state.online || Boolean(busy) || downloadActionsBusy.has(fileId),
         onclick: () => item.download && item.download.state === 'paused'
           ? controlOfflineDownload(fileId, 'resume')
           : item.download && item.download.state === 'unavailable'
@@ -300,6 +300,8 @@ async function verifyOfflineTrack(fileId) {
   if (view === 'library' && libraryFilters.scope === 'offline') render();
 }
 async function startOfflineDownload(fileId) {
+  if (downloadActionsBusy.has(fileId)) return;
+  downloadActionsBusy.add(fileId);
   try {
     const result = await api('/api/download', { file_id: fileId });
     if (result.state === 'complete') toast('Encrypted download present. Verify offline readiness before relying on it.', 'info');
@@ -307,6 +309,10 @@ async function startOfflineDownload(fileId) {
     await refreshLibrary();
     if (view === 'library') render();
   } catch (e) { toast('Download not started: ' + e.message); }
+  finally {
+    downloadActionsBusy.delete(fileId);
+    if (view === 'library') render();
+  }
 }
 // Explicit transfer commands, distinct from pause/resume of audible playback.
 const downloadActionsBusy = new Set();
@@ -399,7 +405,8 @@ function offlineTrackCard(item) {
       albumCoverThumb(item.album_id),
       el('div', {}, el('strong', { text: item.title || 'Untitled' }),
         el('p', { class: 'muted', text: item.artist_name || 'Unknown artist' }))),
-    el('p', { class: 'muted', text: downloadStateText(item) }));
+    el('p', { class: 'muted', role: 'status', 'aria-live': 'polite',
+      text: downloadStateText(item) }));
   if (item.download && Number(item.download.total_chunks) > 0) {
     const progress = el('progress', { max: String(item.download.total_chunks),
       value: String(Math.min(item.download.total_chunks, Math.max(0, item.download.available_chunks || 0))),
@@ -429,18 +436,24 @@ function offlineTrackCard(item) {
     const stage = transfer?.state;
     const controlsBusy = downloadActionsBusy.has(item.file_id);
     if (stage === 'downloading' || stage === 'retrying') {
+      const playingSame = state.player?.track_key === item.file_id &&
+        !['idle', 'stopped', 'finished', 'error'].includes(state.player?.state);
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Pause download', disabled: controlsBusy,
+        text: 'Pause download', 'aria-label': 'Pause download of ' + (item.title || 'track'),
+        disabled: controlsBusy || playingSame,
+        title: playingSame ? 'Stop this track playing before pausing its download.' : null,
         onclick: () => controlOfflineDownload(item.file_id, 'pause') }));
     } else if (stage === 'pausing') {
       actions.append(el('button', { class: 'btn', type: 'button', text: 'Pausing…', disabled: true }));
     } else if (stage === 'paused') {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Resume download', disabled: !state.online || controlsBusy,
+        text: 'Resume download', 'aria-label': 'Resume download of ' + (item.title || 'track'),
+        disabled: !state.online || controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'resume') }));
     } else if (stage === 'unavailable') {
       actions.append(el('button', { class: 'btn', type: 'button',
-        text: 'Retry download', disabled: !state.online || controlsBusy,
+        text: 'Retry download', 'aria-label': 'Retry download of ' + (item.title || 'track'),
+        disabled: !state.online || controlsBusy,
         onclick: () => controlOfflineDownload(item.file_id, 'retry') }));
     } else {
       actions.append(el('button', { class: 'btn', type: 'button',
@@ -452,6 +465,8 @@ function offlineTrackCard(item) {
       (item.offline_ready || Number(item.download?.available_chunks) > 0)) {
     actions.append(el('button', { class: 'btn offline-remove', type: 'button',
       text: 'Remove local copy',
+      disabled: downloadActionsBusy.has(item.file_id) ||
+        ['downloading', 'retrying', 'pausing'].includes(item.download?.state),
       'aria-label': 'Remove local encrypted copy of ' + (item.title || 'track') + ' only',
       onclick: () => removeLocalDownload(item) }));
   }
