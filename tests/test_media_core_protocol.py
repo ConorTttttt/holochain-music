@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import base64
+import json
+import os
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -58,10 +61,31 @@ class AdapterProtocolTests(unittest.TestCase):
                         core._run(["audit"], timeout=1)
 
     def test_local_input_staging_io_is_distinct(self):
-        with mock.patch.object(Path, "write_bytes", side_effect=PermissionError("read-only")):
+        with mock.patch.object(core.os, "open", side_effect=PermissionError("read-only")):
             with self.assertRaises(core.MediaCoreLocalIO) as cm:
                 core._write(Path("/unused"), "public.json", {"x": 1})
         self.assertEqual(cm.exception.error_class, "local-io")
+
+    def test_staged_public_inputs_are_exclusive_and_private(self):
+        with core._staging() as directory:
+            staged = Path(core._write(directory, "public.json", {"schema": "public"}))
+            self.assertEqual(json.loads(staged.read_bytes()), {"schema": "public"})
+            if os.name == "posix":
+                self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
+                self.assertEqual(stat.S_IMODE(staged.stat().st_mode), 0o600)
+            with self.assertRaises(core.MediaCoreLocalIO) as cm:
+                core._write(directory, "public.json", {"schema": "different"})
+            self.assertEqual(cm.exception.error_class, "local-io")
+            self.assertEqual(json.loads(staged.read_bytes()), {"schema": "public"})
+
+    def test_missing_or_relative_binary_is_not_accepted(self):
+        with mock.patch.dict(os.environ, {core.ENV_BINARY: "./not-a-system-binary"}):
+            with self.assertRaises(core.MediaCoreUnavailable):
+                core.binary()
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.dict(os.environ, {core.ENV_BINARY: str(Path(temporary) / "missing")}):
+                with self.assertRaises(core.MediaCoreUnavailable):
+                    core.binary()
 
     def test_temporary_directory_failure_is_local_io(self):
         with mock.patch.object(core.tempfile, "TemporaryDirectory",
@@ -133,6 +157,51 @@ class AdapterProtocolTests(unittest.TestCase):
     def test_non_conductor_records_are_not_accepted(self):
         with self.assertRaises(core.MediaCoreUnavailable):
             core._record({"author": "forged", "body": {}})
+
+    def test_secret_fields_in_conductor_records_and_grants_never_spawn(self):
+        safe = AuthoredRecord("owner", "action", {"schema": "public"})
+        tainted = AuthoredRecord("owner", "action",
+                                {"metadata": [{"recipient-private-key": "SENSITIVE"}]})
+        with mock.patch.object(core, "_run", side_effect=AssertionError("spawned")):
+            for call in (
+                lambda: core.verify_replica_claim({}, {}, "owner", "host",
+                                                  safe, tainted, safe, safe),
+                lambda: core.check_access({}, {}, "owner", safe, tainted,
+                                          "listener", bytes(32), "stream"),
+                lambda: core.check_access({"body": {"content_key_b64": "SENSITIVE"}},
+                                          {}, "owner", safe, safe,
+                                          "listener", bytes(32), "stream"),
+            ):
+                with self.subTest(call=call), self.assertRaises(core.MediaCoreUnavailable):
+                    call()
+
+    @unittest.skipUnless(bool(os.environ.get(core.ENV_BINARY)),
+                         "native error-contract comparison needs the CLI")
+    def test_native_cli_exit_one_conflates_usage_and_local_io(self):
+        # This is evidence of a *remaining* Rust CLI ambiguity, not evidence
+        # that a missing file is a bad signature or a denied entitlement.
+        def expect_usage_or_io(args):
+            completed = subprocess.run(
+                [str(core.binary()), *args], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+            self.assertEqual(completed.returncode, 1, completed.stdout)
+            verdict = json.loads(completed.stdout)
+            self.assertIs(verdict["ok"], False)
+            self.assertEqual(verdict["boundary"], "usage-or-io")
+        expect_usage_or_io(["unsupported-command"])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expect_usage_or_io(["verify-manifest", "--manifest", str(root / "missing.json"),
+                                "--trusted-artist-hex", "00" * 32])
+            signer = Ed25519PrivateKey.generate()
+            source = root / "source.bin"
+            source.write_bytes(b"Music fixture" * 200)
+            manifest, _ = create_package(source, root / "store", signer, chunk_size=64)
+            manifest_path = root / "m.json"
+            manifest_path.write_bytes(core.canonical(manifest))
+            expect_usage_or_io(["audit", "--manifest", str(manifest_path),
+                                "--trusted-artist-hex", public_key_bytes(signer).hex(),
+                                "--cas", str(root / "nonexistent-cas")])
 
 
 if __name__ == "__main__":
