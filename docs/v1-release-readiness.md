@@ -1,3 +1,13 @@
+> **Status update — 2026-11-17:** This long report contains historical
+> 6 November RC1/Windows development-host observations, not a current
+> all-green release gate. For the live RC3 source/version audit, build
+> reproducibility gaps, proposed filenames and current **NO-GO** acceptance
+> checklist, read [RC3 release-candidate plan](rc3-release-candidate-plan.md).
+> Historical statements below about CI never having run and PRs not having
+> been pushed are superseded: PR #45 and PR #46 have passed CI on their own
+> heads, but were **not merged into main** as of this audit. A fresh integrated
+> commit and complete checks remain required. Nothing is approved to publish.
+>
 # Holochain Music v1.0.0-rc1 — release-blocker report
 
 Private Windows rc3 audio-quality candidate: see `windows-wasapi-rc3.md` and

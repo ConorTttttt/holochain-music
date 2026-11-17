@@ -1,3 +1,12 @@
+> **HISTORICAL PRIVATE WINDOWS BUILD HASHES — NOT CURRENT RC EVIDENCE.**
+> The November 6 installers below must not be presented as rebuilt from
+> 17 November `main` or from the future integrated Agents 1/2 baseline.
+> PR #45's Windows CI installer was built from an independent PR-head commit;
+> it does not supersede these hashes or certify a current RC3 package.
+> For the next build, generate fresh checksums/provenance only after packages
+> exist: [rc3-release-candidate-plan.md](rc3-release-candidate-plan.md).
+> No distribution is authorised.
+>
 # Windows test installer checksums (unsigned, private testing only)
 
 Written after the build; not inside the package.

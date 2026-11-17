@@ -53,6 +53,11 @@ install -m 0644 "$repo/holochain_music/ui/icon.svg" "$root/usr/share/icons/hicol
 for doc in README.md CHANGELOG.md docs/v1-release-readiness.md docs/security-model.md docs/private-grant-security-review.md docs/licensing-audit.md docs/hardware-test-plan.md docs/user-guide.md docs/installation.md packaging/smoke-test.py; do
   if [ -f "$repo/$doc" ]; then install -m 0644 "$repo/$doc" "$root/usr/share/doc/holochain-music/$(basename "$doc")"; fi
 done
+# Deterministic source identity travels with the installed candidate. The
+# external provenance manifest separately records binary and package hashes.
+printf 'commit=%s\nversion=%s\nsource_date_epoch=%s\n' \
+  "$(git -C "$repo" rev-parse HEAD)" "$version" "$SOURCE_DATE_EPOCH" \
+  > "$root/usr/share/doc/holochain-music/SOURCE_COMMIT.txt"
 (cd "$root" && find usr -type f | sort | xargs sha256sum) > "$root/DEBIAN/md5sums.sha256"
 mv "$root/DEBIAN/md5sums.sha256" "$stage/SHA256SUMS"
 # Byte-based (not du) so the control file does not depend on filesystem blocks.

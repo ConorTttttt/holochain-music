@@ -1,3 +1,10 @@
+> **2026-11-17 packaging status:** The rc1 .deb filename shown below is a
+> **historical November 6 test package**, not a freshly built RC for current
+> main. The next candidate is provisionally `1.0.0rc3` and **has not been
+> rebuilt or installed from the integrated baseline**. Verify the actual
+> candidate SHA-256 and source-commit marker before installation, and follow
+> [the RC3 plan](rc3-release-candidate-plan.md). Do not distribute it.
+>
 # Installation, networking and testing
 
 ## Supported platform
