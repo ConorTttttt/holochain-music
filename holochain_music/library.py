@@ -24,7 +24,7 @@ import time
 
 from holochain_storage import portable
 from holochain_storage.package import (
-    StorageError, _assert_manifest, _verify_signed, canonical, manifest_digest, object_path, verify_package,
+    StorageError, _assert_manifest, _read_verified_chunk, _verify_signed, canonical, manifest_digest, object_path, verify_package,
 )
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -156,11 +156,24 @@ class Library:
         return rows
 
     def present_chunks(self, manifest: dict) -> set[int]:
+        """Count only authenticated local ciphertext, never same-sized corruption.
+
+        This is read-only; the Download worker separately repairs unusable
+        objects before attempting the native authenticated MoQ fetch.
+        """
         present = set()
         for chunk in manifest["body"]["chunks"]:
             path = object_path(self.cas, chunk["sha256"])
-            if path.is_file() and not path.is_symlink() and path.stat().st_size == chunk["cipher_bytes"]:
-                present.add(chunk["index"])
+            if any(parent.is_symlink() for parent in (
+                    self.cas, self.cas / "objects", self.cas / "objects" / "sha256", path.parent)):
+                raise LibraryError("unsafe encrypted-object directory")
+            if path.is_symlink():
+                raise LibraryError("unsafe encrypted-object link")
+            try:
+                _read_verified_chunk(self.cas, chunk)
+            except StorageError:
+                continue
+            present.add(chunk["index"])
         return present
 
     def verify_complete(self, file_id: str) -> bool:

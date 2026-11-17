@@ -9,9 +9,13 @@ from types import SimpleNamespace
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
 from holochain_music.app import MusicApp, AppError
-from holochain_storage.package import StorageError
-from music_catalogue.content_grants import LICENCE_SCHEMA, GRANT_SCHEMA
+from holochain_storage.package import SCHEMA, StorageError, b64, canonical, public_key_bytes
+from music_catalogue.content_grants import LICENCE_SCHEMA, GRANT_SCHEMA, issue_personal_licence
 
 ROOT = Path(__file__).resolve().parents[1]
 JS = (ROOT / "holochain_music/ui/app.js").read_text(encoding="utf-8")
@@ -34,7 +38,33 @@ def app_with(grant=LICENCE, complete=True):
     app.library.grant.return_value = grant
     app.library.verify_complete.return_value = complete
     app.library.manifest.return_value = {"body": {}}
-    app.keys = SimpleNamespace(listener_x25519=lambda: object())
+    if grant is LICENCE:
+        # Construct a genuine artist-signed, empty S1 package and an
+        # X25519-bound permanent licence. Only CAS completeness is mocked.
+        artist = Ed25519PrivateKey.generate()
+        recipient = X25519PrivateKey.generate()
+        body = {
+            "schema": SCHEMA, "file_id": FILE_ID, "cipher": "AES-256-GCM",
+            "chunk_size": 1, "total_plain_bytes": 0, "chunks": [],
+        }
+        manifest = {
+            "body": body,
+            "signer": b64(public_key_bytes(artist)),
+            "signature": b64(artist.sign(canonical(body))),
+        }
+        app.library.meta.return_value = {
+            **META, "artist_key_hex": public_key_bytes(artist).hex(),
+        }
+        app.library.manifest.return_value = manifest
+        app.library.grant.return_value = issue_personal_licence(
+            owner_signer=artist, owner_agent=META["artist_agent"],
+            listener_agent=META["listener_agent"],
+            recipient_public=recipient.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
+            signed_manifest=manifest, content_key=b"K" * 32,
+        )
+        app.keys = SimpleNamespace(listener_x25519=lambda: recipient)
+    else:
+        app.keys = SimpleNamespace(listener_x25519=lambda: object())
     return app
 
 
@@ -102,6 +132,22 @@ class OfflineLibraryTests(TestCase):
         app._ensure_download = MagicMock(return_value=None)
         self.assertEqual(app.download(FILE_ID), {"state": "complete"})
         app._ensure_download.assert_called_once_with(FILE_ID)
+
+    def test_manual_offline_download_rejects_wrong_recipient(self):
+        app = app_with()
+        app._ensure_download = MagicMock()
+        app.keys = SimpleNamespace(listener_x25519=X25519PrivateKey.generate)
+        with self.assertRaisesRegex(AppError, "could not be verified"):
+            app.download(FILE_ID)
+        app._ensure_download.assert_not_called()
+
+    def test_manual_offline_download_rejects_tampered_signed_licence(self):
+        app = app_with()
+        app._ensure_download = MagicMock()
+        app.library.grant.return_value["body"]["listener_agent"] = "different-listener"
+        with self.assertRaisesRegex(AppError, "could not be verified"):
+            app.download(FILE_ID)
+        app._ensure_download.assert_not_called()
 
     def test_offline_dashboard_shows_separate_categories(self):
         self.assertIn("function renderOfflineDashboard(rows)", JS)

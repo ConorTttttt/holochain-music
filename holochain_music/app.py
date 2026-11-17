@@ -386,25 +386,91 @@ class MusicApp:
                 self.require_online()
                 meta = self.library.meta(file_id)
                 artist, track_id = self._split_key(meta["track_key"])
-                d.replace_hosts(self.catalogue.resolve(artist, track_id).hosts)
+                refreshed = self.catalogue.resolve(artist, track_id)
+                if (refreshed.digest != meta["manifest_sha256"]
+                        or refreshed.digest != d.trusted.digest
+                        or refreshed.artist_key != d.trusted.artist_key):
+                    raise AppError("catalogue changed this track's encrypted file; re-add it")
+                d.replace_hosts(refreshed.hosts)
+            elif d.state == "complete":
+                # A previously completed worker may still be cached after
+                # independent library verification detects damaged/deleted
+                # ciphertext. Recheck and repair without restarting the app.
+                self.require_online()
+                d.reopen_after_failed_verification()
             if start:
                 d.start()
             return d
 
-    def download(self, file_id: str) -> dict:
-        """Explicit offline download: only permanent licences are supported.
-
-        Streaming playback can still fetch authenticated chunks through the
-        internal _ensure_download path without promising offline rental DRM.
-        """
+    def _require_offline_download_licence(self, file_id: str) -> None:
+        """These manual controls are distinct from streaming fetches."""
         file_key(file_id)
+        meta = self.library.meta(file_id)
+        if meta is None:
+            raise AppError("track is not in your library")
         grant = self.library.grant(file_id)
         if grant is None:
             raise AppError("you need access from the artist before downloading")
-        if grant_kind(grant) != "perpetual-personal":
+        try:
+            kind = grant_kind(grant)
+        except (StorageError, ValueError, KeyError, TypeError) as exc:
+            raise AppError("The saved offline licence has an invalid format.") from exc
+        if kind != "perpetual-personal":
             raise AppError("Download for Offline currently requires a permanent personal-use licence")
+        # grant_kind() classifies *untrusted* display metadata. Managed offline
+        # transfers must authenticate the artist's signature, exact manifest,
+        # recipient identity and licence terms before starting/resuming.
+        try:
+            key = unwrap_content_grant(
+                grant, trusted_artist=bytes.fromhex(meta["artist_key_hex"]),
+                owner_agent=meta["artist_agent"], listener_agent=meta["listener_agent"],
+                recipient_private=self.keys.listener_x25519(),
+                signed_manifest=self.library.manifest(file_id))
+            del key
+        except (StorageError, ValueError, KeyError, TypeError, OSError) as exc:
+            raise AppError("The saved permanent licence could not be verified for this track and listener.") from exc
+
+    def download(self, file_id: str) -> dict:
+        """Begin a permanent-licence download; keep existing streaming separate."""
+        self._require_offline_download_licence(file_id)
         d = self._ensure_download(file_id)
         return d.progress() if d else {"state": "complete"}
+
+    def pause_download(self, file_id: str) -> dict:
+        """Pause a background transfer without clearing any downloaded objects."""
+        self._require_offline_download_licence(file_id)
+        with self._storage_lock:
+            playback = self.player.status()
+            if (playback.get("track_key") == file_id
+                    and playback.get("state") not in ("idle", "stopped", "finished", "error")):
+                raise AppError("Stop playback of this track before pausing its download.")
+            d = self.downloads.get(file_id)
+            if d is None or d.state not in ("downloading", "retrying", "pausing", "paused"):
+                raise AppError("No active download to pause.")
+            return d.pause()
+
+    def resume_download(self, file_id: str) -> dict:
+        """Resume a paused download from authenticated local chunks when online."""
+        self._require_offline_download_licence(file_id)
+        self.require_online()
+        with self._storage_lock:
+            d = self.downloads.get(file_id)
+            if d is None:
+                raise AppError("No paused transfer in this session. Choose Download for Offline to restart from saved chunks.")
+            return d.resume()
+
+    def retry_download(self, file_id: str) -> dict:
+        """Explicitly re-resolve hosts after an unavailable transfer."""
+        self._require_offline_download_licence(file_id)
+        self.require_online()
+        with self._storage_lock:
+            d = self.downloads.get(file_id)
+            if d is None or d.state != "unavailable":
+                raise AppError("No failed download to retry. Choose Download for Offline instead.")
+            if d.is_running():
+                raise AppError("The previous download worker is still finishing. Retry after it stops.")
+            refreshed = self._ensure_download(file_id)
+            return refreshed.progress() if refreshed else {"state": "complete"}
 
     def offline_storage_usage(self) -> dict:
         """On-demand read-only accounting, excluding identity keys and exports."""
