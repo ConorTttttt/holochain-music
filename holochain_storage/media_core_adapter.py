@@ -113,7 +113,31 @@ def _run(args: list[str], timeout: float = 120) -> dict:
     raise MediaCoreUnavailable(f"Media Core failed: {result.get('error')}")
 
 
+# These are *private inputs*, unlike "signing_key_hex" (the public S2
+# binding) and "wrapped_key_b64" (ciphertext for one recipient). Refuse
+# accidental secret-bearing JSON before any child process can read it.
+_PRIVATE_FIELD_NAMES = frozenset({
+    "private_key", "private_key_hex", "private_key_b64",
+    "recipient_private", "recipient_private_key", "recipient_private_hex",
+    "signing_private_key", "private_signing_key", "owner_signer",
+    "content_key", "content_key_hex", "content_key_b64",
+    "plaintext_content_key", "plaintext_key", "secret_key",
+})
+
+
+def _assert_public_document(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if isinstance(key, str) and key.lower().replace("-", "_") in _PRIVATE_FIELD_NAMES:
+                raise MediaCoreUnavailable("private field is forbidden at the Media Core boundary")
+            _assert_public_document(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _assert_public_document(child)
+
+
 def _write(directory: Path, name: str, value: Any) -> str:
+    _assert_public_document(value)
     path = directory / name
     try:
         path.write_bytes(canonical(value))
