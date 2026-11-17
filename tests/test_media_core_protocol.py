@@ -1,7 +1,7 @@
 """Always-on adapter contract tests; no Rust executable or production opt-in needed."""
 from __future__ import annotations
 
-import json
+import base64
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +10,13 @@ from unittest import mock
 
 from holochain_storage import media_core_adapter as core
 from holochain_storage.holochain_identity import AuthoredRecord
+from holochain_storage.package import create_package, public_key_bytes
+from music_catalogue.content_grants import issue_content_grant
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding, NoEncryption, PrivateFormat, PublicFormat,
+)
 
 
 class AdapterProtocolTests(unittest.TestCase):
@@ -58,10 +65,12 @@ class AdapterProtocolTests(unittest.TestCase):
 
     def test_only_public_material_crosses_cli_invocation(self):
         """Inspect both arguments and staged files for every adapter operation."""
-        secret_signing = b"SIGNING-PRIVATE-KEY-SENTINEL"
-        secret_recipient = b"RECIPIENT-PRIVATE-KEY-SENTINEL"
-        secret_content = b"CONTENT-PLAINTEXT-KEY-SENTINEL"
-        forbidden = (secret_signing, secret_recipient, secret_content)
+        signing_private = Ed25519PrivateKey.generate()
+        recipient_private = X25519PrivateKey.generate()
+        recipient_public = recipient_private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        signing_secret = signing_private.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        recipient_secret = recipient_private.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        forbidden = []  # raw and common text encodings of *real* test keys
         seen_commands = []
 
         def inspect(args, timeout=120):
@@ -79,17 +88,27 @@ class AdapterProtocolTests(unittest.TestCase):
                         self.assertNotIn(private, data)
             return {"ok": True}
 
-        record = AuthoredRecord("owner", "action", {"schema": "public-only"})
-        manifest = {"body": {"schema": "public"}, "signer": "public", "signature": "public"}
-        receipt = {"body": {"schema": "public"}, "signer": "public", "signature": "public"}
-        grant = {"body": {"wrapped_key_b64": "recipient-wrapped-only"}}
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(core, "_run", side_effect=inspect):
-            core.verify_manifest(manifest, bytes(32))
-            core.verify_receipt(receipt, manifest, bytes(32), bytes(32))
-            core.verify_replica_claim(receipt, manifest, "owner", "node", record, record, record, record)
-            core.check_access(grant, manifest, "owner", record, record, "listener", bytes(32), "stream", 1760000000)
-            core.import_into_cas(manifest, bytes(32), tmp, tmp)
-            core.audit_cas(manifest, bytes(32), tmp)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source = tmp_path / "plaintext.bin"
+            source.write_bytes(b"Audio bytes never sent to the verification CLI" * 4)
+            origin = tmp_path / "origin"
+            manifest, content_key = create_package(source, origin, signing_private, chunk_size=64)
+            for raw in (signing_secret, recipient_secret, content_key):
+                forbidden.extend((raw, raw.hex().encode("ascii"), base64.b64encode(raw)))
+            grant = issue_content_grant(
+                owner_signer=signing_private, owner_agent="owner", listener_agent="listener",
+                recipient_public=recipient_public, signed_manifest=manifest, content_key=content_key)
+            receipt = {"body": {"schema": "test-public-receipt"}, "signature": "test"}
+            record = AuthoredRecord("owner", "action", {"schema": "public-only"})
+            with mock.patch.object(core, "_run", side_effect=inspect):
+                core.verify_manifest(manifest, public_key_bytes(signing_private))
+                core.verify_receipt(receipt, manifest, bytes(32), public_key_bytes(signing_private))
+                core.verify_replica_claim(receipt, manifest, "owner", "node", record, record, record, record)
+                core.check_access(grant, manifest, "owner", record, record, "listener",
+                                  recipient_public, "stream", 1760000000)
+                core.import_into_cas(manifest, public_key_bytes(signing_private), origin, tmp_path / "cas")
+                core.audit_cas(manifest, public_key_bytes(signing_private), tmp_path / "cas")
         self.assertEqual(seen_commands, ["verify-manifest", "verify-receipt", "verify-bindings",
                                          "check-access", "import", "audit"])
 
