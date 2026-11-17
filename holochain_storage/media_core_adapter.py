@@ -27,6 +27,7 @@ import json
 import os
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +137,15 @@ def _assert_public_document(value: Any) -> None:
             _assert_public_document(child)
 
 
+@contextmanager
+def _staging():
+    try:
+        with tempfile.TemporaryDirectory(prefix="hm-core-") as directory:
+            yield Path(directory)
+    except OSError as exc:
+        raise MediaCoreLocalIO("unable to create or clean up Media Core input staging") from exc
+
+
 def _write(directory: Path, name: str, value: Any) -> str:
     _assert_public_document(value)
     path = directory / name
@@ -148,7 +158,7 @@ def _write(directory: Path, name: str, value: Any) -> str:
 
 def verify_manifest(signed_manifest: dict, trusted_artist: bytes,
                     expected_manifest_sha256: str | None = None) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         args = ["verify-manifest", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                 "--trusted-artist-hex", trusted_artist.hex()]
         if expected_manifest_sha256 is not None:
@@ -158,7 +168,7 @@ def verify_manifest(signed_manifest: dict, trusted_artist: bytes,
 
 def verify_receipt(receipt: dict, signed_manifest: dict, trusted_node: bytes,
                    trusted_artist: bytes) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["verify-receipt",
                      "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--receipt", _write(Path(tmp), "r.json", receipt),
@@ -184,7 +194,7 @@ def verify_replica_claim(receipt: dict, signed_manifest: dict, owner_agent: str,
               "owner_commitment": _record(owner_commitment),
               "node_key_binding": _record(node_key_binding),
               "replica_claim": _record(node_claim)}
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["verify-bindings",
                      "--bridge-json", _write(Path(tmp), "bridge.json", bridge),
                      "--manifest", _write(Path(tmp), "m.json", signed_manifest),
@@ -216,7 +226,7 @@ def check_access(grant: dict, signed_manifest: dict, owner_agent: str,
         raise MediaCoreUnavailable("recipient X25519 public key must have 32 bytes")
     bridge = {"owner_key_binding": _record(owner_key_binding),
               "owner_commitment": _record(owner_commitment)}
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         args = ["check-access",
                 "--bridge-json", _write(Path(tmp), "bridge.json", bridge),
                 "--manifest", _write(Path(tmp), "m.json", signed_manifest),
@@ -235,13 +245,13 @@ def check_access(grant: dict, signed_manifest: dict, owner_agent: str,
 def import_into_cas(signed_manifest: dict, trusted_artist: bytes, source_store: str | Path,
                     cas_root: str | Path) -> dict:
     """Copy verified ciphertext from a Music store into a Media Core CAS."""
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["import", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--trusted-artist-hex", trusted_artist.hex(),
                      "--source-store", str(source_store), "--cas", str(cas_root)])
 
 
 def audit_cas(signed_manifest: dict, trusted_artist: bytes, cas_root: str | Path) -> dict:
-    with tempfile.TemporaryDirectory(prefix="hm-core-") as tmp:
+    with _staging() as tmp:
         return _run(["audit", "--manifest", _write(Path(tmp), "m.json", signed_manifest),
                      "--trusted-artist-hex", trusted_artist.hex(), "--cas", str(cas_root)])
