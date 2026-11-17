@@ -392,6 +392,11 @@ class MusicApp:
                         or refreshed.artist_key != d.trusted.artist_key):
                     raise AppError("catalogue changed this track's encrypted file; re-add it")
                 d.replace_hosts(refreshed.hosts)
+            elif d.state == "complete":
+                # A previously completed worker may still be cached after
+                # independent library verification detects damaged/deleted
+                # ciphertext. Recheck and repair without restarting the app.
+                d.reopen_after_failed_verification()
             if start:
                 d.start()
             return d
