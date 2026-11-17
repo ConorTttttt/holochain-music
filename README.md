@@ -33,7 +33,9 @@ and what is still open.
 A native Windows x64 build: the same Python app and hApp, official Holochain
 0.7.0 Windows binaries, the MoQ host built for Windows, WASAPI audio, and an
 **unsigned private-test** NSIS installer. It builds and passes the automated
-tests that can run on Linux. Limited physical Windows/Ubuntu audio testing has been performed, but final\nrepeated-seek, clean-install and bidirectional LAN acceptance remains open. See
+tests that can run on Linux. Limited physical Windows/Ubuntu audio testing
+has been performed, but final repeated-seek, clean-install and bidirectional
+LAN acceptance remain open. See
 [Windows installation](docs/windows-installation.md) and the
 [Windows ↔ Ubuntu LAN test plan](docs/windows-lan-test-plan.md).
 
