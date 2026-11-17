@@ -139,3 +139,31 @@ explicit `unavailable` state.
 The private-inbox design (§3), the unrestricted remote-call capability, key
 storage without an OS keyring, the self-signed pinned TLS for LAN hosts, the
 kitsune2 relay exposure, and the bundled Holochain binaries' supply chain.
+
+## 8. Deferred design: asynchronous private delivery (not in RC1)
+
+**Future proposal only — no code, trust assumption or RC1 behavior changes.** The
+current private `call_remote` + local 7-day retry outbox described in §3 is the
+release-candidate implementation; sender and recipient must overlap online.
+
+A possible post-RC1 improvement, inspired by
+[Lightning Rod Labs Files](https://github.com/lightningrodlabs/files) and
+[Delivery Zome](https://github.com/ddd-mtl/delivery-zome), is **direct-first
+private messaging with an optional recipient-encrypted DHT mailbox fallback**.
+It would handle only small access-request and access-grant control messages,
+with explicit recipient authentication, sender provenance, replay prevention,
+bounded quotas, idempotent processing, acknowledgement and expiry policies.
+DHT publication does not prove receipt or acceptance, and immutable
+encrypted mailbox records still expose some timing/routing metadata.
+
+**Do not move media bytes, plaintext content keys, bulk ciphertext, or audio
+transfer onto the DHT.** Retain Media Core's verified disk-backed CAS and
+pinned MoQ/QUIC for data; retain existing entitlement and key-unwrap checks.
+Do not import older-HDK/CAL-1.0 zomes without a separate legal/security review.
+
+Proposed Media Core follow-up: [async private-delivery design and threat
+gates](https://github.com/ConorTttttt/holochain-media-core/pull/7)
+(provisional CORE-009, **after** Music RC1). Before adoption, require
+three-real-conductor offline-delivery acceptance (artist, listener, attacker),
+platform testing, a key-rotation policy, privacy and independent security
+review, and an explicit migration/rollback decision.
