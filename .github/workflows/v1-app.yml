@@ -3,7 +3,8 @@ name: v1 application
 on:
   pull_request:
   push:
-    branches: [feat/v1-app-integration]
+    branches: [main, feat/v1-app-integration]
+  workflow_dispatch:
 
 permissions:
   contents: read
