@@ -124,13 +124,20 @@ _PRIVATE_FIELD_NAMES = frozenset({
     "content_key", "content_key_hex", "content_key_b64",
     "plaintext_content_key", "plaintext_key", "secret_key",
 })
+_PRIVATE_FIELD_COMPACT = frozenset(field.replace("_", "") for field in _PRIVATE_FIELD_NAMES)
 
 
 def _assert_public_document(value: Any) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            if isinstance(key, str) and key.lower().replace("-", "_") in _PRIVATE_FIELD_NAMES:
-                raise MediaCoreUnavailable("private field is forbidden at the Media Core boundary")
+            if isinstance(key, str):
+                # Normalize hyphen/underscore and camelCase spellings without
+                # mistaking the public S2 "signing_key_hex" for a private key.
+                name = "".join(char for char in key.casefold() if char.isalnum())
+                if name in _PRIVATE_FIELD_COMPACT or "privatekey" in name:
+                    raise MediaCoreUnavailable(
+                        "private field is forbidden at the Media Core boundary"
+                    )
             _assert_public_document(child)
     elif isinstance(value, (list, tuple)):
         for child in value:
