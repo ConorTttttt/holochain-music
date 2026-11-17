@@ -7,6 +7,69 @@ The native comparison workflow pins the *exact* Media Core commit above.
 Agent 6's access-grant/v2 implementation is a separate, unfinished dependency;
 these checks must not mistake legacy CORE-005 policy verification for v2 issuance.
 
+## Review continuation — 17 November 2026
+
+**Verified pre-hardening head:** Music PR #50 at
+`5a46fa5287d29b89a18cda99633816602541031b`, with a **successful**
+native `ubuntu-24.04` and `windows-2022` comparison matrix in
+[run 44072782524](https://github.com/ConorTttttt/holochain-music/actions/runs/44072782524).
+Both jobs built the pinned Rust CLI, ran its unit tests, verified default-off
+Python operation and completed opt-in comparisons and diagnostics. Storage
+protocol and v1 application workflows also passed on that commit. Separate
+Windows-port and catalogue workflows were still queued when inspected.
+
+**This continuation changes the head**, so the above results are *historical
+baseline evidence*, not a pass claim for the subsequent commits:
+
+- `holochain_storage/media_core_adapter.py`: stage public JSON with an
+  exclusive file create and mode `0600` on POSIX (in addition to the
+  private `0700` temporary directory); refuse colliding pre-existing paths.
+  Windows effective file protection still depends on the staging directory's
+  ACL and must be verified on real installed targets.
+- `tests/test_media_core_protocol.py`: assert collision refusal, POSIX file
+  and directory modes, missing/relative executable failure, recursive secret
+  rejection from Holochain bridge records and grant JSON, and actual native
+  CLI exit-1 parity for usage, missing file, and missing CAS directory.
+- Companion Media Core [draft PR #18](https://github.com/ConorTttttt/holochain-media-core/pull/18)
+  adds a `cfg(test)`-only, synchronized **actual half-written CAS temporary
+  file** pause; a parent test kills the parked Rust writer before publish,
+  checks the unfinished temporary file was observed, and verifies the next
+  CAS instance audits missing and can write authentic ciphertext. This is not
+  a power-loss/disk-reordering test or a release-binary fault hook. The
+  Music comparison workflow **remains pinned** to `a74a8aec32da03962788ad92810c413103b2ffd3`
+  until the separate test receives CI evidence and review.
+
+**Disposition: comparison-only, NO-GO for production adoption.** The
+uncorrected Rust exit-1 contract, S1 schema/error conflation, executable
+provenance/install and supervision, exact-candidate two-real-host MoQ tests,
+disk-full and hostile path-race hardening, and Agent 6 v2 grants remain
+explicit gates. GitHub-hosted checks on any new head must be recorded rather
+than inferred from previous passing commits.
+
+### Required future error wire contract
+
+The current CLI combines all command misuse and internal filesystem failures
+into exit `1`, `boundary=usage-or-io`. The Music adapter correctly treats
+the whole class as unavailable rather than as a cryptographic denial.
+A future independently versioned JSON contract should distinguish:
+
+| Stable kind | Example stable code | Retryable | App behaviour |
+| --- | --- | --- | --- |
+| `usage` | `missing-required-flag` | no | Diagnose integration defect; fail closed |
+| `local-io` | `cannot-read-source` / `cannot-publish-object` | conditional | Keep verified existing objects; surface file or disk failure |
+| `unavailable-service` | `backend-unavailable` / `child-crash` | yes with limits | Degrade shadow comparison; never interpret as access denial |
+| `unsupported-schema` | `manifest-version-unsupported` | no | Refuse with explicit version negotiation, no legacy downgrade |
+
+Require a bounded, machine-readable output envelope (version, kind, code,
+retryability, boundary and safe diagnostics) independent of prose errors.
+Proof of a grant entitlement remains distinct from Music recipient unwrap.
+Before pilot packaging: pin the reviewed CLI source and exact executable
+digest, verify distribution signatures and dependency manifest, constrain
+path permissions and process concurrency, apply timeout/kill/reap and restart
+budgets, redact diagnostics, and reject unintended executable substitution.
+Retain an `off` switch and test instant rollback to Python without schema
+migration or key rewrites.
+
 ## 1. Decision
 
 **Ready for further opt-in evaluation:** native CLI verification of Music v1
@@ -66,8 +129,8 @@ opt-in test; **G** = gated / no evidence in this branch; **B** = blocker.
 | Unsupported v1 S1 *manifest schema* vs corrupt content | E | B | Rust returns `InvalidManifest` for both; cannot reliably separate |
 | Unsupported legacy grant/entitlement schema | E | E/A | Rust emits entitlement `category=unsupported`; adapter raises `MediaCoreUnsupportedSchema` |
 | CLI crash, timeout, invalid stdout/exit code | n/a | A | Always-on mocked subprocess contract tests |
-| Linux native opt-in comparison | E historical | E initial hosted PR revision | 28/28 enabled opt-in cases passed on 17 Nov; **latest head must rerun** |
-| Windows native opt-in comparison | E historical Rust CLI units | E initial hosted PR revision | 28/28 enabled opt-in cases passed on 17 Nov; **latest head must rerun** |
+| Linux native opt-in comparison | E historical | E hosted baseline | PR #50 `5a46fa5` succeeded (run 44072782524); **new head must rerun** |
+| Windows native opt-in comparison | E historical Rust CLI units | E hosted baseline | PR #50 `5a46fa5` succeeded (run 44072782524); **new head must rerun** |
 | Real MoQ host switch and conductor recovery | E in CORE-004 upstream | G | Existing CORE-004 acceptance is separate; rerun on pinned release candidate |
 | Access-grant/v2 signed envelope after owner rotation | B | B | Agent 6 protocol not implemented at this pinned baseline |
 
