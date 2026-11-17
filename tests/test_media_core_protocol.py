@@ -112,6 +112,17 @@ class AdapterProtocolTests(unittest.TestCase):
         self.assertEqual(seen_commands, ["verify-manifest", "verify-receipt", "verify-bindings",
                                          "check-access", "import", "audit"])
 
+    def test_accidental_secret_fields_fail_before_spawning_cli(self):
+        # Deliberately malformed public input may be compared by the Rust
+        # verifier, but never if it carries a named private field.
+        for field in ("content_key", "content-key-b64", "recipient_private_key",
+                      "private_signing_key", "owner_signer"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmp:
+                secret_manifest = {"body": {"schema": "public", field: "SENSITIVE"}}
+                with mock.patch.object(core, "_run", side_effect=AssertionError("spawned")):
+                    with self.assertRaises(core.MediaCoreUnavailable):
+                        core.verify_manifest(secret_manifest, bytes(32))
+
     def test_non_conductor_records_are_not_accepted(self):
         with self.assertRaises(core.MediaCoreUnavailable):
             core._record({"author": "forged", "body": {}})
