@@ -24,6 +24,7 @@ from holochain_storage.package import (
 )
 from .buffered_playback import AlsaOutput, AudioFormat, BufferedPcmPlayer, NullOutput
 from .content_grants import unwrap_content_grant
+from .access_grant_v2 import VerifiedAccessGrantV2, unwrap_access_grant_v2
 from .granted_audio import PCM_BLOCK_BYTES, PlaybackError, _WAV_HEADER
 from .moq_conductor import receive_moq_from_live_conductor
 from .streaming_playback import VerifiedChunkGate
@@ -44,16 +45,29 @@ class InflightWavSeeker:
     def __init__(self, *, signed_manifest: dict, ciphertext_store: str | Path,
                  grant: dict, trusted_artist: bytes, owner_agent: str,
                  listener_agent: str, recipient_private: X25519PrivateKey,
-                 chunk_waiter: Callable[[dict], None]):
+                 chunk_waiter: Callable[[dict], None],
+                 verified_v2: VerifiedAccessGrantV2 | None = None):
         if not callable(chunk_waiter):
             raise PlaybackError("S16 requires verified in-flight chunk waiter")
         body = _verify_signed(signed_manifest, trusted_artist, "manifest")
         _assert_manifest(body)
-        key = unwrap_content_grant(
-            grant, trusted_artist=trusted_artist, owner_agent=owner_agent,
-            listener_agent=listener_agent, recipient_private=recipient_private,
-            signed_manifest=signed_manifest,
-        )
+        if verified_v2 is not None:
+            if not isinstance(verified_v2, VerifiedAccessGrantV2):
+                raise PlaybackError("unverified v2 grant")
+            verified_v2.authorize("stream")
+            if (verified_v2.body["file_id"] != body["file_id"] or
+                    verified_v2.body["manifest_sha256"] != manifest_digest(signed_manifest) or
+                    verified_v2.body["manifest_key_hex"] != trusted_artist.hex() or
+                    verified_v2.body["owner_agent"] != owner_agent or
+                    verified_v2.body["listener_agent"] != listener_agent):
+                raise PlaybackError("v2 grant is not authorised for this playback session")
+            key = unwrap_access_grant_v2(verified_v2, recipient_private)
+        else:
+            key = unwrap_content_grant(
+                grant, trusted_artist=trusted_artist, owner_agent=owner_agent,
+                listener_agent=listener_agent, recipient_private=recipient_private,
+                signed_manifest=signed_manifest,
+            )
         self.file_id = body["file_id"]
         self.store = Path(ciphertext_store)
         self._chunks = body["chunks"]
