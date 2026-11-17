@@ -213,11 +213,19 @@ def _historical_manifest(signed_manifest: dict, lifecycle: kl.KeyLifecycle,
 
 @dataclass(frozen=True)
 class VerifiedAccessGrantV2:
-    body: dict
+    # Keep the authenticated body in immutable, canonical signed bytes.
+    # A frozen dataclass containing a dict is NOT immutable: mutating
+    # "body['rights']" after verification would otherwise bypass authorize().
+    _body_canonical: bytes
     anchor_seq: int
     issuer_continuity: str
     owner_assurance: str
     context: bytes
+
+    @property
+    def body(self) -> dict:
+        """Return a defensive copy; never expose mutable verified state."""
+        return json.loads(self._body_canonical)
 
     @property
     def rights(self) -> frozenset[str]:
@@ -314,7 +322,7 @@ def verify_access_grant_v2(
                  if any(g.kind == kl.RECOVERY for g in owner_lifecycle.generations
                         if g.generation <= generation.generation)
                  else "KeyLifecycleV21")
-    return VerifiedAccessGrantV2(b, anchor.action_seq, generation.continuity,
+    return VerifiedAccessGrantV2(canonical(b), anchor.action_seq, generation.continuity,
                                  assurance, grant_wrap_context(b))
 
 
