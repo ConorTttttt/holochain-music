@@ -9,7 +9,8 @@ name: Windows port
 on:
   pull_request:
   push:
-    branches: [feat/v1-windows-port]
+    branches: [main, feat/v1-windows-port]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -125,7 +126,8 @@ jobs:
         with:
           name: windows-e2e-logs
           path: ${{ runner.temp }}/hm*/**/logs/*.log
-          if-no-files-found: ignore
+          if-no-files-found: warn
+          retention-days: 14
 
   installer:
     name: Windows installer (NSIS, pinned inputs)
