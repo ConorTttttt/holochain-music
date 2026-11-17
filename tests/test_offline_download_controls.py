@@ -447,5 +447,50 @@ class OfflineDownloadControlsTests(unittest.TestCase):
         app.library.remove_offline_copy.assert_called_once_with(self.file_id)
 
 
+    def test_completed_download_repairs_later_corruption_without_app_restart(self):
+        fetched, _, calls = self.receiver()
+        d = self.make_download(on_complete=lambda: True)
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetched):
+            d.start()
+            wait_until(lambda: d.progress()["state"] == "complete")
+            wait_until(lambda: not d.is_running())
+            # The previously complete in-memory worker is still registered,
+            # but independent library verification will now reject this CAS.
+            corrupt = self.chunks[1]
+            victim = object_path(self.destination, corrupt["sha256"])
+            original = victim.read_bytes()
+            victim.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+            app = self.fake_app()
+            app.library.verify_complete.return_value = False
+            app.downloads[self.file_id] = d
+            self.assertIs(app._ensure_download(self.file_id), d)
+            wait_until(lambda: d.progress()["state"] in ("complete", "unavailable"))
+        self.assertEqual(d.progress()["state"], "complete", d.progress())
+        self.assertEqual(calls[1], [1], "only damaged ciphertext must be refetched")
+        self.assertEqual(victim.read_bytes(), original)
+
+    def test_completed_worker_cannot_be_rearmed_before_exit(self):
+        d = self.make_download()
+        with d._cv:
+            d.state = "complete"
+            d._thread = MagicMock()
+            d._thread.is_alive.return_value = True
+        with self.assertRaisesRegex(TrackUnavailable, "still finishing"):
+            d.reopen_after_failed_verification()
+        self.assertEqual(d.progress()["state"], "complete")
+
+    def test_unexpected_completion_callback_exception_is_reported(self):
+        fetched, _, _ = self.receiver()
+        def failing_callback():
+            raise RuntimeError("metadata writer failure")
+        d = self.make_download(on_complete=failing_callback)
+        with patch("holochain_music.streaming.fetch_ciphertext", side_effect=fetched):
+            d.start()
+            wait_until(lambda: d.progress()["state"] in ("complete", "unavailable"))
+        self.assertEqual(d.progress()["state"], "unavailable")
+        self.assertIn("completion failed", d.progress()["error"])
+        self.assertIn("metadata writer failure", d.progress()["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
