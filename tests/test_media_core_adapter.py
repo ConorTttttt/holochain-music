@@ -266,15 +266,19 @@ class MediaCoreComparisonTests(unittest.TestCase):
                                  signed_manifest=self.manifest)
 
     def test_adapter_interface_accepts_no_secret_material(self):
-        # The CLI has no flag for content keys or private keys (grants are
-        # accepted only by CORE-005 `check-access`, which never unwraps); an
-        # unknown flag is a usage failure (MediaCoreUnavailable), never a
-        # verification result.
-        with self.assertRaises(core.MediaCoreUnavailable):
-            core._run(["audit", "--content-key", self.key.hex()])
-        for secret in ("--content-key", "--recipient-private-hex", "--signing-key-hex"):
-            with self.assertRaises(core.MediaCoreUnavailable):
-                core._run(["check-access", secret, self.key.hex()])
+        # NEVER pass an actual content key even to a negative CLI flag test:
+        # argv is observable to the child and may be visible in process lists.
+        # Use a public sentinel and assert rejection before any child launch.
+        harmless = "public-test-sentinel"
+        for command, forbidden_flag in (
+            ("audit", "--content-key"),
+            ("check-access", "--content-key"),
+            ("check-access", "--recipient-private-hex"),
+            ("check-access", "--signing-key-hex"),
+        ):
+            with self.subTest(command=command, flag=forbidden_flag):
+                with self.assertRaises(core.MediaCoreUnavailable):
+                    core._run([command, forbidden_flag, harmless])
 
 
 if __name__ == "__main__":
