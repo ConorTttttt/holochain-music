@@ -17,6 +17,8 @@ import unittest
 from pathlib import Path
 
 from holochain_music.app import MusicApp
+from holochain_music.bridge import BridgeError
+from holochain_music.artist import ArtistError
 from holochain_music.paths import AppPaths
 from holochain_storage import key_lifecycle as kl
 from holochain_storage.holochain_identity import OWNER_PURPOSE
@@ -128,17 +130,28 @@ class AccessGrantV2RealConductors(unittest.TestCase):
             grant_message=grant_message(grant["body"]) + b"tampered",
             issuer_key_action=grant["body"]["issuer_key_action"])
         # DNA validates the author itself, not only its supplied entry fields.
-        with self.assertRaises(Exception):
+        with self.assertRaises(BridgeError) as denied:
             self.mallory.bridge.call("publish_grant_anchor_v2", entry=forged_entry)
+        self.assertRegex(str(denied.exception).lower(), "issuer|owner|grant|anchor|author")
+        # A live, responsive bridge is mandatory; a transport/timeout failure
+        # must never masquerade as a DNA integrity denial.
+        self.assertEqual(self.mallory.bridge.call("key_lifecycle_v21_context",
+                                                  purpose=OWNER_PURPOSE)["agent"],
+                         self.mallory.agent)
         # The original grant id cannot be anchored twice on the artist chain.
-        with self.assertRaises(Exception):
+        with self.assertRaises(BridgeError) as duplicate:
             self.artist.bridge.call("publish_grant_anchor_v2", entry=anchor.body)
+        self.assertRegex(str(duplicate.exception).lower(), "duplicate|grant|anchor|used")
 
     def test_3_new_grants_refused_after_compromised_revocation(self):
         self.artist.artist.revoke_key_v21(OWNER_PURPOSE, 2, kl.SCOPE_COMPROMISED)
-        with self.assertRaises((StorageError, RuntimeError)):
+        with self.assertRaises(ArtistError) as stopped:
             self.artist.artist.grant(
                 request_hash=self.request["request_hash"], kind="perpetual-personal")
+        self.assertRegex(str(stopped.exception).lower(), "active|revoked|lifecycle")
+        self.assertEqual(self.artist.bridge.call("key_lifecycle_v21_context",
+                                                 purpose=OWNER_PURPOSE)["agent"],
+                         self.artist.agent)
         # Pre-revocation anchor still verifies: chain ordering is authoritative.
         delivery = self.delivery
         result = self.listener._verified_v2(
