@@ -97,10 +97,10 @@ class V2ContractTests(unittest.TestCase):
         self.w = make_world()
         self.grant, self.anchor = signed_grant(self.w)
 
-    def reject(self, category, reason, *, grant=None, anchor=None, **kw):
+    def reject(self, category, reason, *, grant=None, anchor="default", **kw):
         with self.assertRaises(AccessGrantV2Error) as ctx:
             checked(self.w, grant if grant is not None else self.grant,
-                    anchor if anchor is not None else self.anchor, **kw)
+                    self.anchor if anchor == "default" else anchor, **kw)
         self.assertEqual((ctx.exception.category, ctx.exception.reason), (category, reason))
 
     def test_rotated_artist_can_grant_historical_manifest(self):
