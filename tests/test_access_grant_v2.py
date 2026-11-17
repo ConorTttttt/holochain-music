@@ -245,6 +245,9 @@ class V2ContractTests(unittest.TestCase):
         accepted = checked(w, grant, anchor, lifecycle=recovered,
                            recovered_policy=kl.RECOVERED_ISSUER_ACCEPT)
         self.assertEqual(accepted.issuer_continuity, kl.CONTINUITY_RECOVERED)
+        # A recovered G3 grant issuer cannot relabel an original, normally
+        # authenticated G1 S1 manifest as recovered historical content.
+        self.assertEqual(accepted.owner_assurance, "KeyLifecycleV21")
 
 
 if __name__ == "__main__":
