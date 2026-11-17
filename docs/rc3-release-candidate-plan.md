@@ -76,13 +76,13 @@ extraction/installation verification is still required**, not inferred.
    `KITSUNE2_BOOTSTRAP_SRV_BIN` pointing at **reviewed** Ubuntu-compatible
    binaries, plus `HM_RC_LINUX_INPUTS_SHA256` pointing at their independently
    approved `sha256sum` manifest (with file paths accessible to the runner).
-   Run `packaging/rc-build.sh linux <FULL_SHA> <EMPTY_OUTDIR>`.
+   Run `sh packaging/rc-build.sh linux <FULL_SHA> <EMPTY_OUTDIR>`.
    This rebuilds rather than using the unsafe `--skip-build` shortcut.
 4. Windows: use the hApp and native MSVC MoQ/bridge binaries from the
    **same SHA's passing CI run**, along with the pinned upstream inputs.
    Set `HM_WIN_UPSTREAM`, `HM_WIN_PYTHON`, `HM_WIN_WHEELS`,
    `HM_WIN_MOQ` and `HM_WIN_BRIDGE`; run
-   `packaging/rc-build.sh windows <FULL_SHA> <EMPTY_OUTDIR>` on the
+   `sh packaging/rc-build.sh windows <FULL_SHA> <EMPTY_OUTDIR>` on the
    approved NSIS/MinGW builder. Do not mix CI runs or branch heads.
 5. Inspect `<package>.provenance.json` and `<package>.sha256`; verify all
    hashes against the actual artefacts and preserve logs. Generate a second
