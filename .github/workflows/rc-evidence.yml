@@ -2,7 +2,7 @@ name: RC provenance checks (no package publishing)
 
 on:
   push:
-    branches: [ci/rc3-provenance-packaging]
+    branches: [main, ci/rc3-provenance-packaging]
   pull_request:
     paths:
       - 'packaging/rc-*'
