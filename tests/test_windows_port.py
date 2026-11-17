@@ -528,6 +528,17 @@ class LockAndPrivacyTests(unittest.TestCase):
             with self.assertRaises(KeyStoreError):
                 KeyStore(tmp / "keys").listener_x25519()
 
+    def test_atomic_json_acl_error_closes_temp_before_unlink(self):
+        from holochain_music.library import _atomic_json
+        with tempfile.TemporaryDirectory(prefix="hm-json-acl-") as root:
+            path = Path(root) / "meta.json"
+            with mock.patch.object(portable, "make_private_file",
+                                   side_effect=PermissionError("ACL refused")):
+                with self.assertRaises(PermissionError):
+                    _atomic_json(path, {"secret": "must never be written"})
+            self.assertFalse(path.exists())
+            self.assertEqual(list(Path(root).iterdir()), [])
+
     def test_installed_layout_finds_bundled_tools(self):
         from holochain_music import binaries
         tmp = Path(tempfile.mkdtemp(prefix="hm-root-"))
@@ -607,6 +618,24 @@ class WindowsOnlyTests(unittest.TestCase):
         self.assertFalse(portable.is_private(f))
         with self.assertRaises(portable.PortabilityError):
             portable.check_secret_file(f)
+
+    def test_wav_and_library_metadata_are_private(self):
+        import wave
+        from holochain_music.artist import normalise_wav
+        from holochain_music.library import _atomic_json
+        with tempfile.TemporaryDirectory(prefix="hm-private-media-") as root:
+            directory = Path(root)
+            source, canonical = directory / "input.wav", directory / "working.wav"
+            with wave.open(str(source), "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(44100)
+                wav.writeframes(b"\x00\x00" * 128)
+            normalise_wav(source, canonical)
+            self.assertTrue(portable.is_private(canonical), "WAV working file ACL is not private")
+            metadata = directory / "meta.json"
+            _atomic_json(metadata, {"library": "private"})
+            self.assertTrue(portable.is_private(metadata), "library metadata ACL is not private")
 
     def test_job_object_kills_children_with_parent(self):
         code = textwrap.dedent("""
