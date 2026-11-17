@@ -115,6 +115,12 @@ done
 install -m 0644 "$here/licenses/"*.txt "$here/THIRD-PARTY.txt" "$root/licenses/"
 cp "$root/runtime/LICENSE.txt" "$root/licenses/Python-LICENSE.txt"
 
+# The commit identity is an installed, timestamp-normalised file, not just a
+# claim in external notes. It is covered by the contents SHA-256 manifest.
+printf 'commit=%s\nversion=%s\nsource_date_epoch=%s\n' \
+  "$(git -C "$repo" rev-parse HEAD)" "$version" "$SOURCE_DATE_EPOCH" \
+  > "$root/docs/SOURCE_COMMIT.txt"
+
 # --- manifest and installer ------------------------------------------------
 find "$root" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 (cd "$root" && find . -type f ! -name SHA256SUMS.txt | sed 's#^\./##' | LC_ALL=C sort | while read -r f; do sha256sum "$f"; done) > "$stage/SHA256SUMS.txt"
