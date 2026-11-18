@@ -1,0 +1,27 @@
+{
+  "hwc_repository": "https://github.com/Holo-Host/holo-web-conductor.git",
+  "hwc_commit": "0c391226e78769d44ccb4661881ed8998b15f903",
+  "imposter_repository": "https://github.com/ConorTttttt/imposter-holochain.git",
+  "imposter_baseline_branch": "followup/browser-alpha-final-acceptance",
+  "imposter_baseline_commit": "a39aaf926ebcc2aadad71ee4bba0b7c2677de67f",
+  "gateway": {
+    "archive_ref": "refs/heads/archive/browser-alpha-gateway-14428255589",
+    "archive_commit": "81ddc627cdac30d1af42ea67bc803a570ad93925",
+    "source_commit": "9f5eb04b5be12e3e9e7fcc304bd905da1449ade9",
+    "sha256": "8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f"
+  },
+  "holochain": {
+    "tag": "holochain-0.7.0",
+    "sha256": {
+      "hc-x86_64-unknown-linux-gnu": "f1eca56b97bc2261324e00e0e86a274f7dc8363f73264e697fd0c0216b2aac23",
+      "holochain-x86_64-unknown-linux-gnu": "ffa40a0c6fab5ce062c4af76328dfe2de143256ddf791a504d72bca698a9ba20",
+      "lair-keystore-x86_64-unknown-linux-gnu": "7a77822ab5e0020d0f3c358030d4ccfa8c6c144407a5c075d302c7b0fcf670c1",
+      "kitsune2-bootstrap-srv-x86_64-unknown-linux-gnu": "ba5a61c981300c1854e33cec5a091bfb2f9137ea977a938685eef0afa809b7be"
+    }
+  },
+  "music_dna": {
+    "music_catalogue": "uhC0k6tJ5iJFWusUqhJjjt0crDBsW7AhwRqzXhDeMf6reThaN7Uqn",
+    "music_storage": "uhC0kkLUOg2uytGWLz_sTeVtfJBqa0criBmAYAPwAIUhoDp_9G4RV"
+  },
+  "playwright": "1.57.0"
+}

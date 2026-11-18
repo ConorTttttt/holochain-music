@@ -1,0 +1,10 @@
+{
+  "name": "Holochain Music (experimental web)",
+  "short_name": "Holochain Music",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0D1820",
+  "theme_color": "#0D1820",
+  "icons": [{ "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any" }]
+}

@@ -1,0 +1,150 @@
+name: Web browser player (experimental)
+
+# Isolated browser development track. It never builds or publishes a release
+# and does not gate the desktop RC workflows. Every job reports its own result:
+#   web-units          JS syntax, unit tests, crypto vectors vs native Python (Node)
+#   chromium-crypto    the same vectors inside real Chromium WebCrypto
+#   adapter            media adapter policy tests (Python)
+#   interop            native Music artist + peer, H2HC gateway, real Chromium/HWC
+on:
+  pull_request:
+    paths: ['web/**', '.github/workflows/web-browser-player.yml', 'music-dna/**', 'dna/**', 'integration/**',
+            'holochain_music/**', 'music_catalogue/**', 'holochain_storage/**', 'crates/moq-music/**']
+  push:
+    branches: ['claude/holochain-music-web-browser-53gri5', 'feature/web-browser-player']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.22.0'
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  web-units:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '${{ env.PYTHON_VERSION }}' }
+      - run: python -m pip install -e .
+      - name: JavaScript syntax
+        run: find web/src web/scripts web/integration web/tests -name '*.js' -o -name '*.mjs' | xargs -n1 node --check
+      - name: Generate compatibility vectors with the native Python implementation
+        run: python web/tests/vectors/generate_vectors.py web/tests/vectors/.generated/v1.json
+      - name: Unit tests and Node WebCrypto vectors
+        run: node --test web/tests/*.test.mjs
+      - uses: actions/upload-artifact@v4
+        with: { name: web-crypto-vectors, path: web/tests/vectors/.generated/v1.json, retention-days: 7 }
+
+  chromium-crypto:
+    needs: web-units
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/download-artifact@v4
+        with: { name: web-crypto-vectors, path: vectors }
+      - name: Pinned Playwright Chromium
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw" && npm init -y >/dev/null
+          npm install --no-audit --no-fund "playwright@$(jq -r .playwright "$GITHUB_WORKSPACE/web/hwc/pins.json")"
+          npx playwright install --with-deps chromium
+      - name: Vectors inside Chromium WebCrypto
+        env: { HM_PLAYWRIGHT: '${{ runner.temp }}/pw/node_modules/playwright' }
+        run: node web/tests/chromium-crypto.mjs vectors/v1.json
+
+  adapter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '${{ env.PYTHON_VERSION }}' }
+      - run: python -m pip install -e .
+      - run: python -m unittest discover -s web/adapter -p 'test_*.py' -v
+
+  interop:
+    needs: [web-units, adapter]
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+      - uses: actions/setup-python@v5
+        with: { python-version: '${{ env.PYTHON_VERSION }}' }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - run: python -m pip install -e .
+      - name: Pinned Holochain 0.7.0 binaries
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          for t in hc holochain lair-keystore kitsune2-bootstrap-srv; do
+            a="$t-x86_64-unknown-linux-gnu"
+            gh release download holochain-0.7.0 -R holochain/holochain -p "$a" -D "$RUNNER_TEMP"
+            echo "$(jq -r --arg a "$a" '.holochain.sha256[$a]' web/hwc/pins.json)  $RUNNER_TEMP/$a" | sha256sum -c -
+            install -m 0755 "$RUNNER_TEMP/$a" "$RUNNER_TEMP/bin/$t"
+          done
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build the unchanged Music DNAs and hApp; check DNA identities
+        run: |
+          (cd music-dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
+          (cd dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
+          cp music-dna/workdir/music_catalogue.dna dna/workdir/music_storage.dna integration/workdir/
+          hc app pack integration/workdir
+          test "$(hc dna hash integration/workdir/music_catalogue.dna)" = "$(jq -r .music_dna.music_catalogue web/hwc/pins.json)"
+          test "$(hc dna hash integration/workdir/music_storage.dna)" = "$(jq -r .music_dna.music_storage web/hwc/pins.json)"
+      - name: Build native MoQ host and app bridge
+        run: |
+          cargo build --locked --release --manifest-path crates/moq-music/Cargo.toml
+          cargo build --locked --release --manifest-path music-e2e/Cargo.toml --bin music_app_bridge
+      - name: Pinned Imposter baseline, accepted gateway and HWC extension
+        run: |
+          pins=web/hwc/pins.json
+          git clone --quiet --no-checkout "$(jq -r .imposter_repository $pins)" "$RUNNER_TEMP/imposter"
+          git -C "$RUNNER_TEMP/imposter" checkout --quiet "$(jq -r .imposter_baseline_commit $pins)"
+          git -C "$RUNNER_TEMP/imposter" fetch --quiet --depth=1 origin "$(jq -r .gateway.archive_ref $pins)"
+          test "$(git -C "$RUNNER_TEMP/imposter" rev-parse FETCH_HEAD)" = "$(jq -r .gateway.archive_commit $pins)"
+          git -C "$RUNNER_TEMP/imposter" show FETCH_HEAD:h2hc-linker-linux-x86_64.gz | gunzip > "$RUNNER_TEMP/bin/h2hc-linker"
+          echo "$(jq -r .gateway.sha256 $pins)  $RUNNER_TEMP/bin/h2hc-linker" | sha256sum -c -
+          chmod 0755 "$RUNNER_TEMP/bin/h2hc-linker"
+          git clone --quiet "$(jq -r .hwc_repository $pins)" "$RUNNER_TEMP/hwc"
+          git -C "$RUNNER_TEMP/hwc" checkout --quiet "$(jq -r .hwc_commit $pins)"
+          git -C "$RUNNER_TEMP/hwc" -c user.name=ci -c user.email=ci@localhost status >/dev/null
+          bash web/hwc/build-extension.sh "$RUNNER_TEMP/hwc" "$RUNNER_TEMP/imposter"
+      - name: Pinned Playwright Chromium
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw" && npm init -y >/dev/null
+          npm install --no-audit --no-fund "playwright@$(jq -r .playwright "$GITHUB_WORKSPACE/web/hwc/pins.json")"
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
+      - name: Native artist -> Chromium/HWC listener interop
+        env:
+          HOLOCHAIN_MOQ_BIN: ${{ github.workspace }}/crates/moq-music/target/release/holochain-music-moq
+          HOLOCHAIN_MUSIC_BRIDGE_BIN: ${{ github.workspace }}/music-e2e/target/release/music_app_bridge
+          HOLOCHAIN_MUSIC_HAPP: ${{ github.workspace }}/integration/workdir/holochain_music.happ
+          H2HC_GATEWAY_BIN: ${{ runner.temp }}/bin/h2hc-linker
+          HWC_EXTENSION_DIR: ${{ runner.temp }}/hwc/packages/extension/dist-chrome
+          HM_PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright
+        run: python web/integration/run_interop.py --work "$RUNNER_TEMP/interop"
+      - name: Check report (PASS / FAIL / BLOCKED per check)
+        if: always()
+        run: |
+          jq -r '.checks[] | "\(.result)\t\(.id)\t\(.error // "")"' "$RUNNER_TEMP/interop/evidence.json" | tee -a "$GITHUB_STEP_SUMMARY" || echo "NOT RUN: no evidence" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Keep sanitized evidence and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-interop-evidence
+          path: |
+            ${{ runner.temp }}/interop/evidence.json
+            ${{ runner.temp }}/interop/logs/*.log
+          retention-days: 14
