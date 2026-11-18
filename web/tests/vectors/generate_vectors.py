@@ -279,6 +279,7 @@ def main(out: Path) -> None:
         "tracks": track_cases,
         "grants": grant_cases,
     }
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1, ensure_ascii=False))
     print(f"wrote {out} ({len(grant_cases)} grant cases, {len(chunks)} chunks)")
 
