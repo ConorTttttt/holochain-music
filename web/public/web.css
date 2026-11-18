@@ -20,3 +20,6 @@ textarea.grant { width: 100%; min-height: 120px; font-family: ui-monospace, mono
   background: var(--panel); border: 1px solid var(--field-border); border-radius: 8px; padding: 8px; }
 .player .art { background: linear-gradient(135deg, var(--accent), var(--teal)); }
 @media (max-width: 860px) { .kv { grid-template-columns: 1fr; } }
+/* Keep the end of every page clear of the fixed player bar on wide screens
+   (below 861px the desktop stylesheet already makes the player sticky). */
+@media (min-width: 861px) { .main { padding-bottom: 150px; } }

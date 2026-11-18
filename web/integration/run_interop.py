@@ -74,7 +74,8 @@ def main() -> int:
     p.add_argument("--work", type=Path, required=True)
     p.add_argument("--seconds", type=float, default=12.0)
     p.add_argument("--python", default=sys.executable)
-    p.add_argument("--keep", action="store_true")
+    p.add_argument("--serve-only", action="store_true",
+                   help="start the whole stack, print its URLs and wait (manual demo / debugging)")
     args = p.parse_args()
     work = args.work.resolve()
     if work.exists():
@@ -148,6 +149,13 @@ def main() -> int:
         (work / "expected.json").write_text(json.dumps({"chunk_plain_sha256": [
             hashlib.sha256(wav[i:i + CHUNK]).hexdigest() for i in range(0, len(wav), CHUNK)]}))
 
+        if args.serve_only:
+            info = {"web": web_origin, "gateway": gateway, "gateway_secret_file": str(secret_file), "adapter": adapter,
+                    "hwc_extension": env["HWC_EXTENSION_DIR"], "artist": status, "grants_dir": str(work / "grants")}
+            (work / "stack.json").write_text(json.dumps(info, indent=2))
+            print(json.dumps(info), flush=True)
+            signal.sigwait({signal.SIGINT, signal.SIGTERM})
+            return 0
         browser_env = {
             "HM_WEB_URL": web_origin, "HM_HWC_EXTENSION": env["HWC_EXTENSION_DIR"], "HM_GATEWAY_URL": gateway,
             "HM_GATEWAY_SECRET_FILE": str(secret_file), "HM_ARTIST_STATUS": str(work / "artist.json"),

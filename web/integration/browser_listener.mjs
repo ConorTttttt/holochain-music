@@ -148,8 +148,23 @@ async function main() {
     for (const s of [a.agent, a.manifest_sha256, evidence.facts.native_dnas.music_catalogue]) assert.ok(body.includes(s), `missing ${s}`);
   });
   await check('C2 genuine signed manifest + host receipt fetched via adapter and verified in-browser', async () => {
-    await page.click('#verify-sources');
-    await page.waitForSelector('#sources-verified', { timeout: 180000 });
+    // DHT records (key bindings, commitment, replica claim, endpoint) converge
+    // over several minutes; retry like the native e2e test polls resolve().
+    const attempts = [];
+    await until(async () => {
+      const button = await page.$('#verify-sources');
+      if (!button) {
+        await page.click('[data-view="browse"]');
+        await page.click(`[data-track="${a.track_key}"] button:has-text("Details")`, { timeout: 30000 });
+      }
+      await page.click('#verify-sources');
+      const outcome = await page.waitForSelector('#sources-verified, .card .notice.bad', { timeout: 120000 });
+      if (await outcome.getAttribute('id') === 'sources-verified') return true;
+      attempts.push((await outcome.textContent()).slice(0, 160));
+      await outcome.evaluate(n => n.remove());
+      return false;
+    }, 'sources verified', 420000, 10000);
+    evidence.facts.c2_retries = attempts;
     const trusted = (await hm(page, () => window.hmWeb.trusted)).find(t => t.key === a.track_key);
     assert.equal(trusted.digest, a.manifest_sha256);
     assert.equal(trusted.file_id, a.file_id);
@@ -170,7 +185,12 @@ async function main() {
   // ---- Private request (expected blocker) -------------------------------------
   await check('E1 private access request over Holochain from the browser', async () => {
     await page.click('#access-card button:has-text("Request licence")');
-    const text = await (await page.waitForSelector('#access-status', { timeout: 30000 })).textContent();
+    const handle = await page.waitForFunction(() => {
+      const t = document.getElementById('access-status')?.textContent ?? '';
+      return /cannot be sent|delivered|Request failed/.test(t) && t;
+    }, null, { timeout: 60000 });
+    const text = await handle.jsonValue();
+    evidence.facts.e1_ui_message = text;
     if (text.includes('cannot be sent from the browser')) {
       const err = new Error('HWC cannot make Holochain call_remote (send_access_request); gateway drops CallRemoteReq. Nothing was sent.');
       err.blocked = true;

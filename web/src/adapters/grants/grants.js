@@ -154,7 +154,8 @@ export async function requestAccess({ holochain, store, agent, track, kind, note
     await holochain.call('music_storage', 'send_access_request', { owner: holoHashBytes(track.artist_agent), request });
     return { outcome: RequestOutcome.SENT, request };
   } catch (e) {
-    const unsupported = /Unsupported cell target|NetworkAgent|call_remote|not implemented/i.test(e.message);
+    // HWC 0c39122 `call` host fn: "[HostFn:call] No ConductorCell in target" for CallTarget::NetworkAgent.
+    const unsupported = /No ConductorCell in target|Unsupported cell target|NetworkAgent|call_remote/i.test(e.message);
     return { outcome: unsupported ? RequestOutcome.TRANSPORT_UNSUPPORTED : RequestOutcome.FAILED, error: e.message, request };
   }
 }
