@@ -48,18 +48,28 @@ The media adapter's own checks are defence in depth only.
 
 ## Remaining vulnerabilities and limits (be explicit)
 
-1. **DHT read integrity relies on the gateway (HIGH, generic HWC gap).** HWC
-   at the pinned commit does not verify action signatures/hashes on records
-   returned by `get`/`get_links` through the gateway (`verifyActionSignature`
-   is used only for the local chain). A malicious gateway could forge
-   catalogue, key-binding and endpoint records, and therefore present
-   attacker-encrypted audio under an artist's name with a matching forged
-   grant. It cannot decrypt genuine content or use a real artist's key. Fix:
-   HWC must validate fetched records (signature by author, entry hash, action
-   hash) before returning them to the WASM — proposed in [roadmap.md](roadmap.md).
-2. **No private grant delivery yet** — see [grants.md](grants.md). The
-   out-of-band import path depends on the operator conveying the browser's
-   public keys to the artist authentically.
+1. **DHT read integrity (was HIGH; mitigated by an HWC patch, partial).**
+   Unpatched HWC at the pinned commit accepts whatever the gateway returns for
+   `get`/`get_details`/`get_links`, so a malicious gateway could forge
+   catalogue, key-binding and endpoint records under a real artist's identity
+   (and pair them with a forged grant for attacker-encrypted audio; it still
+   cannot decrypt genuine content or use a real artist's key). The build now
+   applies [`web/hwc/record-verification`](../../web/hwc/record-verification/README.md):
+   every record is hash- and signature-verified and bound to the requested
+   hash before it reaches the cache, validation or WASM, and interop check M1
+   proves a tampering gateway cannot put a forged title in front of the
+   listener. **Still gateway-trusted:** link authorship (the accepted gateway
+   strips `CreateLink` signatures — it can hide links, or add links to
+   genuine records, which are then verified), `count_links`, agent-activity
+   responses and reported validation status (denial of service, not forgery).
+   Needs a gateway change to return signed `CreateLink` actions. Not
+   production-ready until that and an external review are done.
+2. **No private grant delivery yet** — see [grants.md](grants.md) and
+   [call-remote.md](call-remote.md). The out-of-band import path depends on the
+   operator conveying the browser's public keys to the artist authentically.
+   HWC's existing `ZomeCallParams` signing (remote signals) hashes with
+   blake2b-256, where Holochain 0.7 requires SHA-512; it must be fixed before
+   any call is sent.
 3. **Extension service-worker caching** — after rebuilding an unpacked HWC at
    the same version, reload it in `chrome://extensions`; an old profile can
    otherwise keep running the previous build.

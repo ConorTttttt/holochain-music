@@ -78,38 +78,14 @@ artist — the operator must convey the browser's public recipient key and agent
 key to the artist authentically — and it is not presented as Holochain
 private delivery.
 
-## Interoperability proposal (narrow, separately reviewable)
+## Interoperability proposal
 
-**Goal:** standard Holochain `call_remote` semantics for browser agents,
-limited to functions exposed by an explicit capability grant, without new
-cryptographic formats.
-
-1. **Outgoing (HWC → gateway → native):** for `CallTarget::NetworkAgent`, HWC
-   builds `ZomeCallParams` (target cell, zome, fn, payload, provenance = local
-   agent, cap secret, nonce, expiry), signs the serialised params with Lair,
-   and sends `{type: "call_remote", dna, target_agent, params, signature}` over
-   the authenticated gateway WebSocket. The gateway (capability
-   `call_remote_send`) emits kitsune2 `WireMessage::CallRemoteReq` exactly as a
-   conductor would and returns the `CallRemoteRes` bytes. The native conductor
-   performs its usual signature, nonce and capability checks. Rate limits and
-   the per-sender budget in `receive_access_request` keep working because the
-   provenance is genuine.
-2. **Incoming (native → gateway → HWC):** the gateway forwards
-   `CallRemoteReq` for a registered browser agent (capability
-   `call_remote_receive`) over the WebSocket and relays the response. HWC
-   verifies the caller's Ed25519 signature over the serialised params, the
-   nonce/expiry (replay store in IndexedDB), that the target cell is local,
-   and an **existing capability grant** (`CapAccess::Unrestricted` with
-   `GrantedFunctions::Listed`) covering exactly the function. Only then does it
-   run the zome with `provenance = caller`. Everything else is refused.
-3. **No Music change:** DNAs, grant/request formats and the artist approval UI
-   stay as they are; the desktop outbox already retries offline recipients.
-4. **Acceptance:** native artist ⇄ browser listener request, approval and grant
-   delivery; forged signature, replayed nonce, expired call, ungranted function,
-   wrong target cell and revoked gateway session all refused; signal path and
-   Imposter role frames unaffected.
-
-Owners: HWC (`call.ts`, background receiver, ribosome provenance check) and
-h2hc-linker (`gateway_kitsune.rs`, WebSocket routes, admission capabilities).
-This should land upstream or as reviewed patches next to Imposter's, not as a
-Music-specific workaround.
+Superseded by the source-verified design in [call-remote.md](call-remote.md):
+standard Holochain `call_remote` for browser agents (signed `ZomeCallParams`
+over SHA-512, `CallRemoteReq`/`CallRemoteRes` through the gateway, native
+nonce/expiry and capability-grant checks in HWC), no new grant format, no
+Music DNA change. Its HWC-side authoriser is implemented and tested against
+canonical Holochain 0.7 vectors (`web/hwc/remote-call/`); the gateway work and
+HWC runtime wiring remain. Private grant delivery stays **BLOCKED** until a
+native artist's approval reaches a browser listener over Holochain in the
+interop test; the out-of-band import is not counted as that.
