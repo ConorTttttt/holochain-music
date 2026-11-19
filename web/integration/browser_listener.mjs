@@ -23,6 +23,8 @@ const expected = JSON.parse(readFileSync(env('HM_EXPECTED_DIGESTS'), 'utf8'));
 const GRANTS = env('HM_GRANT_DIR');
 const PROFILES = env('HM_PROFILES');
 const EVIDENCE = env('HM_EVIDENCE');
+const TAMPER_WEB = process.env.HM_TAMPER_WEB_URL;
+const TAMPER_STATE = process.env.HM_TAMPER_STATE;
 
 const evidence = { started_at: new Date().toISOString(), checks: [], facts: {} };
 const save = () => writeFileSync(EVIDENCE, JSON.stringify(evidence, null, 2));
@@ -58,7 +60,7 @@ async function admin(method, agent, capabilities) {
   assert.equal(res.status, 204, `gateway admission ${method} returned ${res.status}`);
 }
 
-async function launch(name) {
+async function launch(name, web = WEB) {
   const ctx = await chromium.launchPersistentContext(join(PROFILES, name), {
     headless: false, viewport: { width: 1280, height: 860 },
     args: [`--disable-extensions-except=${EXT}`, `--load-extension=${EXT}`, '--no-first-run', '--autoplay-policy=no-user-gesture-required'],
@@ -73,7 +75,7 @@ async function launch(name) {
   const page = await ctx.newPage();
   page.on('pageerror', e => console.log(`[${name} pageerror] ${e.message}`));
   page.on('console', m => { if (m.type() === 'error') console.log(`[${name} console] ${m.text().slice(0, 300)}`); });
-  await page.goto(`${WEB}/?diagnostics=1`);
+  await page.goto(`${web}/?diagnostics=1`);
   return { ctx, page };
 }
 const hm = (page, expr) => page.evaluate(expr);
@@ -295,6 +297,32 @@ async function main() {
     return { state: await state(page) };
   });
   await ctx.close();
+
+  // ---- Malicious gateway: forged records must never reach the UI -------------
+  if (TAMPER_WEB) {
+    ({ ctx, page } = await launch('listener-m', TAMPER_WEB));
+    await check('M1 malicious gateway cannot forge catalogue records (HWC record verification)', async () => {
+      const agentM = await until(() => hm(page, () => window.hmWeb.agent), 'agent M', 60000, 300);
+      await admin('POST', agentM, ['dht_read', 'dht_write', 'k2']);
+      await waitReady(page, 'listener M ready through the malicious gateway');
+      const seen = [];
+      const forged = await until(async () => {
+        await page.click('[data-view="browse"]');
+        await page.waitForSelector('#view h1', { timeout: 30000 });
+        await delay(1500);
+        const text = await page.textContent('#view');
+        seen.push(text.slice(0, 120));
+        assert.ok(!text.includes('FORGED!'), 'forged title reached the UI');
+        const s = JSON.parse(readFileSync(TAMPER_STATE, 'utf8'));
+        return s.forged_records >= 3 && s;
+      }, 'malicious gateway to forge records', 240000, 4000);
+      const finalText = await page.textContent('#view');
+      assert.ok(!finalText.includes('FORGED!'), 'forged title reached the UI');
+      return { proxy: forged, browse_view: finalText.slice(0, 160),
+        genuine_track_listed: finalText.includes('Interop Tone') };
+    });
+    await ctx.close();
+  }
   evidence.finished_at = new Date().toISOString();
   save();
 }

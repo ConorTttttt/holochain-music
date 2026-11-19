@@ -143,6 +143,21 @@ def main() -> int:
         spawn("web", ["node", str(WEB / "scripts" / "serve.mjs"), str(work / "dist"), "--port", str(web_port)])
         wait(lambda: http_ok(f"http://127.0.0.1:{web_port}/"), "web server", 30, 0.5)
 
+        # TEST-ONLY malicious gateway in front of the real one: it forges the
+        # track title in record responses ("Browser" -> "FORGED!", same length).
+        tamper_port, tamper_web_port = free_port(), free_port()
+        tamper_gateway = f"http://127.0.0.1:{tamper_port}"
+        tamper_origin = f"http://localhost:{tamper_web_port}"
+        spawn("tamper-proxy", ["node", str(WEB / "integration" / "tamper_proxy.mjs"), "--target", gateway,
+                               "--port", str(tamper_port), "--find", "Browser", "--replace", "FORGED!",
+                               "--state", str(work / "tamper.json"), "--dump", str(work / "tamper-dump")])
+        wait(lambda: http_ok(f"{tamper_gateway}/health"), "tamper proxy", 30, 0.5)
+        subprocess.run(["node", str(WEB / "scripts" / "build.mjs"), "--out", str(work / "dist-tamper"), "--happ", str(happ),
+                        "--catalogue-dna", cat_dna, "--storage-dna", sto_dna, "--gateway", tamper_gateway,
+                        "--adapter", adapter, "--release", "interop-test-malicious-gateway", "--origin", tamper_origin], check=True)
+        spawn("web-tamper", ["node", str(WEB / "scripts" / "serve.mjs"), str(work / "dist-tamper"), "--port", str(tamper_web_port)])
+        wait(lambda: http_ok(f"http://127.0.0.1:{tamper_web_port}/"), "tamper web server", 30, 0.5)
+
         # Expected plaintext per encrypted chunk, from the artist's canonical WAV.
         wav = (work / "artist" / "expected.wav").read_bytes()
         assert hashlib.sha256(wav).hexdigest() == status["wav_sha256"]
@@ -161,6 +176,7 @@ def main() -> int:
             "HM_GATEWAY_SECRET_FILE": str(secret_file), "HM_ARTIST_STATUS": str(work / "artist.json"),
             "HM_EXPECTED_DIGESTS": str(work / "expected.json"), "HM_GRANT_DIR": str(work / "grants"),
             "HM_PROFILES": str(work / "profiles"), "HM_EVIDENCE": str(work / "evidence.json"),
+            "HM_TAMPER_WEB_URL": tamper_origin, "HM_TAMPER_STATE": str(work / "tamper.json"),
         }
         browser_env.pop("LD_PRELOAD", None)
         run_env = {k: v for k, v in env.items() if k != "LD_PRELOAD"} | browser_env
