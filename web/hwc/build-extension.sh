@@ -23,7 +23,8 @@ test "$(git -C "$imposter" rev-parse HEAD)" = "$(jq -er .imposter_baseline_commi
 test -z "$(git -C "$hwc" status --porcelain)" || fail 'use a clean HWC checkout'
 kit="$imposter/compatibility/hwc-imposter-compatibility"
 python3 "$kit/verify_pinned_sources.py" "$hwc"
-git -C "$hwc" switch -q -c music-web/hwc-compatibility
+# Imposter's apply.py refuses to write on any other branch name.
+git -C "$hwc" switch -q -c fix/imposter-hwc-compatibility
 python3 "$kit/apply.py" "$hwc" --write
 python3 "$kit/private-role/apply_restricted_hwc_handler.py" "$hwc" --write
 python3 "$kit/private-role/apply_installed_hwc_receiver.py" "$hwc" --write

@@ -6,13 +6,20 @@ name: Web browser player (experimental)
 #   chromium-crypto    the same vectors inside real Chromium WebCrypto
 #   adapter            media adapter policy tests (Python)
 #   interop            native Music artist + peer, H2HC gateway, real Chromium/HWC
+#
+# Browser jobs run on ubuntu-24.04: Playwright 1.57.0 (pinned in web/hwc/pins.json)
+# cannot install Chromium dependencies on ubuntu-latest (26.04).
+# Pull requests (and manual dispatch) only, one run per ref: a push to a PR
+# branch would otherwise run every job twice.
 on:
   pull_request:
     paths: ['web/**', '.github/workflows/web-browser-player.yml', 'music-dna/**', 'dna/**', 'integration/**',
             'holochain_music/**', 'music_catalogue/**', 'holochain_storage/**', 'crates/moq-music/**']
-  push:
-    branches: ['claude/holochain-music-web-browser-53gri5', 'feature/web-browser-player']
   workflow_dispatch:
+
+concurrency:
+  group: web-browser-player-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -43,7 +50,7 @@ jobs:
 
   chromium-crypto:
     needs: web-units
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -72,10 +79,11 @@ jobs:
 
   interop:
     needs: [web-units, adapter]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: '${{ env.NODE_VERSION }}' }
       - uses: actions/setup-python@v5
@@ -94,20 +102,24 @@ jobs:
             install -m 0755 "$RUNNER_TEMP/$a" "$RUNNER_TEMP/bin/$t"
           done
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
-      - name: Build the unchanged Music DNAs and hApp; check DNA identities
+      - name: DNA and desktop sources are unchanged from main (hard failure)
+        run: |
+          git fetch --quiet --no-tags origin main
+          git diff --exit-code --stat FETCH_HEAD...HEAD -- music-dna dna integration holochain_music \
+            music_catalogue holochain_storage crates music-e2e pyproject.toml
+      - name: Build the unchanged Music DNAs and hApp
         run: |
           (cd music-dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
           (cd dna && cargo build --locked --release --target wasm32-unknown-unknown && hc dna pack workdir)
           cp music-dna/workdir/music_catalogue.dna dna/workdir/music_storage.dna integration/workdir/
           hc app pack integration/workdir
-          # Wasm bytes (so DNA hashes) depend on the zome toolchain. The interop
-          # test itself requires browser and native artist to run identical DNAs;
-          # here a difference from the recorded development hashes is reported.
-          for role in music_catalogue music_storage; do
-            got="$(hc dna hash integration/workdir/$role.dna)"; want="$(jq -r .music_dna.$role web/hwc/pins.json)"
-            echo "$role $got"
-            [ "$got" = "$want" ] || echo "::warning::$role DNA hash $got differs from recorded $want (toolchain?)"
-          done
+          # Zome Wasm embeds toolchain- and machine-specific paths, so the hash
+          # is not pinned across machines. Identity is enforced where it matters:
+          # run_interop.py fails unless the native conductor installed exactly
+          # these DNAs, and check A2 fails unless HWC computed the same hashes.
+          { echo '### DNA identities built in this run'; for role in music_catalogue music_storage; do
+              echo "- \`$role\` \`$(hc dna hash integration/workdir/$role.dna)\`"; done
+            echo "- hApp SHA-256 \`$(sha256sum integration/workdir/holochain_music.happ | cut -d' ' -f1)\`"; } >> "$GITHUB_STEP_SUMMARY"
       - name: Build native MoQ host and app bridge
         run: |
           cargo build --locked --release --manifest-path crates/moq-music/Cargo.toml
@@ -124,7 +136,6 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/bin/h2hc-linker"
           git clone --quiet "$(jq -r .hwc_repository $pins)" "$RUNNER_TEMP/hwc"
           git -C "$RUNNER_TEMP/hwc" checkout --quiet "$(jq -r .hwc_commit $pins)"
-          git -C "$RUNNER_TEMP/hwc" -c user.name=ci -c user.email=ci@localhost status >/dev/null
           bash web/hwc/build-extension.sh "$RUNNER_TEMP/hwc" "$RUNNER_TEMP/imposter"
       - name: Pinned Playwright Chromium
         run: |
@@ -144,7 +155,13 @@ jobs:
       - name: Check report (PASS / FAIL / BLOCKED per check)
         if: always()
         run: |
-          jq -r '.checks[] | "\(.result)\t\(.id)\t\(.error // "")"' "$RUNNER_TEMP/interop/evidence.json" | tee -a "$GITHUB_STEP_SUMMARY" || echo "NOT RUN: no evidence" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/interop/evidence.json" ]; then
+            { echo '### Interop checks'; echo '| Result | Check | Detail |'; echo '| --- | --- | --- |'
+              jq -r '.checks[] | "| \(.result) | \(.id) | \((.error // "") | gsub("[\n|]"; " ") | .[0:160]) |"' "$RUNNER_TEMP/interop/evidence.json"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "NOT RUN: the interop harness produced no evidence (see earlier steps)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Keep sanitized evidence and logs
         if: always()
         uses: actions/upload-artifact@v4
