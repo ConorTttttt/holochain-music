@@ -1,0 +1,25 @@
+/* Web-only additions on top of the unchanged desktop app.css tokens. */
+.conn-banner { margin: 0 0 12px; padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--line);
+  background: var(--panel-2); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.conn-banner[data-level="bad"] { border-color: var(--bad); }
+.conn-banner[data-level="warn"] { border-color: var(--warn); }
+.conn-banner .btn { margin-left: auto; }
+.checklist { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; }
+.checklist li { display: flex; gap: 10px; align-items: baseline; }
+.checklist li::before { content: "○"; color: var(--muted); width: 1em; }
+.checklist li[data-ok="true"]::before { content: "✓"; color: var(--teal); }
+.checklist li[data-ok="false"]::before { content: "✕"; color: var(--bad); }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 8px 0; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; font-size: 13px; }
+.provenance { font-size: 13px; }
+.notice { padding: 10px 14px; border-left: 3px solid var(--warn); background: var(--panel-2); border-radius: 6px; margin: 10px 0; }
+.notice.ok { border-left-color: var(--teal); }
+.notice.bad { border-left-color: var(--bad); }
+textarea.grant { width: 100%; min-height: 120px; font-family: ui-monospace, monospace; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--field-border); border-radius: 8px; padding: 8px; }
+.player .art { background: linear-gradient(135deg, var(--accent), var(--teal)); }
+@media (max-width: 860px) { .kv { grid-template-columns: 1fr; } }
+/* Keep the end of every page clear of the fixed player bar on wide screens
+   (below 861px the desktop stylesheet already makes the player sticky). */
+@media (min-width: 861px) { .main { padding-bottom: 150px; } }
