@@ -18,8 +18,10 @@ labelled as such.
 
 Environment: cloud Linux container (4 vCPU, no IPv6 stack, so the
 `ipv4only` preload shim was used for native processes), Holochain 0.7.0
-release binaries, Chromium 157 (Playwright 1.57.0) under Xvfb, Node 22.23.5,
-Python 3.13 with `cryptography` 47. Commit under test:
+release binaries, the sandbox's pre-installed Playwright 1.63.0 (interop:
+headed Chrome for Testing 153.0.8010.12 under Xvfb; crypto vectors: headless
+shell 157.0.8103.78), Node 22.23.5, Python 3.13 with `cryptography` 47. CI
+pins Playwright 1.57.0 instead (Chromium 143.0.7499.4); results agree. Commit under test:
 `cf34eade97bfb1127122cdff1372d17200731233` (harness, client and adapter;
 later commits add docs/CI only).
 
@@ -70,6 +72,7 @@ failure, not a test failure; the Chromium crypto vectors are unchanged.
 | --- | --- | --- | --- | --- | --- |
 | `350a84a` | [44423964864](https://github.com/ConorTttttt/holochain-music/actions/runs/44423964864) | PASS | FAIL (infrastructure: Playwright on 26.04) | PASS | FAIL (bug: HWC build branch name refused by Imposter's apply.py) |
 | `cebbef0` | [44426377461](https://github.com/ConorTttttt/holochain-music/actions/runs/44426377461) | PASS | PASS | PASS | PASS — 19 PASS, 1 BLOCKED (E1), 0 FAIL |
+| `bd28f04` | [44431476547](https://github.com/ConorTttttt/holochain-music/actions/runs/44431476547) | PASS | PASS — 23/23 grant verdicts equal Python, exact chunk decryption | PASS | PASS — 20 PASS, 1 BLOCKED (E1), 0 FAIL, including M1 (malicious gateway) and the HWC patch build gate |
 
 Later commits on the PR record their own runs in the PR description.
 

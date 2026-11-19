@@ -16,8 +16,8 @@ The browser implements the **unchanged v1 formats** of
   read through the listener's own cell — never from `grant.signer`.
 
 Vectors come from the native code (`web/tests/vectors/generate_vectors.py`),
-which also records Python's own verdict. Node (OpenSSL) and Chromium 157
-(BoringSSL) agree with Python on all 23 cases: valid grant, valid licence,
+which also records Python's own verdict. Node (OpenSSL) and Chromium
+(BoringSSL; 157 locally, 143 in CI) agree with Python on all 23 cases: valid grant, valid licence,
 duplicate delivery, wrong recipient key, wrong listener, cross-listener reuse
 (with and without the other listener's identity), wrong owner, forged by another
 artist, wrong trusted key, grant for another file, wrong manifest, tampered
