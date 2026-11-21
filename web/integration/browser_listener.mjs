@@ -273,15 +273,22 @@ async function main() {
     evidence.facts.e4_grant_schema = grant.body.schema;
     return { inbox_rows_for_track: mine.length, kind: mine[0].kind, ui: await page.textContent('#access-status') };
   });
-  await check('E5 duplicate delivery of the same approval is idempotent', async () => {
+  await check('E5 a second delivery for the same request is handled idempotently', async () => {
+    // The artist approves the same request again: a second, freshly wrapped
+    // grant arrives as a second private inbox entry.
     const outcome = await approve('listener-a-again', request.request_hash, 'perpetual-personal');
     assert.equal(outcome.delivered, true, JSON.stringify(outcome));
-    await page.click('#check-grants');
-    await page.waitForFunction(() => document.getElementById('access-status')?.dataset.accessState === 'granted', null, { timeout: 60000 });
-    const mine = (await hm(page, () => window.hmWeb.lastSync)).filter(r => r.file_id === a.file_id);
-    assert.equal(mine.length, 2, 'two private inbox entries');
-    assert.ok(mine.every(r => r.error === null));
-    assert.ok(mine.some(r => r.duplicate === true), 'second delivery recognised as the same grant');
+    const sync = async () => {
+      await page.click('#check-grants');
+      await page.waitForFunction(() => document.getElementById('access-status')?.dataset.accessState === 'granted', null, { timeout: 60000 });
+      return (await hm(page, () => window.hmWeb.lastSync)).filter(r => r.file_id === a.file_id);
+    };
+    const first = await sync();
+    assert.equal(first.length, 2, 'two private inbox entries');
+    assert.ok(first.every(r => r.error === null), JSON.stringify(first));
+    assert.equal(first.filter(r => r.superseded).length, 1, 'older delivery superseded');
+    const again = await sync();
+    assert.ok(again.some(r => r.duplicate === true), 're-sync recognises the stored grant');
     await page.click('[data-view="library"]');
     await page.waitForSelector('#view .row', { timeout: 30000 });
     assert.equal((await page.$$('#view .row')).length, 1, 'one stored grant');

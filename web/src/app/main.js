@@ -262,7 +262,8 @@ async function doSync(t, access, { quiet = false } = {}) {
       const track = (await app.catalogue.artistTracks(owner)).find(x => x.file_id === fileId);
       return track ? resolveTrusted(track) : null;
     } });
-  app.lastSync = results.map(r => ({ file_id: r.file_id, kind: r.kind ?? null, duplicate: r.duplicate ?? null, error: r.error ?? null }));
+  app.lastSync = results.map(r => ({ file_id: r.file_id, kind: r.kind ?? null, duplicate: r.duplicate ?? null,
+    superseded: r.superseded ?? false, error: r.error ?? null }));
   const stored = await app.grants.get(app.hc.agent, t.file_id);
   const mine = results.filter(r => r.file_id === t.file_id);
   let next = accessStatus(t, stored);

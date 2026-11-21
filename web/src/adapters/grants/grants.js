@@ -156,13 +156,22 @@ export class GrantStore {
 export async function syncInboxGrants({ holochain, store, agent, resolveTrusted }) {
   const rows = await holochain.call('music_storage', 'get_inbox_grants', null);
   const results = [];
+  // Rows are newest first. Each approval is a freshly wrapped grant, so only
+  // the newest verified grant per track is stored; older deliveries are
+  // reported as superseded (re-syncing is then idempotent).
+  const done = new Set();
   for (const row of Array.isArray(rows) ? rows : []) {
     const b = row?.body;
+    if (done.has(b?.file_id)) {
+      results.push({ file_id: b.file_id, superseded: true });
+      continue;
+    }
     try {
       const trusted = await resolveTrusted(b.owner_agent, b.file_id);
       if (!trusted || trusted.artistAgent !== b.owner_agent) continue;
       const grant = JSON.parse(b.grant_json);
       results.push({ file_id: b.file_id, ...(await store.accept(grant, { agent, trusted, via: 'holochain-inbox' })) });
+      done.add(b.file_id);
     } catch (e) {
       results.push({ file_id: b?.file_id, error: e.message });
     }
