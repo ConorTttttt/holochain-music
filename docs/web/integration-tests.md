@@ -65,6 +65,17 @@ Music DNA's `remote()` reports the recipient unreachable, and the UI shows
 "Access unavailable right now … nothing was delivered. Nothing has been
 approved or declined". E and F: NOT MET. No delivery was reported falsely.
 
+**CI** — workflow `web-browser-player.yml`, run
+[44909015736](https://github.com/ConorTttttt/holochain-music/actions/runs/44909015736)
+at `2dfd3f68016329f53d12f17a9232c70a88897097` (Playwright 1.57.0 Chromium,
+ubuntu-24.04): web-units PASS, chromium-crypto PASS, adapter PASS,
+call-remote-vectors PASS (native vectors regenerated and identical),
+gateway-candidate PASS (accepted source reproduced in CI, fmt/test/clippy,
+build), interop PASS — **29 PASS, Checkpoint E PASS, Checkpoint F PASS**
+(evidence artifact `web-interop-evidence`, ID 14710195191). The earlier run
+44908547055 at `027ee98` was CANCELLED by the newer push after its first four
+jobs had passed.
+
 Checkpoint F definition (computed by `run_interop.py`): A1–A3, B1, C2, D0,
 E1–E4 and D2 PASS in a **fresh** profile using only the UI's normal controls,
 operator admission (`call_remote_send`, `call_remote_receive`) and the artist's
