@@ -5,7 +5,10 @@ name: Web browser player (experimental)
 #   web-units          JS syntax, unit tests, crypto vectors vs native Python (Node)
 #   chromium-crypto    the same vectors inside real Chromium WebCrypto
 #   adapter            media adapter policy tests (Python)
-#   interop            native Music artist + peer, H2HC gateway, real Chromium/HWC
+#   call-remote-vectors  Holochain 0.7 native ZomeCallParams/ZomeCallResponse vectors are reproducible
+#   gateway-candidate  accepted gateway source reproduced + call_remote patch: fmt, cargo test, clippy, build
+#   interop            native Music artist + peer, CANDIDATE gateway, real Chromium/HWC (HWC core suite
+#                      runs inside web/hwc/build-extension.sh), Checkpoints E and F
 #
 # Browser jobs run on ubuntu-24.04: Playwright 1.57.0 (pinned in web/hwc/pins.json)
 # cannot install Chromium dependencies on ubuntu-latest (26.04).
@@ -13,7 +16,7 @@ name: Web browser player (experimental)
 # branch would otherwise run every job twice.
 on:
   pull_request:
-    paths: ['web/**', '.github/workflows/web-browser-player.yml', 'music-dna/**', 'dna/**', 'integration/**',
+    paths: ['web/**', 'docs/web/**', '.github/workflows/web-browser-player.yml', 'music-dna/**', 'dna/**', 'integration/**',
             'holochain_music/**', 'music_catalogue/**', 'holochain_storage/**', 'crates/moq-music/**']
   workflow_dispatch:
 
@@ -77,8 +80,43 @@ jobs:
       - run: python -m pip install -e .
       - run: python -m unittest discover -s web/adapter -p 'test_*.py' -v
 
+  call-remote-vectors:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Regenerate native Holochain 0.7 vectors and compare with the committed file
+        run: |
+          cd web/hwc/remote-call/vectors-rs
+          cargo run --locked -q > "$RUNNER_TEMP/vectors.json"
+          diff <(jq -S . "$RUNNER_TEMP/vectors.json") <(jq -S . ../zome-call-vectors.json)
+
+  gateway-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain pinned by h2hc-linker (rust-toolchain.toml 1.96.1)
+        uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: '1.96.1', components: 'rustfmt, clippy' }
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev pkg-config build-essential
+      - name: Sources (upstream h2hc-linker, Imposter recipe)
+        run: |
+          git clone --quiet https://github.com/Holo-Host/h2hc-linker.git "$RUNNER_TEMP/h2hc"
+          git clone --quiet --no-checkout "$(jq -r .imposter_repository web/hwc/pins.json)" "$RUNNER_TEMP/imposter"
+          git -C "$RUNNER_TEMP/imposter" fetch --quiet origin "$(jq -r .gateway.recipe_commit web/hwc/pins.json)"
+      - name: Reproduce accepted source, apply call_remote, fmt/test/clippy, build
+        run: bash web/gateway/build-candidate.sh "$RUNNER_TEMP/h2hc" "$RUNNER_TEMP/imposter" "$RUNNER_TEMP/gateway-candidate"
+      - uses: actions/upload-artifact@v4
+        with: { name: gateway-call-remote-candidate, path: '${{ runner.temp }}/gateway-candidate/', retention-days: 14 }
+
   interop:
-    needs: [web-units, adapter]
+    needs: [web-units, adapter, gateway-candidate]
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
@@ -124,7 +162,9 @@ jobs:
         run: |
           cargo build --locked --release --manifest-path crates/moq-music/Cargo.toml
           cargo build --locked --release --manifest-path music-e2e/Cargo.toml --bin music_app_bridge
-      - name: Pinned Imposter baseline, accepted gateway and HWC extension
+      - uses: actions/download-artifact@v4
+        with: { name: gateway-call-remote-candidate, path: '${{ runner.temp }}/gateway-candidate' }
+      - name: Pinned Imposter baseline, accepted gateway (recorded) and HWC extension
         run: |
           pins=web/hwc/pins.json
           git clone --quiet --no-checkout "$(jq -r .imposter_repository $pins)" "$RUNNER_TEMP/imposter"
@@ -136,6 +176,7 @@ jobs:
           chmod 0755 "$RUNNER_TEMP/bin/h2hc-linker"
           git clone --quiet "$(jq -r .hwc_repository $pins)" "$RUNNER_TEMP/hwc"
           git -C "$RUNNER_TEMP/hwc" checkout --quiet "$(jq -r .hwc_commit $pins)"
+          (cd "$RUNNER_TEMP/gateway-candidate" && sha256sum -c SHA256SUMS && chmod 0755 h2hc-linker-call-remote-candidate)
           bash web/hwc/build-extension.sh "$RUNNER_TEMP/hwc" "$RUNNER_TEMP/imposter"
       - name: Pinned Playwright Chromium
         run: |
@@ -148,7 +189,7 @@ jobs:
           HOLOCHAIN_MOQ_BIN: ${{ github.workspace }}/crates/moq-music/target/release/holochain-music-moq
           HOLOCHAIN_MUSIC_BRIDGE_BIN: ${{ github.workspace }}/music-e2e/target/release/music_app_bridge
           HOLOCHAIN_MUSIC_HAPP: ${{ github.workspace }}/integration/workdir/holochain_music.happ
-          H2HC_GATEWAY_BIN: ${{ runner.temp }}/bin/h2hc-linker
+          H2HC_GATEWAY_BIN: ${{ runner.temp }}/gateway-candidate/h2hc-linker-call-remote-candidate
           HWC_EXTENSION_DIR: ${{ runner.temp }}/hwc/packages/extension/dist-chrome
           HM_PLAYWRIGHT: ${{ runner.temp }}/pw/node_modules/playwright
         run: python web/integration/run_interop.py --work "$RUNNER_TEMP/interop"
@@ -156,7 +197,8 @@ jobs:
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/interop/evidence.json" ]; then
-            { echo '### Interop checks'; echo '| Result | Check | Detail |'; echo '| --- | --- | --- |'
+            { echo '### Checkpoints'; jq -r '.checkpoints // {} | to_entries[] | "- **\(.key)**: \(.value.result)"' "$RUNNER_TEMP/interop/evidence.json"
+              echo '### Interop checks'; echo '| Result | Check | Detail |'; echo '| --- | --- | --- |'
               jq -r '.checks[] | "| \(.result) | \(.id) | \((.error // "") | gsub("[\n|]"; " ") | .[0:160]) |"' "$RUNNER_TEMP/interop/evidence.json"
             } | tee -a "$GITHUB_STEP_SUMMARY"
           else

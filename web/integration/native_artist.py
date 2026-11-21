@@ -7,9 +7,12 @@ its own Lair keystore and identity, the packaged hApp, the real encrypt ->
 host CAS -> catalogue/S2 records -> MoQ/QUIC host publication path.
 
 Writes a status JSON (public values only: agent, track IDs, manifest pin, DNA
-hashes) and keeps running until SIGTERM. With --approve, it also acts as the
-artist's operator for *native* access requests: the decision is made through
-the same MusicApp.artist.grant() API the desktop UI uses.
+hashes, received private requests) and keeps running until SIGTERM. With
+--approvals DIR the test acts as the artist pressing "Approve" in the desktop
+app: for each <name>.approve.json ({request_hash, kind}) it calls the same
+MusicApp.artist.grant() the desktop UI uses (which delivers the grant with the
+Music DNA's send_grant -> call_remote) and records the genuine outcome
+({"delivered": true} or {"queued": true}) in <name>.result.json.
 
 Generated tone audio only. No third-party audio, no private keys in output.
 """
@@ -65,6 +68,10 @@ def main() -> int:
                         "({listener_agent, recipient_public_hex, kind}) the artist issues a genuine v1 grant "
                         "with its own keys into <name>.grant.json. This is NOT the private Holochain "
                         "request/approval workflow (blocked for browsers; see docs/web/grants.md).")
+    p.add_argument("--approvals", type=Path,
+                   help="explicit artist approvals: <name>.approve.json {request_hash, kind} -> "
+                        "MusicApp.artist.grant() (the desktop approval API); outcome in <name>.result.json")
+    p.add_argument("--second-title", help="also publish a second track (isolation tests)")
     p.add_argument("--peer-only", action="store_true",
                    help="second native participant: join the network, publish nothing. kitsune2 grows a "
                         "node's storage arc only by syncing with another full-arc peer, so a lone artist "
@@ -114,18 +121,39 @@ def main() -> int:
             "pcm_sha256": hashlib.sha256(canonical_wav[44:]).hexdigest(),
             "wav_bytes": len(canonical_wav),
         })
+        if args.second_title:
+            wav2 = args.home / "tone-b.wav"
+            # A different duration gives a different file, manifest and content key.
+            write_tone(wav2, seconds=args.seconds + 1, rate=44100, channels=2)
+            second = app.publish_track(wav=wav2, title=args.second_title)
+            status["second"] = {"track_id": second["track_id"], "file_id": second["file_id"],
+                                "manifest_sha256": second["manifest_sha256"],
+                                "track_key": f"{app.agent}:{second['track_id']}"}
         args.status.write_text(json.dumps(status))
         print(json.dumps(status), flush=True)
         while not stop.wait(3):
             if args.grant_dir:
                 issue_pending_grants(app, args.grant_dir, published)
+            if args.approvals:
+                for approve in sorted(args.approvals.glob("*.approve.json")):
+                    result = approve.with_name(approve.name.replace(".approve.json", ".result.json"))
+                    if result.exists():
+                        continue
+                    decision = json.loads(approve.read_text())
+                    try:
+                        outcome = app.artist.grant(request_hash=decision["request_hash"], kind=decision["kind"])
+                    except Exception as exc:  # recorded, never converted into success
+                        outcome = {"granted": False, "error": str(exc)[:300]}
+                    result.write_text(json.dumps(outcome))
             requests = []
             try:
                 requests = app.artist.requests()
             except Exception as exc:  # network flap: keep serving
                 status["requests_error"] = str(exc)[:200]
-            status["requests"] = [{k: r.get(k) for k in ("request_hash", "listener_agent", "file_id", "kind", "status")}
-                                  for r in requests]
+            status["requests"] = [{k: r.get(k) for k in ("request_hash", "listener_agent", "file_id", "kind",
+                                                         "received_at", "granted")} for r in requests]
+            if app.outbox is not None:
+                status["outbox_pending"] = len(app.outbox.items())
             status["heartbeat"] = int(time.time())
             args.status.write_text(json.dumps(status))
     finally:

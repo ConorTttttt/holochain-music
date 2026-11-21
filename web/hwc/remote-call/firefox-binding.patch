@@ -1,0 +1,75 @@
+diff --git a/packages/extension/src/background/firefox-direct-executor.ts b/packages/extension/src/background/firefox-direct-executor.ts
+index b93a24e..b5281b8 100644
+--- a/packages/extension/src/background/firefox-direct-executor.ts
++++ b/packages/extension/src/background/firefox-direct-executor.ts
+@@ -26,7 +26,7 @@ import { BaseExecutor } from "./base-executor";
+ import { encode, decode } from "@msgpack/msgpack";
+ import { getHappContextStorage } from "../lib/happ-context-storage";
+ import { toUint8Array, normalizeUint8Arrays, serializeForTransport } from "@hwc/core";
+-import { encodeHashToBase64 } from "@holochain/client";
++import { encodeHashToBase64, decodeHashFromBase64 } from "@holochain/client";
+ import type { DnaHash } from "@holochain/client";
+ import { createLogger } from "../lib/logger";
+ 
+@@ -75,6 +75,11 @@ export class FirefoxDirectExecutor extends BaseExecutor {
+   }
+ 
+   protected onWebSocketCreated(socket: WebSocketNetworkService): void {
++    // Standard Holochain call_remote: same authorised worker entry point as
++    // Chromium (CALL_ZOME_REMOTE); only the socket/worker plumbing differs.
++    socket.onRemoteCall((call) => {
++      this.handleIncomingRemoteCall(socket, call).catch(() => {});
++    });
+     socket.onRestrictedRole((frame, lease) => {
+       if (this.wsService === socket && socket.getRestrictedRoleLease() === lease) {
+         this.roleHandlers?.receive(frame, lease);
+@@ -96,6 +101,49 @@ export class FirefoxDirectExecutor extends BaseExecutor {
+     });
+   }
+ 
++  private async handleIncomingRemoteCall(
++    socket: WebSocketNetworkService,
++    call: { requestId: string; dnaHash: string; toAgent: string; paramsBytes: Uint8Array; signature: Uint8Array },
++  ): Promise<void> {
++    const answer = (result: { response: Uint8Array } | { error: string }) => {
++      if (this.wsService === socket && socket.isConnected()) socket.respondRemoteCall(call.requestId, result);
++    };
++    try {
++      const dnaHash = decodeHashFromBase64(call.dnaHash);
++      const agent = decodeHashFromBase64(call.toAgent);
++      const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
++      await this.initWorker();
++      let dna: any = null;
++      for (const ctx of await this.storage.listContexts()) {
++        if (ctx.status !== "enabled" || !same(toUint8Array(ctx.agentPubKey), agent)) continue;
++        dna = ctx.dnas.find((d) => same(toUint8Array(d.hash), dnaHash));
++        if (dna) break;
++      }
++      if (!dna) return answer({ error: "call_remote unreachable: no such cell" });
++      // The worker signs Firefox ribosome actions with its own Lair client.
++      await this.sendToWorker("PRELOAD_SIGNING_KEY", { pubKey: Array.from(agent.slice(3, 35)) }).catch(() => {});
++      const dnaHashKey = this.getDnaHashKey(dnaHash);
++      const dnaWasm = this.sentWasmHashes.has(dnaHashKey) ? [] : Array.from(toUint8Array(dna.wasm));
++      this.sentWasmHashes.add(dnaHashKey);
++      const result = await this.sendToWorker("CALL_ZOME_REMOTE", {
++        dnaWasm,
++        cellId: [Array.from(dnaHash), Array.from(agent)],
++        dnaManifest: dna.manifest ? normalizeUint8Arrays(dna.manifest) : undefined,
++        paramsBytes: Array.from(call.paramsBytes),
++        signature: Array.from(call.signature),
++      });
++      if (result?.pendingRecords?.length) {
++        this.publishPendingRecords(result.pendingRecords, dnaHash).catch((err: unknown) => {
++          logPublish.error("Publish after call_remote failed:", err);
++        });
++      }
++      if (Array.isArray(result?.response)) answer({ response: new Uint8Array(result.response) });
++      else answer({ error: typeof result?.error === "string" ? result.error : "call_remote failed" });
++    } catch (error) {
++      answer({ error: `call_remote failed: ${error instanceof Error ? error.message : String(error)}` });
++    }
++  }
++
+   // --- Worker state ---
+   private worker: Worker | null = null;
+   private workerReady = false;

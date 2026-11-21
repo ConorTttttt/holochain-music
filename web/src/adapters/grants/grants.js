@@ -42,10 +42,45 @@ function tx(db, store, mode, fn) {
 const req = r => new Promise((resolve, reject) => { r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
 
 export const RequestOutcome = Object.freeze({
+  /** The artist's conductor stored the request (call_remote returned Ok). */
   SENT: 'sent',
+  /** This browser conductor cannot make Holochain remote calls. Nothing sent. */
   TRANSPORT_UNSUPPORTED: 'transport-unsupported',
+  /** The artist's node could not be reached. Nothing was delivered. */
+  UNREACHABLE: 'unreachable',
+  /** The artist's node refused the delivery (rate limit, invalid). Not a decision. */
+  REFUSED: 'refused',
   FAILED: 'failed',
 });
+
+/** Classify a send_access_request failure without ever inventing a decision. */
+export function classifyRequestError(message) {
+  const m = String(message ?? '');
+  if (/No ConductorCell in target|Unsupported cell target|call_remote transport unavailable/i.test(m)) return RequestOutcome.TRANSPORT_UNSUPPORTED;
+  if (/recipient refused|recipient is busy|Unauthorized|BadCapGrant|BadNonce/i.test(m)) return RequestOutcome.REFUSED;
+  if (/unreachable|timed out|not connected|no url for peer|disconnected|NetworkError|offline/i.test(m)) return RequestOutcome.UNREACHABLE;
+  return RequestOutcome.FAILED;
+}
+
+/**
+ * Local record of requests this browser identity sent (public facts only:
+ * file, kind, time). Used to show "awaiting the artist's decision"; the
+ * artist's decision itself only ever comes from a verified grant.
+ */
+export class RequestLog {
+  constructor(storage = globalThis.localStorage) { this.storage = storage; }
+  key(agent) { return `hm-requests:${agent}`; }
+  all(agent) {
+    try { return JSON.parse(this.storage?.getItem(this.key(agent)) ?? '{}') || {}; } catch { return {}; }
+  }
+  get(agent, fileId) { return this.all(agent)[fileId] ?? null; }
+  record(agent, fileId, kind, at = Math.floor(Date.now() / 1000)) {
+    const all = this.all(agent);
+    all[fileId] = { kind, sent_at: at };
+    try { this.storage?.setItem(this.key(agent), JSON.stringify(all)); } catch { /* private mode: in-page only */ }
+    return all[fileId];
+  }
+}
 
 export class GrantStore {
   constructor({ indexedDB } = {}) {
@@ -121,13 +156,22 @@ export class GrantStore {
 export async function syncInboxGrants({ holochain, store, agent, resolveTrusted }) {
   const rows = await holochain.call('music_storage', 'get_inbox_grants', null);
   const results = [];
+  // Rows are newest first. Each approval is a freshly wrapped grant, so only
+  // the newest verified grant per track is stored; older deliveries are
+  // reported as superseded (re-syncing is then idempotent).
+  const done = new Set();
   for (const row of Array.isArray(rows) ? rows : []) {
     const b = row?.body;
+    if (done.has(b?.file_id)) {
+      results.push({ file_id: b.file_id, superseded: true });
+      continue;
+    }
     try {
       const trusted = await resolveTrusted(b.owner_agent, b.file_id);
       if (!trusted || trusted.artistAgent !== b.owner_agent) continue;
       const grant = JSON.parse(b.grant_json);
       results.push({ file_id: b.file_id, ...(await store.accept(grant, { agent, trusted, via: 'holochain-inbox' })) });
+      done.add(b.file_id);
     } catch (e) {
       results.push({ file_id: b?.file_id, error: e.message });
     }
@@ -138,9 +182,9 @@ export async function syncInboxGrants({ holochain, store, agent, resolveTrusted 
 /**
  * Ask the artist for access using the unchanged Music request format.
  * The Music DNA delivers requests with Holochain `call_remote`, whose
- * provenance authenticates the listener and binds the X25519 key to it. HWC
- * at the pinned revision cannot make remote calls, so this reports
- * TRANSPORT_UNSUPPORTED instead of inventing a weaker channel.
+ * provenance authenticates the listener and binds the X25519 key to it.
+ * SENT means the artist's own conductor stored the private request; it does
+ * NOT mean the artist approved anything.
  */
 export async function requestAccess({ holochain, store, agent, track, kind, note = '' }) {
   if (kind !== 'stream' && kind !== 'perpetual-personal') throw new Error('invalid access kind');
@@ -154,8 +198,6 @@ export async function requestAccess({ holochain, store, agent, track, kind, note
     await holochain.call('music_storage', 'send_access_request', { owner: holoHashBytes(track.artist_agent), request });
     return { outcome: RequestOutcome.SENT, request };
   } catch (e) {
-    // HWC 0c39122 `call` host fn: "[HostFn:call] No ConductorCell in target" for CallTarget::NetworkAgent.
-    const unsupported = /No ConductorCell in target|Unsupported cell target|NetworkAgent|call_remote/i.test(e.message);
-    return { outcome: unsupported ? RequestOutcome.TRANSPORT_UNSUPPORTED : RequestOutcome.FAILED, error: e.message, request };
+    return { outcome: classifyRequestError(e.message), error: e.message, request };
   }
 }

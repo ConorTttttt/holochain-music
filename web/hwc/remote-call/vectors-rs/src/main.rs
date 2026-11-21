@@ -50,9 +50,48 @@ fn main() {
             "signature": hex::encode(sig.to_bytes()),
         }));
     }
+    // ZomeCallResponse encodings (what CallRemoteRes carries back to the caller).
+    let responses: Vec<_> = [
+        ("ok", ZomeCallResponse::Ok(ExternIO(vec![0x81, 0xa1, b'k', 0x01]))),
+        ("unauthorized-bad-cap-grant", ZomeCallResponse::Unauthorized(
+            ZomeCallAuthorization::BadCapGrant, None, "music_storage".into(), "receive_grant".into())),
+        ("unauthorized-bad-nonce-with-secret", ZomeCallResponse::Unauthorized(
+            ZomeCallAuthorization::BadNonce("Duplicate".into()), Some(CapSecret::from([5u8; 64])),
+            "music_storage".into(), "receive_access_request".into())),
+        ("network-error", ZomeCallResponse::NetworkError("recipient unreachable".into())),
+    ]
+    .into_iter()
+    .map(|(name, r)| json!({
+        "name": name,
+        "bytes": hex::encode(holochain_serialized_bytes::encode(&r).unwrap()),
+    }))
+    .collect();
+    // ZomeCallCapGrant as stored in a CapGrant entry (create_cap_grant), native serde.
+    let (_, assignee) = agent(7);
+    let mut music = std::collections::HashSet::new();
+    music.insert(("music_storage".into(), "receive_grant".into()));
+    let grants: Vec<_> = [
+        ("inbox-unrestricted-listed", ZomeCallCapGrant {
+            tag: "inbox".into(), access: CapAccess::Unrestricted, functions: GrantedFunctions::Listed(music) }),
+        ("transferable-all", ZomeCallCapGrant {
+            tag: "t".into(), access: CapAccess::Transferable { secret: CapSecret::from([5u8; 64]) },
+            functions: GrantedFunctions::All }),
+        ("assigned-all", ZomeCallCapGrant {
+            tag: "a".into(), access: CapAccess::Assigned { secret: CapSecret::from([6u8; 64]),
+                assignees: [assignee.clone()].into_iter().collect() },
+            functions: GrantedFunctions::All }),
+    ]
+    .into_iter()
+    .map(|(name, g)| json!({
+        "name": name,
+        "entry_content": hex::encode(holochain_serialized_bytes::encode(&g).unwrap()),
+    }))
+    .collect();
     println!("{}", serde_json::to_string_pretty(&json!({
         "generator": "web/hwc/remote-call/vectors-rs (holochain_zome_types 0.7.0)",
         "warning": "TEST-ONLY fixed keys (seed bytes 7 and 9)",
         "cases": cases,
+        "responses": responses,
+        "cap_grants": grants,
     })).unwrap());
 }

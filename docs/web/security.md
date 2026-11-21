@@ -64,12 +64,26 @@ The media adapter's own checks are defence in depth only.
    responses and reported validation status (denial of service, not forgery).
    Needs a gateway change to return signed `CreateLink` actions. Not
    production-ready until that and an external review are done.
-2. **No private grant delivery yet** — see [grants.md](grants.md) and
-   [call-remote.md](call-remote.md). The out-of-band import path depends on the
-   operator conveying the browser's public keys to the artist authentically.
-   HWC's existing `ZomeCallParams` signing (remote signals) hashes with
-   blake2b-256, where Holochain 0.7 requires SHA-512; it must be fixed before
-   any call is sent.
+2. **Private grant delivery over `call_remote` (new, experimental).** See
+   [call-remote.md](call-remote.md). Trust classification of what the gateway
+   can and cannot do:
+   * **Cannot**: sign or impersonate an agent (it never holds keys; outgoing
+     provenance must equal the session agent and the signature must verify;
+     the recipient re-verifies anyway); make a browser execute an unsigned,
+     replayed, expired, wrongly addressed or ungranted call (HWC authorises
+     every incoming call itself: SHA-512 signature, cell, persistent nonce,
+     live `CapGrant`); forge a grant (grants are artist-signed and verified
+     against the artist key read through the listener's own cell).
+   * **Gateway-trusted (same as native transport)**: the `ZomeCallResponse`
+     returned for an outgoing call is not signed by the recipient in Holochain
+     either. A malicious gateway could claim a request was stored when it was
+     not ("awaiting" would then never turn into a grant) or drop deliveries
+     (denial of service). It cannot make "granted" appear: that state needs a
+     verified, artist-signed grant on the listener's own chain.
+   * The out-of-band import (recovery) still depends on the operator conveying
+     the browser's public keys to the artist authentically.
+   HWC's older remote-signal signing (blake2b-256) is unchanged and stays
+   behind Imposter's fail-closed gate; call_remote uses its own SHA-512 path.
 3. **Extension service-worker caching** — after rebuilding an unpacked HWC at
    the same version, reload it in `chrome://extensions`; an old profile can
    otherwise keep running the previous build.

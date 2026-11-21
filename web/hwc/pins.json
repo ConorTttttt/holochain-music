@@ -8,6 +8,8 @@
     "archive_ref": "refs/heads/archive/browser-alpha-gateway-14428255589",
     "archive_commit": "81ddc627cdac30d1af42ea67bc803a570ad93925",
     "source_commit": "9f5eb04b5be12e3e9e7fcc304bd905da1449ade9",
+    "recipe_commit": "293563649f7fd18a6bc2e0d1426c31132bf2b8c7",
+    "upstream_h2hc_commit": "cab242d32c988fe5e4e9fd06ebc82ed043541aa2",
     "sha256": "8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f"
   },
   "holochain": {

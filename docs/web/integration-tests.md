@@ -11,8 +11,75 @@
 | HWC build gate | `web/hwc/build-extension.sh` (full HWC core suite) | Imposter's security tests, malicious-gateway record tests with a genuine native record, call_remote authoriser vs Holochain 0.7 vectors |
 | **Interop** | `python web/integration/run_interop.py` | everything, plus a test-only malicious gateway for M1: native Music artist and peer (unchanged `MusicApp`, own conductors, Lair, MoQ/QUIC host), Holochain 0.7.0 bootstrap/relay, accepted Imposter gateway in admission mode, media adapter, built web client with production CSP, real Chromium + HWC extension, two separate browser identities |
 
-No mocks are used in the interop test. The out-of-band grant step (D1) is
-labelled as such.
+No mocks are used in the interop test. Since 2026-11-21 the grant reaches the
+browser only through Holochain `call_remote` (checks E1–E5); the out-of-band
+import is used only to feed grants that must be rejected (D4, I2, X1).
+
+## Private grant delivery — local results, 2026-11-21
+
+Environment: cloud Linux container (4 vCPU, no IPv6: `ipv4only` preload for
+native processes), Holochain 0.7.0 release binaries (pins.json SHA-256),
+sandbox Playwright with headed Chromium under Xvfb, Node 22.23.5, Python 3.13.
+Commit under test: `027ee9878d749a33b37d96c091096192b659843b`. HWC built by
+`web/hwc/build-extension.sh` (HWC core suite **622 passed**, 3 todo).
+Gateway: call_remote candidate from `web/gateway/build-candidate.sh`
+(SHA-256 `e703aaaf…6d2565`; accepted source tree reproduced, 207 Rust tests,
+clippy `-D warnings`, fmt). Same DNA hashes and hApp SHA-256 as 2026-11-18.
+
+**Run 5 (`--work /tmp/claude-0/interop5`, clean state): 29 PASS, 0 FAIL, 0 BLOCKED.
+Checkpoint E: PASS. Checkpoint F: PASS.**
+
+| Check | Result | Time |
+| --- | --- | --- |
+| A1 identity + origin authorised · A2 exact DNA hashes · A3 authenticated gateway, ready | PASS | 0.3 / 2.0 / 2.1 s |
+| B1 discovery · B2 search · B3 artist page · C1 provenance | PASS | |
+| C2 signed manifest + host receipt verified in-browser | PASS | 52.1 s |
+| D0 no grant → no audio | PASS | |
+| **E1** "Request licence" → `send_access_request` → Holochain `call_remote` → native artist returned Ok; UI `awaiting`, no decision claimed | **PASS** | 0.2 s |
+| **E2** native `MusicApp.artist.requests()` lists the request with `listener_agent` = the browser agent (set from verified provenance), kind `perpetual-personal`, not granted | **PASS** | 2.0 s |
+| **E3** before approval the browser shows no access; artist approves via `MusicApp.artist.grant()`; outcome `{"granted": true, "delivered": true}` (not queued) — `send_grant` → `call_remote` → gateway → HWC authorised `receive_grant` | **PASS** | 2.1 s |
+| **E4** "Check for grants": `get_inbox_grants` returns exactly one private inbox row for the track; grant (`holochain-music/personal-licence/v1`) verified for this agent, recipient key and manifest; UI `granted` | **PASS** | 0.1 s |
+| E5 second approval of the same request: two inbox rows, newest stored, older reported superseded, re-sync idempotent, one stored grant | PASS | 3.5 s |
+| D2 decrypt and play to the end with the Holochain-delivered grant: 529 200 / 529 200 frames, 0 underruns, every chunk's plaintext SHA-256 equals the artist's canonical WAV | PASS | 12.7 s |
+| D3 pause/resume/seek · D4 tampered grant rejected | PASS | |
+| I1 track B: no access, not playable · I2 track A's grant rejected for track B | PASS | |
+| R1 restart keeps identity, installation, grant · R2 track B still refused after restart · R3 track A re-verified and played to the end after restart (digests equal) | PASS | 6.1 / 1.0 / 13.1 s |
+| G1 un-admitted held · G2 admitted · X1 listener B cannot use A's grant · X2 B cannot play | PASS | |
+| G3 revocation drops the session · G4 restarting the revoked profile stays `admission-pending` | PASS | 3.0 / 20.9 s |
+| M1 malicious gateway cannot forge catalogue records | PASS | 6.0 s |
+
+Earlier runs on the way (kept as evidence of the failure modes):
+
+| Run | Result | Cause → fix |
+| --- | --- | --- |
+| 1 | B3 FAIL (artist page not converged in 30 s) | B3 now retries like B1 |
+| 2 | E1 BLOCKED `unsupported` | the record-verification wrapper (correctly) exposes only verified DHT members, hiding the new transport → transport registered separately |
+| 3 | E1, E2 PASS; E3 FAIL: native artist got `ZomeCallResponse::Unauthorized` ("recipient refused the delivery") | browser grant reader expected the wrong serde shape; native `CapAccess`/`GrantedFunctions` are `{type, value}` tagged → fixed, `cap_grants` vectors added. The failure was fail-closed: nothing was stored, the artist did not report delivery |
+| 4 | E1–E4 PASS (**E PASS**), E5 FAIL | test assumed a re-approval is byte-identical; it is a freshly wrapped grant → newest grant kept per track, test corrected |
+| 5 | **29/29 PASS, E PASS, F PASS** | |
+
+**Control run** (same commit, HWC build, **accepted** gateway `8f3f8e0b…`,
+`HM_CONTROL_ACCEPTED_GATEWAY=1` so admission uses only `dht_read/dht_write/k2`):
+A1–D0 PASS; **E1 FAIL as expected** — the gateway has no `/call_remote`, the
+Music DNA's `remote()` reports the recipient unreachable, and the UI shows
+"Access unavailable right now … nothing was delivered. Nothing has been
+approved or declined". E and F: NOT MET. No delivery was reported falsely.
+
+**CI** — workflow `web-browser-player.yml`, run
+[44909015736](https://github.com/ConorTttttt/holochain-music/actions/runs/44909015736)
+at `2dfd3f68016329f53d12f17a9232c70a88897097` (Playwright 1.57.0 Chromium,
+ubuntu-24.04): web-units PASS, chromium-crypto PASS, adapter PASS,
+call-remote-vectors PASS (native vectors regenerated and identical),
+gateway-candidate PASS (accepted source reproduced in CI, fmt/test/clippy,
+build), interop PASS — **29 PASS, Checkpoint E PASS, Checkpoint F PASS**
+(evidence artifact `web-interop-evidence`, ID 14710195191). The earlier run
+44908547055 at `027ee98` was CANCELLED by the newer push after its first four
+jobs had passed.
+
+Checkpoint F definition (computed by `run_interop.py`): A1–A3, B1, C2, D0,
+E1–E4 and D2 PASS in a **fresh** profile using only the UI's normal controls,
+operator admission (`call_remote_send`, `call_remote_receive`) and the artist's
+explicit approval; no grant file, key or browser-storage injection.
 
 ## Latest local results — 2026-11-18
 
@@ -103,4 +170,5 @@ Limit seen in M1: a rejected record looks like "not visible yet" in the UI
 * Firefox / Android HWC.
 * Host outage mid-stream against the adapter (the reused desktop `Download`
   worker has its own native tests; the browser retry path is unit-tested).
-* Private grant delivery (blocked).
+* Firefox Desktop live run of the grant workflow (Firefox/Geckodriver not available in this container; extension builds and the executor tests pass).
+* Imposter mixed-browser and repeatable-lobby acceptance against the candidate gateway (NOT RUN).

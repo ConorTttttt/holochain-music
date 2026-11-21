@@ -1,0 +1,1350 @@
+diff --git a/src/agent_proxy.rs b/src/agent_proxy.rs
+index db49970..33e74da 100644
+--- a/src/agent_proxy.rs
++++ b/src/agent_proxy.rs
+@@ -8,6 +8,7 @@
+ //! request signatures from browser agents whose private keys are stored
+ //! in the browser extension.
+ 
++use crate::call_remote::CallRemoteRelay;
+ use crate::routes::websocket::ServerMessage;
+ use bytes::Bytes;
+ use holochain_types::prelude::{AgentPubKey, DnaHash};
+@@ -53,6 +54,8 @@ pub struct AgentProxyManager {
+     pending_signs: Arc<RwLock<HashMap<String, PendingSign>>>,
+     /// Timeout for sign requests.
+     sign_timeout: Duration,
++    /// Standard Holochain call_remote relay state.
++    call_remote: CallRemoteRelay,
+ }
+ 
+ impl std::fmt::Debug for AgentProxyManager {
+@@ -80,6 +83,7 @@ impl AgentProxyManager {
+             request_counter: Arc::new(AtomicU64::new(0)),
+             pending_signs: Arc::new(RwLock::new(HashMap::new())),
+             sign_timeout: Duration::from_secs(30),
++            call_remote: CallRemoteRelay::new(),
+         }
+     }
+ 
+@@ -90,6 +94,7 @@ impl AgentProxyManager {
+             request_counter: Arc::new(AtomicU64::new(0)),
+             pending_signs: Arc::new(RwLock::new(HashMap::new())),
+             sign_timeout,
++            call_remote: CallRemoteRelay::new(),
+         }
+     }
+ 
+@@ -150,6 +155,8 @@ impl AgentProxyManager {
+                 agent_pubkey: agent.clone(),
+             });
+         }
++        drop(registrations);
++        self.call_remote.drop_socket(sender).await;
+         owned
+     }
+ 
+@@ -232,6 +239,24 @@ impl AgentProxyManager {
+             .is_some_and(|active| active.same_channel(sender))
+     }
+ 
++    /// The call_remote relay shared by HTTP, WebSocket and kitsune2 handlers.
++    pub fn call_remote(&self) -> &CallRemoteRelay {
++        &self.call_remote
++    }
++
++    /// The socket that currently owns the exact (DNA, agent) registration.
++    pub async fn current_sender(
++        &self,
++        dna_hash: &DnaHash,
++        agent_pubkey: &AgentPubKey,
++    ) -> Option<WsSender> {
++        let key = AgentRegistration {
++            dna_hash: dna_hash.clone(),
++            agent_pubkey: agent_pubkey.clone(),
++        };
++        self.registrations.read().await.get(&key).cloned()
++    }
++
+     /// Find a WebSocket sender for an agent (any DNA).
+     ///
+     /// Returns the first sender found for this agent, regardless of which DNA
+diff --git a/src/auth/middleware.rs b/src/auth/middleware.rs
+index 7991553..a5be2c0 100644
+--- a/src/auth/middleware.rs
++++ b/src/auth/middleware.rs
+@@ -34,6 +34,15 @@ pub async fn require_dht_write(
+     check_capability(state, req, next, Capability::DhtWrite).await
+ }
+ 
++/// Middleware: require a valid session with `CallRemoteSend` capability.
++pub async fn require_call_remote_send(
++    State(state): State<AppState>,
++    req: Request,
++    next: Next,
++) -> Response {
++    check_capability(state, req, next, Capability::CallRemoteSend).await
++}
++
+ /// Middleware: require a valid session with `K2` capability.
+ pub async fn require_k2(State(state): State<AppState>, req: Request, next: Next) -> Response {
+     check_capability(state, req, next, Capability::K2).await
+diff --git a/src/auth/types.rs b/src/auth/types.rs
+index 781dc10..cdf30c2 100644
+--- a/src/auth/types.rs
++++ b/src/auth/types.rs
+@@ -18,6 +18,12 @@ pub enum Capability {
+     GameRoleRequest,
+     /// Host -> one committed-seat recipient; operator grants independently.
+     GameRoleDeliver,
++    /// POST /call_remote/{dna}: send standard Holochain call_remote signed by
++    /// the session's own agent (never on behalf of another agent).
++    CallRemoteSend,
++    /// Receive standard Holochain call_remote addressed to this agent on its
++    /// authenticated WebSocket (the browser verifies and authorises it).
++    CallRemoteReceive,
+ }
+ 
+ /// An agent that has been granted access to the gateway.
+diff --git a/src/call_remote.rs b/src/call_remote.rs
+new file mode 100644
+index 0000000..d857b36
+--- /dev/null
++++ b/src/call_remote.rs
+@@ -0,0 +1,873 @@
++//! Standard Holochain `call_remote` for browser (HWC) agents.
++//!
++//! Outgoing (browser agent -> any agent): `POST /call_remote/{dna_hash}` with a
++//! bearer session holding [`Capability::CallRemoteSend`]. The browser signs
++//! `ZomeCallParams` itself (Ed25519 over `sha2_512(encode(params))`, exactly as
++//! `ZomeCallParamsSigned::try_from_params` in Holochain 0.7). The gateway never
++//! signs: it checks that the provenance is the session's authenticated agent,
++//! that the cell is `(dna, target)`, that the signature verifies and the expiry
++//! is witnessable, then sends a native `WireMessage::CallRemoteReq` and returns
++//! the native `CallRemoteRes` bytes (a msgpack `ZomeCallResponse`) unchanged.
++//!
++//! Incoming (any agent -> browser agent): a native `CallRemoteReq` addressed to
++//! a browser agent registered on this gateway is forwarded ONLY to that agent's
++//! current authenticated WebSocket when the operator granted
++//! [`Capability::CallRemoteReceive`]. The browser re-verifies everything
++//! (signature, cell, nonce, capability grant) before executing; the gateway
++//! check here is defence in depth and load shedding, not the trust root. The
++//! browser's reply must come from the same agent on the same socket and must
++//! decode as a `ZomeCallResponse`; it is returned as `CallRemoteRes`. Timeouts,
++//! disconnects and refusals become `ErrorRes` (the native caller sees
++//! `ZomeCallResponse::NetworkError`), never a fabricated success.
++//!
++//! Responses are correlated by `msg_id` AND the peer URL the request was sent
++//! to, so another peer cannot answer a call it was not asked.
++
++use crate::agent_proxy::{AgentProxyManager, WsSender};
++use crate::auth::types::Capability;
++use crate::auth::AuthStore;
++use crate::gateway_kitsune::GatewayKitsune;
++use crate::routes::websocket::ServerMessage;
++use base64::Engine;
++use holochain_p2p::WireMessage;
++use holochain_serialized_bytes::{SerializedBytes, UnsafeBytes};
++use holochain_types::prelude::{
++    AgentPubKey, DnaHash, ExternIO, Signature, Timestamp, ZomeCallParams, ZomeCallResponse,
++};
++use kitsune2_api::Url;
++use std::collections::{HashMap, VecDeque};
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::sync::{Arc, OnceLock};
++use std::time::{Duration, Instant};
++use tokio::sync::{oneshot, Mutex};
++
++/// Largest accepted serialized `ZomeCallParams` (Music grants are < 8 KiB).
++pub const MAX_PARAMS_BYTES: usize = 32 * 1024;
++/// Largest accepted serialized `ZomeCallResponse` from a browser.
++pub const MAX_RESPONSE_BYTES: usize = 32 * 1024;
++/// Largest WebSocket text frame accepted for `call_remote_response` (base64 + JSON).
++pub const MAX_RESPONSE_FRAME_BYTES: usize = 48 * 1024;
++/// Holochain's `WITNESSABLE_EXPIRY_DURATION` (50 minutes).
++const WITNESSABLE_EXPIRY_US: i64 = 50 * 60 * 1_000_000;
++/// Outgoing request timeout: below HWC's 30 s synchronous network wait.
++pub const OUTGOING_TIMEOUT: Duration = Duration::from_secs(25);
++/// Time a browser recipient has to answer an incoming call.
++pub const INCOMING_TIMEOUT: Duration = Duration::from_secs(30);
++const MAX_PENDING_OUT: usize = 256;
++const MAX_PENDING_OUT_PER_AGENT: usize = 4;
++const MAX_PENDING_IN: usize = 256;
++const MAX_PENDING_IN_PER_AGENT: usize = 8;
++const RATE_WINDOW: Duration = Duration::from_secs(60);
++const MAX_OUT_PER_WINDOW: usize = 30;
++const MAX_IN_PER_WINDOW: usize = 60;
++
++/// Why a call was refused or failed. The text is returned to the caller.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum CallRemoteError {
++    Malformed(String),
++    Forbidden(String),
++    Busy(String),
++    Unreachable(String),
++    Remote(String),
++    Timeout,
++}
++
++impl std::fmt::Display for CallRemoteError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        match self {
++            Self::Malformed(m) => write!(f, "call_remote malformed: {m}"),
++            Self::Forbidden(m) => write!(f, "call_remote forbidden: {m}"),
++            Self::Busy(m) => write!(f, "call_remote busy: {m}"),
++            Self::Unreachable(m) => write!(f, "call_remote unreachable: {m}"),
++            Self::Remote(m) => write!(f, "{m}"),
++            Self::Timeout => write!(f, "call_remote timed out"),
++        }
++    }
++}
++
++fn now_us() -> i64 {
++    Timestamp::now().as_micros()
++}
++
++/// Decode signed `ZomeCallParams` exactly as `Cell::handle_call_remote` does,
++/// additionally requiring canonical encoding, and verify the Ed25519 signature
++/// by the provenance over `sha2_512(bytes)`.
++pub fn verify_signed_params(
++    bytes: &[u8],
++    signature: &[u8],
++) -> Result<ZomeCallParams, CallRemoteError> {
++    if bytes.len() > MAX_PARAMS_BYTES {
++        return Err(CallRemoteError::Malformed(
++            "zome call params too large".into(),
++        ));
++    }
++    let params: ZomeCallParams = holochain_serialized_bytes::decode(bytes)
++        .map_err(|_| CallRemoteError::Malformed("undecodable zome call params".into()))?;
++    let (canonical, digest) = params
++        .serialize_and_hash()
++        .map_err(|_| CallRemoteError::Malformed("unencodable zome call params".into()))?;
++    if canonical != bytes {
++        return Err(CallRemoteError::Malformed(
++            "non-canonical zome call params".into(),
++        ));
++    }
++    let sig: [u8; 64] = signature
++        .try_into()
++        .map_err(|_| CallRemoteError::Malformed("signature must be 64 bytes".into()))?;
++    let raw: [u8; 32] = params
++        .provenance
++        .get_raw_32()
++        .try_into()
++        .map_err(|_| CallRemoteError::Malformed("bad provenance".into()))?;
++    let key = ed25519_dalek::VerifyingKey::from_bytes(&raw)
++        .map_err(|_| CallRemoteError::Forbidden("provenance is not an Ed25519 key".into()))?;
++    key.verify_strict(&digest, &ed25519_dalek::Signature::from_bytes(&sig))
++        .map_err(|_| {
++            CallRemoteError::Forbidden("signature does not verify for provenance".into())
++        })?;
++    Ok(params)
++}
++
++/// Outgoing checks: the session may only send calls it signed itself, for
++/// exactly `(dna, target)`, with an expiry the recipient can witness.
++pub fn check_outgoing(
++    params: &ZomeCallParams,
++    session_agent: &AgentPubKey,
++    dna: &DnaHash,
++    target: &AgentPubKey,
++    now_us: i64,
++) -> Result<(), CallRemoteError> {
++    if &params.provenance != session_agent {
++        return Err(CallRemoteError::Forbidden(
++            "provenance is not the authenticated session agent".into(),
++        ));
++    }
++    if params.cell_id.dna_hash() != dna || params.cell_id.agent_pubkey() != target {
++        return Err(CallRemoteError::Forbidden(
++            "cell does not match DNA and target agent".into(),
++        ));
++    }
++    if target == session_agent {
++        return Err(CallRemoteError::Forbidden(
++            "cannot call_remote yourself".into(),
++        ));
++    }
++    check_expiry(params, now_us)
++}
++
++fn check_expiry(params: &ZomeCallParams, now_us: i64) -> Result<(), CallRemoteError> {
++    let exp = params.expires_at.as_micros();
++    if exp <= now_us {
++        return Err(CallRemoteError::Forbidden("zome call expired".into()));
++    }
++    if exp > now_us + WITNESSABLE_EXPIRY_US {
++        return Err(CallRemoteError::Forbidden(
++            "zome call expiry too far in the future".into(),
++        ));
++    }
++    Ok(())
++}
++
++/// Incoming checks performed before anything reaches a browser.
++pub fn check_incoming(
++    params: &ZomeCallParams,
++    dna: &DnaHash,
++    to_agent: &AgentPubKey,
++    now_us: i64,
++) -> Result<(), CallRemoteError> {
++    if params.cell_id.dna_hash() != dna || params.cell_id.agent_pubkey() != to_agent {
++        return Err(CallRemoteError::Forbidden(
++            "call is for a different cell".into(),
++        ));
++    }
++    check_expiry(params, now_us)
++}
++
++/// A browser's answer must be a single msgpack `ZomeCallResponse`.
++pub fn check_response(bytes: &[u8]) -> Result<(), CallRemoteError> {
++    if bytes.len() > MAX_RESPONSE_BYTES {
++        return Err(CallRemoteError::Malformed("response too large".into()));
++    }
++    let _: ZomeCallResponse = holochain_serialized_bytes::decode(bytes)
++        .map_err(|_| CallRemoteError::Malformed("response is not a ZomeCallResponse".into()))?;
++    Ok(())
++}
++
++struct PendingOut {
++    peer: Url,
++    agent: AgentPubKey,
++    tx: oneshot::Sender<WireMessage>,
++}
++
++struct PendingIn {
++    dna: DnaHash,
++    agent: AgentPubKey,
++    socket: WsSender,
++    tx: oneshot::Sender<Result<Vec<u8>, String>>,
++}
++
++#[derive(Default)]
++struct Inner {
++    out: Mutex<HashMap<u64, PendingOut>>,
++    inc: Mutex<HashMap<String, PendingIn>>,
++    rate_out: Mutex<HashMap<AgentPubKey, VecDeque<Instant>>>,
++    rate_in: Mutex<HashMap<AgentPubKey, VecDeque<Instant>>>,
++    counter: AtomicU64,
++    kitsune: OnceLock<GatewayKitsune>,
++    auth: OnceLock<AuthStore>,
++}
++
++/// Shared state of the call_remote relay (cheap to clone).
++#[derive(Clone, Default)]
++pub struct CallRemoteRelay {
++    inner: Arc<Inner>,
++}
++
++impl std::fmt::Debug for CallRemoteRelay {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("CallRemoteRelay").finish_non_exhaustive()
++    }
++}
++
++async fn take_rate(
++    map: &Mutex<HashMap<AgentPubKey, VecDeque<Instant>>>,
++    agent: &AgentPubKey,
++    max: usize,
++) -> bool {
++    let mut m = map.lock().await;
++    let now = Instant::now();
++    let q = m.entry(agent.clone()).or_default();
++    while q
++        .front()
++        .is_some_and(|t| now.duration_since(*t) > RATE_WINDOW)
++    {
++        q.pop_front();
++    }
++    if q.len() >= max {
++        return false;
++    }
++    q.push_back(now);
++    true
++}
++
++fn b64(bytes: &[u8]) -> String {
++    base64::engine::general_purpose::STANDARD.encode(bytes)
++}
++
++impl CallRemoteRelay {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Set once at service start (kitsune2 is built after the agent proxy).
++    pub fn set_kitsune(&self, kitsune: GatewayKitsune) {
++        let _ = self.inner.kitsune.set(kitsune);
++    }
++
++    /// Set once at service start. Without an auth store, incoming delivery
++    /// fails closed (no unauthenticated browser may receive calls).
++    pub fn set_auth_store(&self, store: AuthStore) {
++        let _ = self.inner.auth.set(store);
++    }
++
++    pub async fn pending_counts(&self) -> (usize, usize) {
++        (
++            self.inner.out.lock().await.len(),
++            self.inner.inc.lock().await.len(),
++        )
++    }
++
++    /// Route a `CallRemoteRes`/`ErrorRes`. Returns false (message untouched by
++    /// this relay) unless `msg_id` is ours AND it came from the peer we asked.
++    pub async fn route_response(
++        &self,
++        msg: WireMessage,
++        from_peer: &Url,
++    ) -> Result<(), WireMessage> {
++        let Some(msg_id) = msg.get_msg_id() else {
++            return Err(msg);
++        };
++        if !matches!(
++            msg,
++            WireMessage::CallRemoteRes { .. } | WireMessage::ErrorRes { .. }
++        ) {
++            return Err(msg);
++        }
++        let pending = {
++            let mut out = self.inner.out.lock().await;
++            match out.get(&msg_id) {
++                Some(p) if &p.peer == from_peer => out.remove(&msg_id),
++                Some(_) => {
++                    tracing::warn!(msg_id, %from_peer, "call_remote response from unexpected peer ignored");
++                    return Ok(());
++                }
++                None => None,
++            }
++        };
++        match pending {
++            Some(p) => {
++                let _ = p.tx.send(msg);
++                Ok(())
++            }
++            None => Err(msg),
++        }
++    }
++
++    /// Outgoing call. `bytes`/`signature` are the browser-signed params.
++    pub async fn send(
++        &self,
++        proxy: &AgentProxyManager,
++        session_agent: &AgentPubKey,
++        dna: &DnaHash,
++        target: &AgentPubKey,
++        bytes: Vec<u8>,
++        signature: Vec<u8>,
++    ) -> Result<Vec<u8>, CallRemoteError> {
++        let params = verify_signed_params(&bytes, &signature)?;
++        check_outgoing(&params, session_agent, dna, target, now_us())?;
++        if !take_rate(&self.inner.rate_out, session_agent, MAX_OUT_PER_WINDOW).await {
++            return Err(CallRemoteError::Busy("outgoing call rate limit".into()));
++        }
++        // Browser-to-browser on this gateway: deliver directly, same checks.
++        if proxy.is_registered(dna, target).await {
++            return self
++                .deliver_incoming(proxy, dna, target, bytes, signature)
++                .await
++                .map_err(CallRemoteError::Remote);
++        }
++        let kitsune = self
++            .inner
++            .kitsune
++            .get()
++            .ok_or_else(|| CallRemoteError::Unreachable("network not initialised".into()))?;
++        let space = kitsune
++            .get_or_create_space(dna)
++            .await
++            .map_err(CallRemoteError::Unreachable)?;
++        let to_url = space
++            .peer_store()
++            .get(target.to_k2_agent())
++            .await
++            .map_err(|e| CallRemoteError::Unreachable(e.to_string()))?
++            .and_then(|info| {
++                if info.is_tombstone {
++                    None
++                } else {
++                    info.url.clone()
++                }
++            })
++            .ok_or_else(|| CallRemoteError::Unreachable("no url for peer".into()))?;
++        let (msg_id, req) = WireMessage::call_remote_req(
++            target.clone(),
++            ExternIO(bytes),
++            Signature::from(
++                <[u8; 64]>::try_from(signature.as_slice())
++                    .map_err(|_| CallRemoteError::Malformed("signature".into()))?,
++            ),
++        );
++        let encoded = WireMessage::encode_batch(&[&req])
++            .map_err(|e| CallRemoteError::Malformed(e.to_string()))?;
++        let (tx, rx) = oneshot::channel();
++        {
++            let mut out = self.inner.out.lock().await;
++            if out.len() >= MAX_PENDING_OUT
++                || out.values().filter(|p| &p.agent == session_agent).count()
++                    >= MAX_PENDING_OUT_PER_AGENT
++            {
++                return Err(CallRemoteError::Busy("too many pending calls".into()));
++            }
++            out.insert(
++                msg_id,
++                PendingOut {
++                    peer: to_url.clone(),
++                    agent: session_agent.clone(),
++                    tx,
++                },
++            );
++        }
++        if let Err(e) = space.send_notify(to_url, encoded).await {
++            self.inner.out.lock().await.remove(&msg_id);
++            return Err(CallRemoteError::Unreachable(e.to_string()));
++        }
++        let result = tokio::time::timeout(OUTGOING_TIMEOUT, rx).await;
++        self.inner.out.lock().await.remove(&msg_id);
++        match result {
++            Ok(Ok(WireMessage::CallRemoteRes { response, .. })) => {
++                let bytes: Vec<u8> = UnsafeBytes::from(response).into();
++                check_response(&bytes).map_err(|_| {
++                    CallRemoteError::Remote("invalid call_remote response from peer".into())
++                })?;
++                Ok(bytes)
++            }
++            Ok(Ok(WireMessage::ErrorRes { error, .. })) => Err(CallRemoteError::Remote(error)),
++            Ok(Ok(_)) => Err(CallRemoteError::Remote(
++                "invalid response to call_remote".into(),
++            )),
++            Ok(Err(_)) => Err(CallRemoteError::Unreachable("request dropped".into())),
++            Err(_) => Err(CallRemoteError::Timeout),
++        }
++    }
++
++    /// Deliver a remote call to a browser agent hosted here and wait for its
++    /// `ZomeCallResponse` bytes. Errors are strings for `ErrorRes`.
++    pub async fn deliver_incoming(
++        &self,
++        proxy: &AgentProxyManager,
++        dna: &DnaHash,
++        to_agent: &AgentPubKey,
++        bytes: Vec<u8>,
++        signature: Vec<u8>,
++    ) -> Result<Vec<u8>, String> {
++        let params = verify_signed_params(&bytes, &signature).map_err(|e| e.to_string())?;
++        check_incoming(&params, dna, to_agent, now_us()).map_err(|e| e.to_string())?;
++        let Some(auth) = self.inner.auth.get() else {
++            return Err("call_remote unreachable: recipient cannot receive remote calls".into());
++        };
++        let allowed = auth
++            .get_agent(to_agent)
++            .await
++            .is_some_and(|a| a.capabilities.contains(&Capability::CallRemoteReceive));
++        if !allowed {
++            return Err("call_remote unreachable: recipient cannot receive remote calls".into());
++        }
++        let Some(socket) = proxy.current_sender(dna, to_agent).await else {
++            return Err("call_remote unreachable: recipient not connected".into());
++        };
++        if !take_rate(&self.inner.rate_in, &params.provenance, MAX_IN_PER_WINDOW).await {
++            return Err("call_remote busy: sender rate limited".into());
++        }
++        let request_id = format!(
++            "cr-{}-{:016x}",
++            self.inner.counter.fetch_add(1, Ordering::SeqCst),
++            rand::random::<u64>()
++        );
++        let (tx, rx) = oneshot::channel();
++        {
++            let mut inc = self.inner.inc.lock().await;
++            if inc.len() >= MAX_PENDING_IN
++                || inc.values().filter(|p| &p.agent == to_agent).count() >= MAX_PENDING_IN_PER_AGENT
++            {
++                return Err("call_remote busy: recipient has too many pending calls".into());
++            }
++            inc.insert(
++                request_id.clone(),
++                PendingIn {
++                    dna: dna.clone(),
++                    agent: to_agent.clone(),
++                    socket: socket.clone(),
++                    tx,
++                },
++            );
++        }
++        let frame = ServerMessage::CallRemoteIncoming {
++            request_id: request_id.clone(),
++            dna_hash: dna.to_string(),
++            to_agent: to_agent.to_string(),
++            zome_call_params: b64(&bytes),
++            signature: b64(&signature),
++        };
++        if socket.send(frame).await.is_err() {
++            self.inner.inc.lock().await.remove(&request_id);
++            return Err("call_remote unreachable: recipient disconnected".into());
++        }
++        let result = tokio::time::timeout(INCOMING_TIMEOUT, rx).await;
++        self.inner.inc.lock().await.remove(&request_id);
++        match result {
++            Ok(Ok(r)) => r,
++            Ok(Err(_)) => Err("call_remote unreachable: recipient disconnected".into()),
++            Err(_) => Err("call_remote timed out waiting for recipient".into()),
++        }
++    }
++
++    /// A browser answers an incoming call. Accepted only from the addressed
++    /// agent on the very socket the request was sent to; a mismatch does not
++    /// consume the pending request.
++    pub async fn complete_incoming(
++        &self,
++        request_id: &str,
++        agent: Option<&AgentPubKey>,
++        socket: &WsSender,
++        result: Result<Vec<u8>, String>,
++    ) -> bool {
++        let pending = {
++            let mut inc = self.inner.inc.lock().await;
++            match inc.get(request_id) {
++                Some(p) if Some(&p.agent) == agent && p.socket.same_channel(socket) => {
++                    inc.remove(request_id)
++                }
++                _ => None,
++            }
++        };
++        let Some(p) = pending else {
++            return false;
++        };
++        let result = match result {
++            Ok(bytes) => check_response(&bytes)
++                .map(|_| bytes)
++                .map_err(|e| e.to_string()),
++            Err(e) => Err(e.chars().take(1024).collect()),
++        };
++        tracing::debug!(dna = %p.dna, ok = result.is_ok(), "call_remote answered by browser");
++        p.tx.send(result).is_ok()
++    }
++
++    /// Socket closed or revoked: fail every call waiting on it.
++    pub async fn drop_socket(&self, socket: &WsSender) {
++        self.inner
++            .inc
++            .lock()
++            .await
++            .retain(|_, p| !p.socket.same_channel(socket));
++    }
++
++    /// Handle a native `CallRemoteReq` received by the gateway and reply to
++    /// `from_peer` with `CallRemoteRes` or `ErrorRes`.
++    #[allow(clippy::too_many_arguments)] // mirrors WireMessage::CallRemoteReq fields
++    pub async fn handle_wire_request(
++        &self,
++        proxy: AgentProxyManager,
++        dna: DnaHash,
++        from_peer: Url,
++        msg_id: u64,
++        to_agent: AgentPubKey,
++        params: ExternIO,
++        signature: Signature,
++    ) {
++        let resp = match self
++            .deliver_incoming(&proxy, &dna, &to_agent, params.0, signature.0.to_vec())
++            .await
++        {
++            Ok(bytes) => WireMessage::call_remote_res(
++                msg_id,
++                SerializedBytes::from(UnsafeBytes::from(bytes)),
++            ),
++            Err(error) => WireMessage::ErrorRes { msg_id, error },
++        };
++        let Some(kitsune) = self.inner.kitsune.get() else {
++            return;
++        };
++        let Ok(space) = kitsune.get_or_create_space(&dna).await else {
++            return;
++        };
++        match WireMessage::encode_batch(&[&resp]) {
++            Ok(encoded) => {
++                if let Err(e) = space.send_notify(from_peer, encoded).await {
++                    tracing::debug!(?e, "failed to send call_remote response");
++                }
++            }
++            Err(e) => tracing::warn!(?e, "failed to encode call_remote response"),
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use ed25519_dalek::{Signer, SigningKey};
++    use holochain_types::prelude::{CellId, ExternIO, FunctionName, Nonce256Bits, ZomeName};
++
++    fn key(seed: u8) -> (SigningKey, AgentPubKey) {
++        let sk = SigningKey::from_bytes(&[seed; 32]);
++        let agent = AgentPubKey::from_raw_32(sk.verifying_key().to_bytes().to_vec());
++        (sk, agent)
++    }
++
++    fn dna(id: u8) -> DnaHash {
++        DnaHash::from_raw_32(vec![id; 32])
++    }
++
++    fn params(from: &AgentPubKey, dna: &DnaHash, to: &AgentPubKey, exp_us: i64) -> ZomeCallParams {
++        ZomeCallParams {
++            provenance: from.clone(),
++            cell_id: CellId::new(dna.clone(), to.clone()),
++            zome_name: ZomeName::from("music_storage"),
++            fn_name: FunctionName::from("receive_grant"),
++            cap_secret: None,
++            payload: ExternIO::encode("hello").unwrap(),
++            nonce: Nonce256Bits::from([7u8; 32]),
++            expires_at: Timestamp::from_micros(exp_us),
++        }
++    }
++
++    fn signed(sk: &SigningKey, p: &ZomeCallParams) -> (Vec<u8>, Vec<u8>) {
++        let (bytes, hash) = p.serialize_and_hash().unwrap();
++        (bytes, sk.sign(&hash).to_bytes().to_vec())
++    }
++
++    #[test]
++    fn native_signature_verifies_and_blake2b_or_raw_scheme_does_not() {
++        let (sk, a) = key(1);
++        let (_, b) = key(2);
++        let p = params(&a, &dna(9), &b, now_us() + 60_000_000);
++        let (bytes, sig) = signed(&sk, &p);
++        assert!(verify_signed_params(&bytes, &sig).is_ok());
++        // Signing the raw bytes (not sha2_512) must be rejected.
++        let raw = sk.sign(&bytes).to_bytes().to_vec();
++        assert!(matches!(
++            verify_signed_params(&bytes, &raw),
++            Err(CallRemoteError::Forbidden(_))
++        ));
++    }
++
++    #[test]
++    fn forged_signature_and_tampered_bytes_rejected() {
++        let (sk_a, a) = key(1);
++        let (sk_m, _) = key(3);
++        let (_, b) = key(2);
++        let p = params(&a, &dna(9), &b, now_us() + 60_000_000);
++        let (bytes, _) = signed(&sk_a, &p);
++        let (_, forged) = signed(&sk_m, &p);
++        assert!(verify_signed_params(&bytes, &forged).is_err());
++        let (mut bytes2, sig) = signed(&sk_a, &p);
++        let last = bytes2.len() - 1;
++        bytes2[last] ^= 1;
++        assert!(verify_signed_params(&bytes2, &sig).is_err());
++        assert!(verify_signed_params(&bytes, &sig[..63]).is_err());
++    }
++
++    #[test]
++    fn outgoing_provenance_cell_target_and_expiry_enforced() {
++        let (_, a) = key(1);
++        let (_, b) = key(2);
++        let (_, m) = key(3);
++        let now = now_us();
++        let p = params(&a, &dna(9), &b, now + 60_000_000);
++        assert!(check_outgoing(&p, &a, &dna(9), &b, now).is_ok());
++        // Impersonation: session is m, params claim a.
++        assert!(check_outgoing(&p, &m, &dna(9), &b, now).is_err());
++        // Wrong DNA / target.
++        assert!(check_outgoing(&p, &a, &dna(8), &b, now).is_err());
++        assert!(check_outgoing(&p, &a, &dna(9), &m, now).is_err());
++        // Expired and far future.
++        let p = params(&a, &dna(9), &b, now - 1);
++        assert!(check_outgoing(&p, &a, &dna(9), &b, now).is_err());
++        let p = params(&a, &dna(9), &b, now + WITNESSABLE_EXPIRY_US + 1_000_000);
++        assert!(check_outgoing(&p, &a, &dna(9), &b, now).is_err());
++        // Self call.
++        let p = params(&a, &dna(9), &a, now + 60_000_000);
++        assert!(check_outgoing(&p, &a, &dna(9), &a, now).is_err());
++    }
++
++    #[test]
++    fn incoming_cell_checked() {
++        let (_, a) = key(1);
++        let (_, b) = key(2);
++        let (_, m) = key(3);
++        let now = now_us();
++        let p = params(&a, &dna(9), &b, now + 60_000_000);
++        assert!(check_incoming(&p, &dna(9), &b, now).is_ok());
++        assert!(check_incoming(&p, &dna(9), &m, now).is_err());
++        assert!(check_incoming(&p, &dna(1), &b, now).is_err());
++    }
++
++    #[test]
++    fn response_must_be_zome_call_response() {
++        let ok = holochain_serialized_bytes::encode(&ZomeCallResponse::Ok(
++            ExternIO::encode(1u8).unwrap(),
++        ))
++        .unwrap();
++        assert!(check_response(&ok).is_ok());
++        let ne = holochain_serialized_bytes::encode(&ZomeCallResponse::NetworkError("x".into()))
++            .unwrap();
++        assert!(check_response(&ne).is_ok());
++        assert!(check_response(&[0xc0]).is_err());
++        assert!(check_response(&vec![0u8; MAX_RESPONSE_BYTES + 1]).is_err());
++    }
++
++    async fn socket() -> (WsSender, tokio::sync::mpsc::Receiver<ServerMessage>) {
++        tokio::sync::mpsc::channel(8)
++    }
++
++    #[tokio::test]
++    async fn incoming_fails_closed_without_auth_capability_or_socket() {
++        let relay = CallRemoteRelay::new();
++        let proxy = AgentProxyManager::new();
++        let (sk, a) = key(1);
++        let (_, b) = key(2);
++        let p = params(&a, &dna(9), &b, now_us() + 60_000_000);
++        let (bytes, sig) = signed(&sk, &p);
++        // No auth store configured.
++        let e = relay
++            .deliver_incoming(&proxy, &dna(9), &b, bytes.clone(), sig.clone())
++            .await;
++        assert!(e.unwrap_err().contains("cannot receive"));
++        let store = AuthStore::new();
++        relay.set_auth_store(store.clone());
++        // Allowed but without the capability.
++        store
++            .add_agent(crate::auth::types::AllowedAgent {
++                agent_pubkey: b.clone(),
++                capabilities: [Capability::DhtRead].into_iter().collect(),
++                label: None,
++            })
++            .await;
++        let e = relay
++            .deliver_incoming(&proxy, &dna(9), &b, bytes.clone(), sig.clone())
++            .await;
++        assert!(e.unwrap_err().contains("cannot receive"));
++        store
++            .add_agent(crate::auth::types::AllowedAgent {
++                agent_pubkey: b.clone(),
++                capabilities: [Capability::CallRemoteReceive].into_iter().collect(),
++                label: None,
++            })
++            .await;
++        // Capability but no connected socket.
++        let e = relay
++            .deliver_incoming(&proxy, &dna(9), &b, bytes, sig)
++            .await;
++        assert!(e.unwrap_err().contains("not connected"));
++    }
++
++    #[tokio::test]
++    async fn incoming_routed_only_to_recipient_socket_and_answer_bound_to_it() {
++        let relay = CallRemoteRelay::new();
++        let proxy = AgentProxyManager::new();
++        let store = AuthStore::new();
++        relay.set_auth_store(store.clone());
++        let (sk, a) = key(1);
++        let (_, b) = key(2);
++        let (_, m) = key(3);
++        for agent in [&b, &m] {
++            store
++                .add_agent(crate::auth::types::AllowedAgent {
++                    agent_pubkey: agent.clone(),
++                    capabilities: [Capability::CallRemoteReceive].into_iter().collect(),
++                    label: None,
++                })
++                .await;
++        }
++        let (b_tx, mut b_rx) = socket().await;
++        let (m_tx, mut m_rx) = socket().await;
++        proxy.register(dna(9), b.clone(), b_tx.clone()).await;
++        proxy.register(dna(9), m.clone(), m_tx.clone()).await;
++        let p = params(&a, &dna(9), &b, now_us() + 60_000_000);
++        let (bytes, sig) = signed(&sk, &p);
++        let r2 = relay.clone();
++        let p2 = proxy.clone();
++        let b2 = b.clone();
++        let task =
++            tokio::spawn(async move { r2.deliver_incoming(&p2, &dna(9), &b2, bytes, sig).await });
++        let frame = b_rx.recv().await.unwrap();
++        let ServerMessage::CallRemoteIncoming { request_id, .. } = frame else {
++            panic!("expected call_remote_incoming");
++        };
++        assert!(
++            m_rx.try_recv().is_err(),
++            "other agent must not see the call"
++        );
++        let ok = holochain_serialized_bytes::encode(&ZomeCallResponse::Ok(
++            ExternIO::encode(1u8).unwrap(),
++        ))
++        .unwrap();
++        // Another agent / another socket cannot answer, and does not consume it.
++        assert!(
++            !relay
++                .complete_incoming(&request_id, Some(&m), &m_tx, Ok(ok.clone()))
++                .await
++        );
++        assert!(
++            !relay
++                .complete_incoming(&request_id, Some(&b), &m_tx, Ok(ok.clone()))
++                .await
++        );
++        assert!(
++            relay
++                .complete_incoming(&request_id, Some(&b), &b_tx, Ok(ok.clone()))
++                .await
++        );
++        assert_eq!(task.await.unwrap().unwrap(), ok);
++        // Replayed answer for a finished request is refused.
++        assert!(
++            !relay
++                .complete_incoming(&request_id, Some(&b), &b_tx, Ok(ok))
++                .await
++        );
++        assert_eq!(relay.pending_counts().await, (0, 0));
++    }
++
++    #[tokio::test]
++    async fn disconnect_fails_pending_incoming_and_invalid_answer_is_error() {
++        let relay = CallRemoteRelay::new();
++        let proxy = AgentProxyManager::new();
++        let store = AuthStore::new();
++        relay.set_auth_store(store.clone());
++        let (sk, a) = key(1);
++        let (_, b) = key(2);
++        store
++            .add_agent(crate::auth::types::AllowedAgent {
++                agent_pubkey: b.clone(),
++                capabilities: [Capability::CallRemoteReceive].into_iter().collect(),
++                label: None,
++            })
++            .await;
++        let (b_tx, mut b_rx) = socket().await;
++        proxy.register(dna(9), b.clone(), b_tx.clone()).await;
++        let p = params(&a, &dna(9), &b, now_us() + 60_000_000);
++        let (bytes, sig) = signed(&sk, &p);
++        let (r2, p2, b2, by2, s2) = (
++            relay.clone(),
++            proxy.clone(),
++            b.clone(),
++            bytes.clone(),
++            sig.clone(),
++        );
++        let task =
++            tokio::spawn(async move { r2.deliver_incoming(&p2, &dna(9), &b2, by2, s2).await });
++        let _ = b_rx.recv().await.unwrap();
++        relay.drop_socket(&b_tx).await;
++        assert!(task.await.unwrap().unwrap_err().contains("disconnected"));
++        // Garbage answer -> error, never a success.
++        let (r2, p2, b2) = (relay.clone(), proxy.clone(), b.clone());
++        let task =
++            tokio::spawn(async move { r2.deliver_incoming(&p2, &dna(9), &b2, bytes, sig).await });
++        let ServerMessage::CallRemoteIncoming { request_id, .. } = b_rx.recv().await.unwrap()
++        else {
++            panic!()
++        };
++        assert!(
++            relay
++                .complete_incoming(&request_id, Some(&b), &b_tx, Ok(vec![1, 2, 3]))
++                .await
++        );
++        assert!(task.await.unwrap().is_err());
++    }
++
++    #[tokio::test]
++    async fn response_routing_bound_to_peer() {
++        let relay = CallRemoteRelay::new();
++        let (_, a) = key(1);
++        let peer = Url::from_str("ws://127.0.0.1:1").unwrap();
++        let other = Url::from_str("ws://127.0.0.1:2").unwrap();
++        let (tx, mut rx) = oneshot::channel();
++        relay.inner.out.lock().await.insert(
++            5,
++            PendingOut {
++                peer: peer.clone(),
++                agent: a,
++                tx,
++            },
++        );
++        let msg = WireMessage::ErrorRes {
++            msg_id: 5,
++            error: "x".into(),
++        };
++        assert!(relay.route_response(msg, &other).await.is_ok());
++        assert!(
++            rx.try_recv().is_err(),
++            "wrong peer must not resolve the call"
++        );
++        let msg = WireMessage::ErrorRes {
++            msg_id: 5,
++            error: "x".into(),
++        };
++        assert!(relay.route_response(msg, &peer).await.is_ok());
++        assert!(rx.try_recv().is_ok());
++        // Unknown ids are handed back for DHT routing.
++        let msg = WireMessage::ErrorRes {
++            msg_id: 6,
++            error: "x".into(),
++        };
++        assert!(relay.route_response(msg, &peer).await.is_err());
++    }
++}
+diff --git a/src/gateway_kitsune.rs b/src/gateway_kitsune.rs
+index 0bae42c..c4e3026 100644
+--- a/src/gateway_kitsune.rs
++++ b/src/gateway_kitsune.rs
+@@ -168,10 +168,8 @@ impl KitsuneHandler for KitsuneProxy {
+ /// them to pending DhtQuery requests.
+ #[derive(Debug)]
+ struct ProxySpaceHandler {
+-    #[allow(dead_code)] // Retained for future authenticated native signal routing.
+     space_id: SpaceId,
+-    // Retained for P1 verified signals; deliberately unused in fail-closed P0.
+-    #[allow(dead_code)]
++    // Used for call_remote routing; remote signals stay fail-closed (P0).
+     agent_proxy: AgentProxyManager,
+     /// Shared pending DHT responses for routing responses to DhtQuery requests
+     pending_dht_responses: PendingDhtResponses,
+@@ -237,6 +235,45 @@ impl SpaceHandler for ProxySpaceHandler {
+ impl ProxySpaceHandler {
+     fn handle_wire_message(&self, msg: WireMessage, from_peer: &Url) {
+         match msg {
++            // Standard Holochain call_remote addressed to a hosted browser agent.
++            WireMessage::CallRemoteReq {
++                msg_id,
++                to_agent,
++                zome_call_params_serialized,
++                signature,
++            } => {
++                let proxy = self.agent_proxy.clone();
++                let dna = DnaHash::from_k2_space(&self.space_id);
++                let from_peer = from_peer.clone();
++                tokio::spawn(async move {
++                    let relay = proxy.call_remote().clone();
++                    relay
++                        .handle_wire_request(
++                            proxy,
++                            dna,
++                            from_peer,
++                            msg_id,
++                            to_agent,
++                            zome_call_params_serialized,
++                            signature,
++                        )
++                        .await;
++                });
++            }
++            // call_remote responses are bound to (msg_id, peer); anything else
++            // (including DHT ErrorRes) falls through to the DHT router.
++            msg @ WireMessage::CallRemoteRes { .. } | msg @ WireMessage::ErrorRes { .. } => {
++                let relay = self.agent_proxy.call_remote().clone();
++                let pending = self.pending_dht_responses.clone();
++                let from_peer = from_peer.clone();
++                tokio::spawn(async move {
++                    if let Err(msg) = relay.route_response(msg, &from_peer).await {
++                        if matches!(msg, WireMessage::ErrorRes { .. }) {
++                            pending.route_response(msg).await;
++                        }
++                    }
++                });
++            }
+             WireMessage::RemoteSignalEvt { to_agent, .. } => {
+                 // P0: fail closed. Forwarding the unsigned payload would make
+                 // HWC execute a zome call with unverified sender provenance.
+@@ -249,8 +286,7 @@ impl ProxySpaceHandler {
+             | msg @ WireMessage::GetLinksRes { .. }
+             | msg @ WireMessage::CountLinksRes { .. }
+             | msg @ WireMessage::GetAgentActivityRes { .. }
+-            | msg @ WireMessage::MustGetAgentActivityRes { .. }
+-            | msg @ WireMessage::ErrorRes { .. } => {
++            | msg @ WireMessage::MustGetAgentActivityRes { .. } => {
+                 let msg_id = msg.get_msg_id();
+                 info!(?msg_id, "Routing DHT response to pending request handler");
+                 let pending = self.pending_dht_responses.clone();
+diff --git a/src/lib.rs b/src/lib.rs
+index ec9e0ca..9ed3ca4 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -18,6 +18,7 @@
+ 
+ pub(crate) mod agent_proxy;
+ pub mod auth;
++pub(crate) mod call_remote;
+ pub mod conductor;
+ mod config;
+ pub(crate) mod dht_query;
+diff --git a/src/router.rs b/src/router.rs
+index 4a3c786..6bfeec9 100644
+--- a/src/router.rs
++++ b/src/router.rs
+@@ -100,6 +100,22 @@ fn create_authenticated_router(app_state: AppState, cors: CorsLayer, body_limit:
+             require_dht_write,
+         ));
+ 
++    // Standard call_remote (capability check, then DNA scope check). Only in
++    // the authenticated router: without auth there is no verified provenance.
++    let call_remote_routes = Router::new()
++        .route(
++            "/call_remote/{dna_hash}",
++            post(crate::routes::call_remote::call_remote_send),
++        )
++        .route_layer(axum::middleware::from_fn_with_state(
++            app_state.clone(),
++            require_dna_scope,
++        ))
++        .route_layer(axum::middleware::from_fn_with_state(
++            app_state.clone(),
++            crate::auth::middleware::require_call_remote_send,
++        ));
++
+     // K2 routes
+     let k2_routes = kitsune_routes()
+         .with_state(app_state.kitsune_state.clone())
+@@ -125,6 +141,7 @@ fn create_authenticated_router(app_state: AppState, cors: CorsLayer, body_limit:
+         // Protected routes
+         .merge(dht_read_routes)
+         .merge(dht_write_routes)
++        .merge(call_remote_routes)
+         .nest("/k2", k2_routes)
+         .nest("/admin", admin_routes)
+         .with_state(app_state)
+diff --git a/src/routes/call_remote.rs b/src/routes/call_remote.rs
+new file mode 100644
+index 0000000..ac1b80d
+--- /dev/null
++++ b/src/routes/call_remote.rs
+@@ -0,0 +1,107 @@
++//! `POST /call_remote/{dna_hash}`: outgoing standard Holochain call_remote
++//! for the authenticated session agent. See `crate::call_remote`.
++
++use crate::auth::types::AuthContext;
++use crate::call_remote::CallRemoteError;
++use crate::service::AppState;
++use axum::extract::{Path, State};
++use axum::http::StatusCode;
++use axum::response::{IntoResponse, Response};
++use axum::{Extension, Json};
++use base64::Engine;
++use holochain_types::prelude::{AgentPubKey, DnaHash};
++use serde::{Deserialize, Serialize};
++
++#[derive(Debug, Deserialize)]
++pub struct CallRemoteRequest {
++    /// Target agent (HoloHash string).
++    pub target_agent: String,
++    /// base64 of the exact signed `ZomeCallParams` bytes.
++    pub zome_call_params: String,
++    /// base64 Ed25519 signature over sha2_512(zome_call_params).
++    pub signature: String,
++}
++
++#[derive(Debug, Serialize)]
++pub struct CallRemoteReply {
++    /// base64 msgpack `ZomeCallResponse` exactly as returned by the recipient.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub response: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub error: Option<String>,
++}
++
++fn reply(status: StatusCode, error: String) -> Response {
++    (
++        status,
++        Json(CallRemoteReply {
++            response: None,
++            error: Some(error),
++        }),
++    )
++        .into_response()
++}
++
++pub async fn call_remote_send(
++    Path(dna_hash): Path<String>,
++    State(state): State<AppState>,
++    auth: Option<Extension<AuthContext>>,
++    Json(body): Json<CallRemoteRequest>,
++) -> Response {
++    // Only reachable through the authenticated router; fail closed otherwise.
++    let Some(Extension(auth)) = auth else {
++        return reply(
++            StatusCode::UNAUTHORIZED,
++            "authenticated session required".into(),
++        );
++    };
++    let Ok(dna) = DnaHash::try_from(dna_hash.as_str()) else {
++        return reply(StatusCode::BAD_REQUEST, "invalid DNA hash".into());
++    };
++    if !auth.has_dna(&dna) {
++        return reply(StatusCode::FORBIDDEN, "DNA not in session scope".into());
++    }
++    let Ok(target) = AgentPubKey::try_from(body.target_agent.as_str()) else {
++        return reply(StatusCode::BAD_REQUEST, "invalid target agent".into());
++    };
++    let engine = base64::engine::general_purpose::STANDARD;
++    let (Ok(bytes), Ok(signature)) = (
++        engine.decode(&body.zome_call_params),
++        engine.decode(&body.signature),
++    ) else {
++        return reply(StatusCode::BAD_REQUEST, "invalid base64".into());
++    };
++    let relay = state.agent_proxy.call_remote().clone();
++    match relay
++        .send(
++            &state.agent_proxy,
++            &auth.agent_pubkey,
++            &dna,
++            &target,
++            bytes,
++            signature,
++        )
++        .await
++    {
++        Ok(response) => (
++            StatusCode::OK,
++            Json(CallRemoteReply {
++                response: Some(engine.encode(response)),
++                error: None,
++            }),
++        )
++            .into_response(),
++        Err(e) => {
++            let status = match &e {
++                CallRemoteError::Malformed(_) => StatusCode::BAD_REQUEST,
++                CallRemoteError::Forbidden(_) => StatusCode::FORBIDDEN,
++                CallRemoteError::Busy(_) => StatusCode::TOO_MANY_REQUESTS,
++                CallRemoteError::Unreachable(_) | CallRemoteError::Remote(_) => {
++                    StatusCode::BAD_GATEWAY
++                }
++                CallRemoteError::Timeout => StatusCode::GATEWAY_TIMEOUT,
++            };
++            reply(status, e.to_string())
++        }
++    }
++}
+diff --git a/src/routes/mod.rs b/src/routes/mod.rs
+index ff3b751..bb3a8e4 100644
+--- a/src/routes/mod.rs
++++ b/src/routes/mod.rs
+@@ -9,6 +9,7 @@
+ //! - `/test/*` - Test endpoints for development
+ //! - `/health` - Health check endpoint
+ 
++pub mod call_remote;
+ pub mod dht;
+ pub mod health;
+ pub mod kitsune;
+diff --git a/src/routes/websocket.rs b/src/routes/websocket.rs
+index 9c70b1c..4746034 100644
+--- a/src/routes/websocket.rs
++++ b/src/routes/websocket.rs
+@@ -78,6 +78,13 @@ pub enum ClientMessage {
+         envelope: RoleEnvelope,
+         signature: String,
+     },
++    /// Answer to a `call_remote_incoming`: base64 msgpack `ZomeCallResponse`
++    /// produced by this agent's browser cell, or an error (sent as ErrorRes).
++    CallRemoteResponse {
++        request_id: String,
++        response: Option<String>,
++        error: Option<String>,
++    },
+     /// Send remote signals to target agents via kitsune2.
+     SendRemoteSignal {
+         /// DNA hash (base64 encoded).
+@@ -146,6 +153,17 @@ pub enum ServerMessage {
+     },
+     /// Queued to an authenticated live socket, not an application receipt.
+     RoleQueuedV1 { message_id: String },
++    /// Standard Holochain call_remote addressed to this socket's agent. The
++    /// browser must verify, authorise and answer with `call_remote_response`.
++    CallRemoteIncoming {
++        request_id: String,
++        dna_hash: String,
++        to_agent: String,
++        /// base64 of the exact signed `ZomeCallParams` bytes.
++        zome_call_params: String,
++        /// base64 Ed25519 signature over sha2_512(zome_call_params).
++        signature: String,
++    },
+     RoleRequestV1 {
+         envelope: RoleEnvelope,
+         signature: String,
+@@ -369,7 +387,13 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
+             msg = receiver.next() => {
+                 match msg {
+                     Some(Ok(Message::Text(text))) => {
+-                        if text.len() > private_role::MAX_FRAME_BYTES {
++                        // Only a call_remote answer may exceed the role frame limit.
++                        let limit = if text.starts_with(r#"{"type":"call_remote_response""#) {
++                            crate::call_remote::MAX_RESPONSE_FRAME_BYTES
++                        } else {
++                            private_role::MAX_FRAME_BYTES
++                        };
++                        if text.len() > limit {
+                             let _ = tx.send(ServerMessage::Error {
+                                 message: "frame_too_large".into(),
+                             }).await;
+@@ -758,6 +782,44 @@ async fn handle_client_message(
+             None
+         }
+ 
++        ClientMessage::CallRemoteResponse {
++            request_id,
++            response,
++            error,
++        } => {
++            if !state.authenticated {
++                return Some(ServerMessage::Error {
++                    message: "Not authenticated".into(),
++                });
++            }
++            let result = match (response, error) {
++                (Some(encoded), None) => {
++                    match base64::engine::general_purpose::STANDARD.decode(&encoded) {
++                        Ok(bytes) => Ok(bytes),
++                        Err(_) => Err("invalid call_remote response encoding".to_string()),
++                    }
++                }
++                (None, Some(reason)) => Err(reason),
++                _ => Err("invalid call_remote response".to_string()),
++            };
++            if !app_state
++                .agent_proxy
++                .call_remote()
++                .complete_incoming(
++                    &request_id,
++                    state.authenticated_agent.as_ref(),
++                    sender,
++                    result,
++                )
++                .await
++            {
++                return Some(ServerMessage::Error {
++                    message: "Unknown or unauthorized call_remote response".into(),
++                });
++            }
++            None
++        }
++
+         ClientMessage::SendRemoteSignal {
+             dna_hash,
+             signals: _,
+diff --git a/src/service.rs b/src/service.rs
+index 9c95588..24388f8 100644
+--- a/src/service.rs
++++ b/src/service.rs
+@@ -121,6 +121,7 @@ impl LinkerService {
+                 Ok(k) => {
+                     tracing::info!("Kitsune2 instance created successfully");
+                     let gw_kitsune = GatewayKitsune::new(k.clone(), agent_proxy.clone());
++                    agent_proxy.call_remote().set_kitsune(gw_kitsune.clone());
+                     // Create DhtQuery with the same pending responses, plus (unless
+                     // disabled via H2HC_LINKER_LOCAL_AUTHORITY_FALLBACK) this
+                     // gateway's publish buffer so co-located zero-arc agents can see
+@@ -193,7 +194,9 @@ impl LinkerService {
+                         )
+                     }
+                 };
+-            Some(AuthStore::with_store(session_store))
++            let store = AuthStore::with_store(session_store);
++            agent_proxy.call_remote().set_auth_store(store.clone());
++            Some(store)
+         } else {
+             tracing::info!("Authentication disabled (no H2HC_LINKER_ADMIN_SECRET)");
+             None

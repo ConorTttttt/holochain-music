@@ -17,8 +17,8 @@
  *    need the matching secret (Unrestricted needs none).
  *
  * This module is transport-independent and has no side effects except the
- * nonce witness. It is NOT yet wired into HWC: the gateway does not deliver
- * CallRemoteReq to browser agents (see docs/web/call-remote.md).
+ * nonce witness. The runtime wiring (persistent witness, live grants from the
+ * source chain, dedicated execution entry point) is in remote-call-runtime.ts.
  */
 import sodium from 'libsodium-wrappers';
 import { decode, encode } from '@msgpack/msgpack';
@@ -43,14 +43,26 @@ export type CapAccess =
   | { Assigned: { secret: Uint8Array; assignees: Uint8Array[] } };
 export interface ZomeCallCapGrant { tag: string; access: CapAccess; functions: GrantedFunctions }
 
+/**
+ * Which native outcome a denial corresponds to:
+ *  - 'authentication': undecodable params or bad signature (native: error, ErrorRes)
+ *  - 'cell': params addressed to another cell (native: no such cell, ErrorRes)
+ *  - 'nonce': ZomeCallResponse::Unauthorized(BadNonce(..))
+ *  - 'capability': ZomeCallResponse::Unauthorized(BadCapGrant)
+ */
+export type DenialKind = 'authentication' | 'cell' | 'nonce' | 'capability';
+
 export class RemoteCallDenied extends Error {
-  constructor(public readonly reason: string) {
+  constructor(public readonly reason: string, public readonly kind: DenialKind = 'authentication',
+              public readonly params?: ZomeCallParams) {
     super(`call_remote denied: ${reason}`);
     this.name = 'RemoteCallDenied';
   }
 }
 
-const deny = (reason: string): never => { throw new RemoteCallDenied(reason); };
+const deny = (reason: string, kind: DenialKind = 'authentication', params?: ZomeCallParams): never => {
+  throw new RemoteCallDenied(reason, kind, params);
+};
 
 /** SHA-512 (holo_hash::sha2_512). */
 export function sha512(bytes: Uint8Array): Uint8Array {
@@ -156,16 +168,30 @@ export interface AuthorizeInput {
   nowUs: number;
 }
 
-/** Native order: decode → signature → target cell → nonce → grant. Returns the params to execute. */
-export function authorizeRemoteCall(input: AuthorizeInput): ZomeCallParams {
+export interface AuthorizedRemoteCall {
+  params: ZomeCallParams;
+  /** The grant that authorised a non-author caller (null for the chain author). */
+  grant: ZomeCallCapGrant | null;
+  /** Native WitnessNonceResult of the accepted call (always Fresh). */
+  nonce: 'Fresh';
+}
+
+/** Native order: decode → signature → target cell → nonce → grant. */
+export function authorizeRemoteCallDetailed(input: AuthorizeInput): AuthorizedRemoteCall {
   const params = decodeZomeCallParams(input.bytes);
   verifyZomeCallSignature(input.bytes, input.signature, params.provenance);
-  if (!eq(params.cell_id[0], input.localCell[0]) || !eq(params.cell_id[1], input.localCell[1])) deny('call is for a different cell');
-  const nonce = input.witness.witness(params.provenance, params.nonce, input.nowUs, params.expires_at);
-  if (nonce !== 'Fresh') deny(`nonce ${nonce.toLowerCase()}`);
-  const author = eq(params.provenance, input.localCell[1]);
-  if (!author && !input.grants.some(g => capGrantIsValid(g, params.zome_name, params.fn_name, params.provenance, params.cap_secret))) {
-    deny('no capability grant authorises this caller and function');
+  if (!eq(params.cell_id[0], input.localCell[0]) || !eq(params.cell_id[1], input.localCell[1])) {
+    deny('call is for a different cell', 'cell', params);
   }
-  return params;
+  const nonce = input.witness.witness(params.provenance, params.nonce, input.nowUs, params.expires_at);
+  if (nonce !== 'Fresh') deny(`nonce ${nonce.toLowerCase()}`, 'nonce', params);
+  if (eq(params.provenance, input.localCell[1])) return { params, grant: null, nonce: 'Fresh' };
+  const grant = input.grants.find(g => capGrantIsValid(g, params.zome_name, params.fn_name, params.provenance, params.cap_secret));
+  if (!grant) deny('no capability grant authorises this caller and function', 'capability', params);
+  return { params, grant: grant!, nonce: 'Fresh' };
+}
+
+/** Returns the params to execute (see authorizeRemoteCallDetailed). */
+export function authorizeRemoteCall(input: AuthorizeInput): ZomeCallParams {
+  return authorizeRemoteCallDetailed(input).params;
 }

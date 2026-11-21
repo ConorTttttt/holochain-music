@@ -1,0 +1,649 @@
+diff --git a/packages/core/src/network/websocket-service.ts b/packages/core/src/network/websocket-service.ts
+index fb38b03..99b6534 100644
+--- a/packages/core/src/network/websocket-service.ts
++++ b/packages/core/src/network/websocket-service.ts
+@@ -39,6 +39,7 @@ export type ClientMessage =
+   | { type: "auth"; agent_pubkey: string }
+   | { type: "auth_challenge_response"; signature: string }
+   | { type: "register"; dna_hash: string; agent_pubkey: string }
++  | { type: "call_remote_response"; request_id: string; response?: string; error?: string }
+   | { type: "unregister"; dna_hash: string; agent_pubkey: string }
+   | { type: "ping" }
+   // Only the restricted role service is allowed to emit these two operations.
+@@ -82,8 +83,27 @@ export type ServerMessage =
+       request_id: string;
+       agent_pubkey: string; // HoloHash base64-encoded agent public key
+       agent_info: AgentInfoFields; // structured agent info for validation
++    }
++  // Standard Holochain call_remote addressed to this socket's agent. The
++  // extension verifies and authorises it in the ribosome before executing.
++  | {
++      type: "call_remote_incoming";
++      request_id: string;
++      dna_hash: string;
++      to_agent: string;
++      zome_call_params: string; // base64 signed ZomeCallParams bytes
++      signature: string; // base64
+     };
+ 
++/** Incoming call_remote handed to the extension (never to a webpage). */
++export interface IncomingRemoteCall {
++  requestId: string;
++  dnaHash: string;
++  toAgent: string;
++  paramsBytes: Uint8Array;
++  signature: Uint8Array;
++}
++
+ /**
+  * Connection state
+  */
+@@ -160,6 +180,7 @@ export class WebSocketNetworkService {
+   private registrations: AgentRegistration[] = [];
+   private pendingRegistrations: AgentRegistration[] = [];
+   private signalCallback: SignalCallback | null = null;
++  private remoteCallCallback: ((call: IncomingRemoteCall) => void) | null = null;
+   private restrictedRoleCallback: ((frame: string, lease: string) => void) | null = null;
+   // Generated ONLY after successful signed WS auth, invalidated on any close.
+   // A registration becomes trusted only after an actual server 'registered' ACK.
+@@ -232,6 +253,24 @@ export class WebSocketNetworkService {
+   /**
+    * Set signal callback
+    */
++  /** Register the extension-internal handler for incoming call_remote. */
++  onRemoteCall(callback: (call: IncomingRemoteCall) => void): void {
++    this.remoteCallCallback = callback;
++  }
++
++  /**
++   * Answer an incoming call_remote on this socket: the recipient's msgpack
++   * ZomeCallResponse bytes, or an error the gateway sends as ErrorRes.
++   */
++  respondRemoteCall(requestId: string, result: { response: Uint8Array } | { error: string }): void {
++    const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
++    this.send({
++      type: "call_remote_response",
++      request_id: requestId,
++      ...("response" in result ? { response: b64(result.response) } : { error: result.error.slice(0, 1024) }),
++    });
++  }
++
+   onSignal(callback: SignalCallback): void {
+     this.signalCallback = callback;
+   }
+@@ -570,6 +609,32 @@ export class WebSocketNetworkService {
+           this.handleSignal(message);
+           break;
+ 
++        case "call_remote_incoming": {
++          // Only for an authenticated socket whose agent is the addressee and
++          // whose registration for that DNA was acknowledged by the gateway.
++          const decodeB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
++          // Gateway-acknowledged registration on THIS socket (same set the
++          // restricted role receiver uses; cleared on reconnect/unregister).
++          const registered = this.hasRestrictedRoleRegistration(message.dna_hash, message.to_agent);
++          if (!this.isAuthenticated() || this.authenticatedAgent !== message.to_agent || !registered ||
++              !this.remoteCallCallback) {
++            this.respondRemoteCall(message.request_id, { error: "call_remote unreachable: recipient not ready" });
++            break;
++          }
++          try {
++            this.remoteCallCallback({
++              requestId: message.request_id,
++              dnaHash: message.dna_hash,
++              toAgent: message.to_agent,
++              paramsBytes: decodeB64(message.zome_call_params),
++              signature: decodeB64(message.signature),
++            });
++          } catch {
++            this.respondRemoteCall(message.request_id, { error: "call_remote refused: malformed frame" });
++          }
++          break;
++        }
++
+         case "role_request_v1":
+         case "role_delivery_v1": {
+           const raw = typeof event.data === "string" ? event.data : "";
+diff --git a/packages/core/src/ribosome/call-context.ts b/packages/core/src/ribosome/call-context.ts
+index bdf09a2..7607d45 100644
+--- a/packages/core/src/ribosome/call-context.ts
++++ b/packages/core/src/ribosome/call-context.ts
+@@ -99,6 +99,12 @@ export interface CallContext {
+   /** Whether this context is running inside a validate callback */
+   isValidationContext?: boolean;
+ 
++  /**
++   * Capability grant that authorised a verified remote caller (incoming
++   * call_remote). Undefined for local calls (the chain author).
++   */
++  remoteCapGrant?: unknown;
++
+   /**
+    * Whether this context is running inside the DNA's `init` callback.
+    *
+diff --git a/packages/core/src/ribosome/host-fn/call.ts b/packages/core/src/ribosome/host-fn/call.ts
+index 568e905..4c20492 100644
+--- a/packages/core/src/ribosome/host-fn/call.ts
++++ b/packages/core/src/ribosome/host-fn/call.ts
+@@ -21,6 +21,59 @@ import { extractPtrAndLen } from "../runtime";
+ import { getHostFunctionRegistry } from "./index";
+ import { toUint8Array } from "../../utils/bytes";
+ import type { CallContext } from "../call-context";
++import { getLairClient } from "../../signing";
++import {
++  signOutgoingCall, getCallRemoteTransport, decodeZomeCallResponse,
++  type ZomeCallResponseValue,
++} from "../../remote-call/remote-call-runtime";
++
++/**
++ * CallTarget::NetworkAgent — standard Holochain call_remote
++ * (holochain 0.7 host_fn/call.rs). The provenance is always this cell's own
++ * agent; params are signed (sha2_512 + Ed25519 via Lair) here and sent through
++ * the authenticated gateway. Transport failures become NetworkError, like
++ * native; the response is the recipient's own ZomeCallResponse.
++ */
++function callNetworkAgent(callContext: CallContext, targetAgent: unknown, callObj: any,
++                          field: (o: any, k: string) => any): ZomeCallResponseValue {
++  if (callContext.isValidationContext || callContext.isInitCallback) {
++    // Native denies write_network to validation; init may not block on peers here.
++    throw new Error('[HostFn:call] call_remote is not permitted in this context');
++  }
++  const target = targetAgent instanceof Uint8Array ? targetAgent
++    : Array.isArray(targetAgent) ? new Uint8Array(targetAgent) : null;
++  if (!target || target.length !== 39) throw new Error('[HostFn:call] Invalid NetworkAgent target');
++  const zomeName = field(callObj, 'zome_name');
++  const fnName = field(callObj, 'fn_name');
++  if (typeof zomeName !== 'string' || typeof fnName !== 'string') {
++    throw new Error('[HostFn:call] Missing zome_name or fn_name');
++  }
++  const rawSecret = field(callObj, 'cap_secret');
++  const capSecret = rawSecret == null ? null
++    : rawSecret instanceof Uint8Array ? rawSecret : new Uint8Array(rawSecret);
++  const rawPayload = field(callObj, 'payload');
++  const payload = rawPayload instanceof Uint8Array ? rawPayload
++    : Array.isArray(rawPayload) ? new Uint8Array(rawPayload) : new Uint8Array([0xc0]);
++  const network = getCallRemoteTransport();
++  if (!network) {
++    return { NetworkError: 'call_remote transport unavailable' };
++  }
++  const [dnaHash, agent] = callContext.cellId;
++  const signed = signOutgoingCall(getLairClient(), { dnaHash, agent }, target, zomeName, fnName,
++                                  capSecret, payload, Date.now() * 1000);
++  let reply: ReturnType<typeof network.callRemoteSync>;
++  try {
++    reply = network.callRemoteSync(dnaHash, target, signed.bytes, signed.signature);
++  } catch (e) {
++    return { NetworkError: e instanceof Error ? e.message : String(e) };
++  }
++  if (!reply.ok) return { NetworkError: reply.error };
++  try {
++    return decodeZomeCallResponse(reply.response);
++  } catch {
++    return { NetworkError: 'invalid call_remote response' };
++  }
++}
+ 
+ /**
+  * Cross-zome call host function.
+@@ -59,6 +112,11 @@ export const call: HostFunctionImpl = (context, inputPtr, inputLen) => {
+     throw new Error(`[HostFn:call] Missing target (keys=${keys})`);
+   }
+ 
++  const networkAgent = field(target, 'NetworkAgent');
++  if (networkAgent !== undefined) {
++    return serializeResult(callerInstance, [callNetworkAgent(callContext, networkAgent, callObj, field)]);
++  }
++
+   // Extract ConductorCell from target
+   // CallTarget::ConductorCell(CallTargetCell::Local) → { ConductorCell: "Local" }
+   const conductorCell = field(target, 'ConductorCell');
+diff --git a/packages/core/src/ribosome/host-fn/call_info.ts b/packages/core/src/ribosome/host-fn/call_info.ts
+index c4b6c39..1938980 100644
+--- a/packages/core/src/ribosome/host-fn/call_info.ts
++++ b/packages/core/src/ribosome/host-fn/call_info.ts
+@@ -87,8 +87,9 @@ export const callInfo: HostFunctionImpl = (context, inputPtr, inputLen) => {
+     ? [chainHead.actionHash as ActionHash, chainHead.actionSeq, timestamp]
+     : [new Uint8Array(39) as ActionHash, 0, timestamp];
+ 
+-  // For local calls, cap_grant is ChainAuthor with the agent's pubkey
+-  const capGrant: CapGrant = { ChainAuthor: agentPubKey };
++  // Local calls: ChainAuthor. Verified incoming call_remote: the grant that
++  // authorised the caller ({ RemoteAgent }) or ChainAuthor for the author.
++  const capGrant: CapGrant = (callContext.remoteCapGrant as CapGrant | undefined) ?? { ChainAuthor: agentPubKey };
+ 
+   const callInfoData: CallInfo = {
+     provenance: callContext.provenance as AgentPubKey,
+diff --git a/packages/core/src/ribosome/index.ts b/packages/core/src/ribosome/index.ts
+index 456184f..7b1209a 100644
+--- a/packages/core/src/ribosome/index.ts
++++ b/packages/core/src/ribosome/index.ts
+@@ -43,6 +43,18 @@ import {
+   timeAsync,
+ } from "./perf";
+ import { buildRecords, buildSignedActionHashedArray } from "../dht/record-converter";
++import {
++  authorizeIncoming, encodeZomeCallResponse, hasNonceWitness,
++} from "../remote-call/remote-call-runtime";
++import { encode as msgpackEncode } from "@msgpack/msgpack";
++
++/**
++ * Requests created by callZomeRemote() after full call_remote authorisation
++ * (signature, cell, persistent nonce, live capability grant). A WeakMap keyed
++ * by the request object cannot be forged by any caller that builds its own
++ * request, so the general (webpage) path keeps refusing foreign provenance.
++ */
++const authorizedRemoteRequests = new WeakMap<ZomeCallRequest, { provenance: Uint8Array; grant: unknown }>();
+ import type { Record as HolochainRecord, SignedActionHashed } from "@holochain/client";
+ 
+ /**
+@@ -60,6 +72,9 @@ export interface ZomeCallResult {
+ 
+   /** Remote signals queued for delivery via kitsune2 network */
+   remoteSignals?: QueuedRemoteSignal[];
++
++  /** The zome function's raw ExternIO Ok bytes (for ZomeCallResponse::Ok). */
++  rawOk?: Uint8Array;
+ }
+ 
+ /**
+@@ -103,8 +118,10 @@ export async function callZome(request: ZomeCallRequest): Promise<ZomeCallResult
+   // a remote caller may NOT be treated as the local ChainAuthor. This also
+   // prevents call_info() from incorrectly reporting ChainAuthor for a spoof.
+   const [dnaHash, agentPubKey] = cellId;
+-  if (provenance.length !== agentPubKey.length ||
+-      !provenance.every((b, i) => b === agentPubKey[i])) {
++  const remoteAuth = authorizedRemoteRequests.get(request);
++  const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
++  if (!sameBytes(provenance, agentPubKey) &&
++      !(remoteAuth && sameBytes(remoteAuth.provenance, provenance))) {
+     throw new Error('Unauthenticated remote provenance: capability verification unavailable');
+   }
+ 
+@@ -215,6 +232,7 @@ export async function callZome(request: ZomeCallRequest): Promise<ZomeCallResult
+       dnaManifest,
+       isInitCallback,
+       initProperties,
++      remoteCapGrant: remoteAuth?.grant ?? undefined,
+     };
+ 
+     // Create a mutable instance reference that will be updated after instantiation
+@@ -334,6 +352,7 @@ export async function callZome(request: ZomeCallRequest): Promise<ZomeCallResult
+     // ExternResult is serialized as { Err: { ... } } or { Ok: value }
+     // When zome returns Err(...), we should rollback, not commit
+     let unwrappedResult = result;
++    let rawOk: Uint8Array | undefined;
+     if (result && typeof result === 'object') {
+       if ('Err' in result) {
+         log.debug(' Zome returned error, rolling back transaction');
+@@ -350,6 +369,7 @@ export async function callZome(request: ZomeCallRequest): Promise<ZomeCallResult
+ 
+         // If Ok value is Uint8Array (ExternIO), decode it
+         if (okValue instanceof Uint8Array) {
++          rawOk = okValue;
+           const { decode } = await import('@msgpack/msgpack');
+           okValue = decode(okValue);
+           log.debug(' Decoded ExternIO Ok value');
+@@ -456,6 +476,7 @@ export async function callZome(request: ZomeCallRequest): Promise<ZomeCallResult
+       signals: allSignals,
+       pendingRecords: [...(pendingRecords || []), ...initPublishRecords],
+       remoteSignals: context.remoteSignals,
++      rawOk,
+     };
+   } catch (error) {
+     // Rollback transaction on any error - discard all chain updates
+@@ -654,3 +675,68 @@ export type {
+ export type { HostFunctionContext, HostFunctionImpl } from "./host-fn/base";
+ export { getHostFunctionRegistry } from "./host-fn";
+ export { RibosomeError, RibosomeErrorType } from "./error";
++
++
++/** Outcome of an incoming call_remote: exactly one of response / error. */
++export interface RemoteZomeCallResult {
++  /** msgpack ZomeCallResponse for CallRemoteRes (Ok or Unauthorized). */
++  response?: Uint8Array;
++  /** Error text for ErrorRes (authentication failure, wrong cell, zome error). */
++  error?: string;
++  /** The executed call's result (records to publish, signals). */
++  result?: ZomeCallResult;
++}
++
++/**
++ * Dedicated entry point for an incoming standard Holochain call_remote.
++ *
++ * The zome, function, payload and provenance are taken ONLY from the signed
++ * ZomeCallParams after authorisation, never from the transport. Requires a
++ * persistent nonce witness; refuses uninitialised cells (native would run
++ * init, HWC initialises cells at install time).
++ */
++export async function callZomeRemote(
++  base: Pick<ZomeCallRequest, 'dnaWasm' | 'cellId' | 'dnaManifest' | 'initProperties'>,
++  paramsBytes: Uint8Array,
++  signature: Uint8Array,
++  nowUs: number = Date.now() * 1000,
++): Promise<RemoteZomeCallResult> {
++  if (!hasStorageProvider()) return { error: 'call_remote unavailable: no storage' };
++  const storage = getStorageProvider();
++  if (!hasNonceWitness(storage)) {
++    return { error: 'call_remote unavailable: no persistent nonce witness' };
++  }
++  const [dnaHash, agentPubKey] = base.cellId;
++  if (!storage.queryActions(dnaHash, agentPubKey, { actionType: 'InitZomesComplete' })?.length) {
++    return { error: 'call_remote refused: cell not initialised' };
++  }
++  await sodium.ready;
++  const outcome = authorizeIncoming(storage as any, [dnaHash, agentPubKey], paramsBytes, signature, nowUs);
++  if (!outcome.execute) return { response: outcome.response, error: outcome.error };
++  const { params, grant } = outcome.execute;
++  // Native: "init" is reserved; once initialised it answers Pass without running.
++  if (params.fn_name === 'init') {
++    return { response: encodeZomeCallResponse({ Ok: new Uint8Array(msgpackEncode('Pass')) }) };
++  }
++  const request: ZomeCallRequest = {
++    ...base,
++    zome: params.zome_name,
++    fn: params.fn_name,
++    payload: params.payload,
++    provenance: params.provenance,
++  };
++  authorizedRemoteRequests.set(request, {
++    provenance: params.provenance,
++    // call_info().cap_grant: CapGrant::RemoteAgent(ZomeCallCapGrant) in native serde form.
++    grant: grant ? { RemoteAgent: (grant as { raw?: unknown }).raw ?? grant } : { ChainAuthor: agentPubKey },
++  });
++  try {
++    const result = await callZome(request);
++    const ok = result.rawOk ?? new Uint8Array(msgpackEncode(result.result ?? null));
++    return { response: encodeZomeCallResponse({ Ok: ok }), result };
++  } catch (e) {
++    return { error: e instanceof Error ? e.message : String(e) };
++  } finally {
++    authorizedRemoteRequests.delete(request);
++  }
++}
+diff --git a/packages/core/src/storage/sqlite-schema.ts b/packages/core/src/storage/sqlite-schema.ts
+index 3595494..05baa6e 100644
+--- a/packages/core/src/storage/sqlite-schema.ts
++++ b/packages/core/src/storage/sqlite-schema.ts
+@@ -93,6 +93,15 @@ CREATE INDEX IF NOT EXISTS idx_links_cell_base ON links(cell_id, base_address);
+ CREATE INDEX IF NOT EXISTS idx_links_cell_base_type ON links(cell_id, base_address, link_type);
+ CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_address);
+ 
++-- Witnessed call_remote nonces (persistent replay protection, native
++-- witness_nonce semantics). PRIMARY KEY makes witnessing atomic.
++CREATE TABLE IF NOT EXISTS remote_call_nonces (
++  agent TEXT NOT NULL,
++  nonce TEXT NOT NULL,
++  expires_us INTEGER NOT NULL,
++  PRIMARY KEY (agent, nonce)
++);
++
+ -- Chain heads table (one per cell)
+ CREATE TABLE IF NOT EXISTS chain_heads (
+   cell_id TEXT PRIMARY KEY,
+diff --git a/packages/extension/src/offscreen/index.ts b/packages/extension/src/offscreen/index.ts
+index 1f96ffc..adb4da5 100644
+--- a/packages/extension/src/offscreen/index.ts
++++ b/packages/extension/src/offscreen/index.ts
+@@ -20,7 +20,7 @@ import {
+ } from "@hwc/core/network";
+ import { PublishService, PublishTracker, retryPublishesAfterReconnect } from "@hwc/core/dht";
+ import { toUint8Array, normalizeUint8Arrays, serializeForTransport } from "@hwc/core";
+-import { encodeHashToBase64 } from "@holochain/client";
++import { encodeHashToBase64, decodeHashFromBase64 } from "@holochain/client";
+ import type { Record as HolochainRecord, DnaHash } from "@holochain/client";
+ import { createLogger, setLogFilter, getLogFilter } from "../lib/logger";
+ 
+@@ -417,6 +417,64 @@ function handleSendRemoteSignals(data: { dnaHash: number[]; signals: any[] }): v
+   wsService.sendRemoteSignals(dnaHashB64, data.signals);
+ }
+ 
++/**
++ * Incoming standard call_remote: find the enabled installed cell for exactly
++ * (dna, agent), run it through the worker's authorised entry point (which
++ * verifies signature, cell, persistent nonce and capability grant), publish
++ * resulting records, and answer on the same socket. The answer is the
++ * worker's own ZomeCallResponse or an error; never a fabricated success.
++ */
++async function handleIncomingRemoteCall(call: {
++  requestId: string; dnaHash: string; toAgent: string; paramsBytes: Uint8Array; signature: Uint8Array;
++}): Promise<void> {
++  const socket = wsService;
++  if (!socket) return;
++  const answer = (result: { response: Uint8Array } | { error: string }) => {
++    // A replaced socket's request was already failed by the gateway.
++    if (socket === wsService && socket.isConnected()) socket.respondRemoteCall(call.requestId, result);
++  };
++  try {
++    const dnaHash = decodeHashFromBase64(call.dnaHash);
++    const agent = decodeHashFromBase64(call.toAgent);
++    const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
++    await initRibosomeWorker();
++    const contexts = await storage.listContexts();
++    let found: { dna: any } | null = null;
++    for (const ctx of contexts) {
++      if (ctx.status !== 'enabled' || !same(toUint8Array(ctx.agentPubKey), agent)) continue;
++      const dna = ctx.dnas.find((d) => same(toUint8Array(d.hash), dnaHash));
++      if (dna) { found = { dna }; break; }
++    }
++    if (!found) {
++      answer({ error: 'call_remote unreachable: no such cell' });
++      return;
++    }
++    const dnaHashKey = getDnaHashKey(dnaHash);
++    const wasmAlreadySent = sentWasmHashes.has(dnaHashKey);
++    const dnaWasm = wasmAlreadySent ? [] : Array.from(toUint8Array(found.dna.wasm));
++    sentWasmHashes.add(dnaHashKey);
++    const result = await sendToWorker('CALL_ZOME_REMOTE', {
++      dnaWasm,
++      cellId: [Array.from(dnaHash), Array.from(agent)],
++      dnaManifest: found.dna.manifest ? normalizeUint8Arrays(found.dna.manifest) : undefined,
++      paramsBytes: Array.from(call.paramsBytes),
++      signature: Array.from(call.signature),
++    });
++    if (result?.pendingRecords?.length) {
++      publishPendingRecords(result.pendingRecords, dnaHash as DnaHash).catch((error) => {
++        logPublish.error("Publish after call_remote failed:", error);
++      });
++    }
++    if (Array.isArray(result?.response)) {
++      answer({ response: new Uint8Array(result.response) });
++    } else {
++      answer({ error: typeof result?.error === 'string' ? result.error : 'call_remote failed' });
++    }
++  } catch (error) {
++    answer({ error: `call_remote failed: ${error instanceof Error ? error.message : String(error)}` });
++  }
++}
++
+ /**
+  * Send message to worker and wait for response
+  */
+@@ -473,6 +531,13 @@ function initializeWebSocketService(config: {
+     });
+   });
+ 
++  // Standard Holochain call_remote addressed to an installed cell of this
++  // socket's agent. Executed only through the worker's dedicated authorised
++  // entry point; never reachable from a webpage or content script.
++  wsService.onRemoteCall((call) => {
++    handleIncomingRemoteCall(call).catch(() => {});
++  });
++
+   // Restricted ciphertext-only relay to background. No role material,
+   // bearer, verifiedRemoteCaller or nativeValidated flag is accepted here.
+   // Background rechecks the browser-supplied sender metadata.
+diff --git a/packages/extension/src/offscreen/ribosome-worker.ts b/packages/extension/src/offscreen/ribosome-worker.ts
+index 14920a5..725d650 100644
+--- a/packages/extension/src/offscreen/ribosome-worker.ts
++++ b/packages/extension/src/offscreen/ribosome-worker.ts
+@@ -73,7 +73,9 @@ if (typeof document === 'undefined') {
+ }
+ 
+ import { createLogger } from '../lib/logger';
+-import { callZome, type ZomeCallRequest } from '@hwc/core/ribosome';
++import { callZome, callZomeRemote, type ZomeCallRequest } from '@hwc/core/ribosome';
++import { witnessWith, setCallRemoteTransport } from '@hwc/core/remote-call/remote-call-runtime';
++import type { WitnessResult } from '@hwc/core/remote-call/remote-call-auth';
+ import { encode, decode } from '@msgpack/msgpack';
+ import { SCHEMA_SQL } from '@hwc/core/storage/sqlite-schema';
+ import { migrateEntrySchema } from '@hwc/core/storage/sqlite-entry-migration';
+@@ -92,7 +94,7 @@ const log = createLogger('RibosomeWorker');
+ // Types
+ interface WorkerMessage {
+   id: number;
+-  type: 'INIT' | 'CALL_ZOME' | 'CONFIGURE_NETWORK' | 'RECOVER_CHAIN' | 'RUN_GENESIS' | 'PRELOAD_SIGNING_KEY' | 'SET_MASTER_KEY' | 'CLEAR_MASTER_KEY';
++  type: 'INIT' | 'CALL_ZOME' | 'CALL_ZOME_REMOTE' | 'CONFIGURE_NETWORK' | 'RECOVER_CHAIN' | 'RUN_GENESIS' | 'PRELOAD_SIGNING_KEY' | 'SET_MASTER_KEY' | 'CLEAR_MASTER_KEY';
+   payload?: any;
+ }
+ 
+@@ -249,6 +251,23 @@ class DirectSQLiteStorage implements StorageProvider {
+     return this.inTransaction;
+   }
+ 
++  /**
++   * Persistent, atomic call_remote nonce witness (native witness_nonce rules).
++   * Never called inside a zome-call transaction, so it commits immediately and
++   * survives a later rollback, a worker restart and a browser restart.
++   */
++  witnessRemoteCallNonce(agent: Uint8Array, nonce: Uint8Array, nowUs: number, expiresUs: number): WitnessResult {
++    if (this.inTransaction) throw new Error('nonce witness inside a transaction');
++    return witnessWith((agentKey, nonceKey, exp) => {
++      db.exec({ sql: 'DELETE FROM remote_call_nonces WHERE expires_us <= ?', bind: [nowUs] });
++      db.exec({
++        sql: 'INSERT OR IGNORE INTO remote_call_nonces (agent, nonce, expires_us) VALUES (?, ?, ?)',
++        bind: [agentKey, nonceKey, exp],
++      });
++      return db.changes() === 1;
++    }, agent, nonce, nowUs, expiresUs);
++  }
++
+   getChainHead(dnaHash: DnaHash, agentPubKey: AgentPubKey): ChainHead | null {
+     const cellId = this.getCellId(dnaHash, agentPubKey);
+     const stmt = db.prepare('SELECT action_seq, action_hash, timestamp FROM chain_heads WHERE cell_id = ?');
+@@ -1432,6 +1451,43 @@ class ProxyNetworkService implements NetworkService {
+     }
+   }
+ 
++  /**
++   * Standard call_remote through the authenticated gateway. The bearer is
++   * added by the transport (offscreen in Chromium, this worker in Firefox).
++   * Never reports success unless the gateway returned the recipient's
++   * ZomeCallResponse.
++   */
++  callRemoteSync(dnaHash: Uint8Array, target: Uint8Array, paramsBytes: Uint8Array, signature: Uint8Array):
++      { ok: true; response: Uint8Array } | { ok: false; error: string } {
++    if (!linkerUrl) return { ok: false, error: 'call_remote unreachable: no gateway configured' };
++    const b64 = (b: Uint8Array) => btoa(String.fromCharCode(...b));
++    const url = `${linkerUrl}/call_remote/${this.getDnaHashB64(dnaHash as DnaHash)}`;
++    const body = JSON.stringify({
++      target_agent: encodeHashToBase64(target),
++      zome_call_params: b64(paramsBytes),
++      signature: b64(signature),
++    });
++    let response: { status: number; body: Uint8Array };
++    try {
++      response = this.fetchSync('POST', url, {
++        'Accept': 'application/json',
++        'Content-Type': 'application/json',
++      }, new TextEncoder().encode(body));
++    } catch (e) {
++      return { ok: false, error: `call_remote unreachable: ${e instanceof Error ? e.message : String(e)}` };
++    }
++    let parsed: any = null;
++    try { parsed = JSON.parse(new TextDecoder().decode(response.body)); } catch { parsed = null; }
++    if (response.status === 200 && typeof parsed?.response === 'string') {
++      const raw = atob(parsed.response);
++      const bytes = new Uint8Array(raw.length);
++      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
++      return { ok: true, response: bytes };
++    }
++    const reason = typeof parsed?.error === 'string' ? parsed.error : `HTTP ${response.status}`;
++    return { ok: false, error: reason };
++  }
++
+   isAvailable(): boolean {
+     // Network is available if linker URL is configured
+     return linkerUrl !== '';
+@@ -1588,6 +1644,58 @@ async function handleCallZome(payload: any): Promise<any> {
+   };
+ }
+ 
++/**
++ * Execute an incoming call_remote through the dedicated authorised entry
++ * point (signature, cell, persistent nonce and capability grant are checked
++ * by callZomeRemote; nothing in this payload can choose the provenance).
++ */
++async function handleCallZomeRemote(payload: any): Promise<any> {
++  const { dnaWasm, cellId, dnaManifest, paramsBytes, signature } = payload;
++  const cellIdBytes: [DnaHash, AgentPubKey] = [
++    new Uint8Array(cellId[0]) as DnaHash,
++    new Uint8Array(cellId[1]) as AgentPubKey,
++  ];
++  storage.setCellContext(cellIdBytes[0], cellIdBytes[1]);
++  const dnaHashKey = getWasmCacheKey(cellId[0]);
++  let cachedWasm = wasmCache.get(dnaHashKey);
++  if (!cachedWasm && dnaWasm && dnaWasm.length > 0) {
++    cachedWasm = new Uint8Array(dnaWasm);
++    wasmCache.set(dnaHashKey, cachedWasm);
++  }
++  if (!cachedWasm) throw new Error('No WASM available for DNA');
++  const normalizedManifest = dnaManifest ? {
++    ...dnaManifest,
++    integrity_zomes: (dnaManifest.integrity_zomes || []).map((z: any) => ({ ...z, wasm: z.wasm ? toUint8Array(z.wasm) : undefined })),
++    coordinator_zomes: (dnaManifest.coordinator_zomes || []).map((z: any) => ({ ...z, wasm: z.wasm ? toUint8Array(z.wasm) : undefined })),
++  } : dnaManifest;
++  const outcome = await callZomeRemote(
++    { dnaWasm: cachedWasm, cellId: cellIdBytes, dnaManifest: normalizedManifest },
++    new Uint8Array(paramsBytes), new Uint8Array(signature),
++  );
++  const records = outcome.result?.pendingRecords || [];
++  return {
++    response: outcome.response ? Array.from(outcome.response) : undefined,
++    error: outcome.error,
++    pendingRecords: records.map((record: any) => {
++      const e = record.entry;
++      let entry: any = undefined;
++      if (e && typeof e === 'object' && 'Present' in e) {
++        entry = { Present: { entry_type: e.Present.entry_type,
++          entry: e.Present.entry instanceof Uint8Array ? Array.from(e.Present.entry) : e.Present.entry } };
++      } else if (typeof e === 'string') {
++        entry = { [e]: null };
++      }
++      return {
++        signed_action: {
++          hashed: { content: record.signed_action.hashed.content, hash: Array.from(record.signed_action.hashed.hash) },
++          signature: Array.from(record.signed_action.signature),
++        },
++        entry,
++      };
++    }),
++  };
++}
++
+ self.onmessage = async (event: MessageEvent) => {
+   const { id, type, payload } = event.data;
+ 
+@@ -1641,6 +1749,7 @@ self.onmessage = async (event: MessageEvent) => {
+         setStorageProvider(storage);
+         // Every record/link/details response from the gateway is verified before use.
+         setNetworkService(withRecordVerification(networkService));
++        setCallRemoteTransport(networkService);
+ 
+         // Set Lair client for signing
+         setLairClient(proxyLairClient);
+@@ -1699,6 +1808,15 @@ self.onmessage = async (event: MessageEvent) => {
+         break;
+       }
+ 
++      case 'CALL_ZOME_REMOTE': {
++        // Incoming standard call_remote. Serialised with page calls. The
++        // worker derives zome/fn/payload/provenance from the signed params.
++        const callPromise = zomeCallChain.then(() => handleCallZomeRemote(payload));
++        zomeCallChain = callPromise.then(() => {}, () => {});
++        result = await callPromise;
++        break;
++      }
++
+       case 'CALL_ZOME': {
+         // Chain onto zomeCallChain so concurrent CALL_ZOME messages execute
+         // one at a time. Errors are isolated per-call (the chain always continues).

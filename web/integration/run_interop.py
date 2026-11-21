@@ -80,7 +80,7 @@ def main() -> int:
     work = args.work.resolve()
     if work.exists():
         shutil.rmtree(work)
-    for d in ("logs", "grants", "profiles"):
+    for d in ("logs", "grants", "approvals", "profiles"):
         (work / d).mkdir(parents=True)
     env = dict(os.environ)
     if env.get("HM_LD_PRELOAD"):
@@ -102,7 +102,8 @@ def main() -> int:
 
         native = [args.python, str(WEB / "integration" / "native_artist.py"), "--bootstrap", bootstrap]
         spawn("artist", native + ["--home", str(work / "artist"), "--status", str(work / "artist.json"),
-                                  "--seconds", str(args.seconds), "--grant-dir", str(work / "grants")])
+                                  "--seconds", str(args.seconds), "--approvals", str(work / "approvals"),
+                                  "--second-title", "Browser Interop Tone B"])
         spawn("peer", native + ["--peer-only", "--home", str(work / "peer"), "--status", str(work / "peer.json")])
         status = wait(lambda: (s := json.loads((work / "artist.json").read_text())).get("phase") == "published" and s,
                       "native artist publication", 600, 2)
@@ -166,7 +167,7 @@ def main() -> int:
 
         if args.serve_only:
             info = {"web": web_origin, "gateway": gateway, "gateway_secret_file": str(secret_file), "adapter": adapter,
-                    "hwc_extension": env["HWC_EXTENSION_DIR"], "artist": status, "grants_dir": str(work / "grants")}
+                    "hwc_extension": env["HWC_EXTENSION_DIR"], "artist": status, "approvals_dir": str(work / "approvals")}
             (work / "stack.json").write_text(json.dumps(info, indent=2))
             print(json.dumps(info), flush=True)
             signal.sigwait({signal.SIGINT, signal.SIGTERM})
@@ -174,7 +175,7 @@ def main() -> int:
         browser_env = {
             "HM_WEB_URL": web_origin, "HM_HWC_EXTENSION": env["HWC_EXTENSION_DIR"], "HM_GATEWAY_URL": gateway,
             "HM_GATEWAY_SECRET_FILE": str(secret_file), "HM_ARTIST_STATUS": str(work / "artist.json"),
-            "HM_EXPECTED_DIGESTS": str(work / "expected.json"), "HM_GRANT_DIR": str(work / "grants"),
+            "HM_EXPECTED_DIGESTS": str(work / "expected.json"), "HM_APPROVALS": str(work / "approvals"),
             "HM_PROFILES": str(work / "profiles"), "HM_EVIDENCE": str(work / "evidence.json"),
             "HM_TAMPER_WEB_URL": tamper_origin, "HM_TAMPER_STATE": str(work / "tamper.json"),
         }
@@ -194,7 +195,25 @@ def main() -> int:
         counts = {}
         for c in evidence["checks"]:
             counts[c["result"]] = counts.get(c["result"], 0) + 1
-        print(json.dumps({"summary": counts, "exit": result.returncode}))
+        # Acceptance checkpoints are derived from the individual checks only.
+        res = {c["id"].split(" ")[0]: c["result"] for c in evidence["checks"]}
+        e_ids = ["E1", "E2", "E3", "E4"]
+        f_ids = ["A1", "A2", "A3", "B1", "C2", "D0", *e_ids, "D2"]
+        def gate(ids):
+            if all(res.get(i) == "PASS" for i in ids):
+                return "PASS"
+            return "BLOCKED" if any(res.get(i) == "BLOCKED" for i in ids) else "NOT MET"
+        evidence["checkpoints"] = {
+            "E": {"result": gate(e_ids), "checks": {i: res.get(i, "NOT RUN") for i in e_ids}},
+            "F": {"result": gate(f_ids), "checks": {i: res.get(i, "NOT RUN") for i in f_ids},
+                  "note": "fresh browser profile, normal UI controls, operator admission and explicit artist "
+                          "approval only; no grant files or developer key/grant injection"},
+        }
+        gw = Path(env["H2HC_GATEWAY_BIN"])
+        evidence["environment"]["gateway_sha256"] = hashlib.sha256(gw.read_bytes()).hexdigest()
+        (work / "evidence.json").write_text(json.dumps(evidence, indent=2))
+        print(json.dumps({"summary": counts, "checkpoints": {k: v["result"] for k, v in evidence["checkpoints"].items()},
+                          "exit": result.returncode}))
         return 0 if result.returncode == 0 and not counts.get("FAIL") else 1
     finally:
         for proc in reversed(procs):

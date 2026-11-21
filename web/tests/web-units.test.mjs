@@ -96,3 +96,27 @@ test('media adapter client retries transient failures and never retries refusals
   const huge = new MediaAdapterClient('http://127.0.0.1:1', { fetchImpl: async () => new Response(new Uint8Array(20000), { status: 200 }) });
   await assert.rejects(huge.document(host, 'a'.repeat(64), 'receipt'), /too large/);
 });
+
+test('access request failures are classified without inventing an artist decision', async () => {
+  const { classifyRequestError, RequestOutcome, RequestLog } = await import('../src/adapters/grants/grants.js');
+  const c = classifyRequestError;
+  // Pinned HWC without call_remote support.
+  assert.equal(c('[HostFn:call] No ConductorCell in target'), RequestOutcome.TRANSPORT_UNSUPPORTED);
+  assert.equal(c('call_remote transport unavailable'), RequestOutcome.TRANSPORT_UNSUPPORTED);
+  // Music DNA remote() errors (dna/coordinator/src/lib.rs) and gateway errors.
+  assert.equal(c('Guest("recipient unreachable (offline?): call_remote unreachable: no url for peer")'), RequestOutcome.UNREACHABLE);
+  assert.equal(c('Guest("recipient unreachable (offline?): call_remote timed out")'), RequestOutcome.UNREACHABLE);
+  assert.equal(c('Guest("recipient refused: rate limited: too many deliveries from you today")'), RequestOutcome.REFUSED);
+  assert.equal(c('Guest("recipient refused the delivery")'), RequestOutcome.REFUSED);
+  assert.equal(c('Guest("recipient is busy; retry later")'), RequestOutcome.REFUSED);
+  assert.equal(c('something else'), RequestOutcome.FAILED);
+  // No outcome is ever "approved" or "declined".
+  assert.deepEqual(Object.values(RequestOutcome).filter(o => /approv|declin/.test(o)), []);
+  const mem = new Map();
+  const log = new RequestLog({ getItem: k => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) });
+  assert.equal(log.get('uhCAkA', 'f1'), null);
+  log.record('uhCAkA', 'f1', 'stream', 100);
+  assert.deepEqual(log.get('uhCAkA', 'f1'), { kind: 'stream', sent_at: 100 });
+  assert.equal(log.get('uhCAkB', 'f1'), null, 'requests are per browser identity');
+  assert.equal(new RequestLog({ getItem() { throw new Error('blocked'); } }).get('a', 'f'), null);
+});
