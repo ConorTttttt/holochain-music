@@ -11,7 +11,8 @@
 # remote signals, restricted gateway receiver), then the Music patches:
 #   apply_multi_cell_routing.py     page zome calls reach the requested role
 #   record-verification/apply.py    gateway records/links/details are verified
-#   remote-call/apply.py            call_remote authoriser + native vectors (inert, tests only)
+#   remote-call/apply.py            standard Holochain call_remote (outgoing NetworkAgent, authorised
+#                                   incoming path, persistent nonce witness) + native vectors
 # The full HWC core test suite (including Imposter's *.imposter.test.ts and
 # the malicious-gateway tests) must pass before the extension is built.
 # Output: $HWC_CHECKOUT/packages/extension/dist-chrome
