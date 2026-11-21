@@ -1,4 +1,4 @@
-# Grants, licences and the private-delivery blocker
+# Grants, licences and private delivery
 
 ## What is compatible today
 
@@ -30,9 +30,9 @@ re-verified before every playback; unwrapped content keys exist only as
 non-extractable AES-GCM `CryptoKey`s in memory. A licence is never replaced by
 a time-limited grant; re-delivery of an identical grant is idempotent.
 
-## The blocker: Music's private request/grant transport
+## Private delivery over Holochain (this round)
 
-The native workflow (`dna/coordinator/src/lib.rs`):
+The native workflow is used unchanged (`dna/coordinator/src/lib.rs`):
 
 ```
 listener  send_access_request ──call_remote──► artist  receive_access_request
@@ -41,51 +41,34 @@ artist    send_grant          ──call_remote──► listener receive_grant
           (provenance = artist agent)                                   → private InboxGrant
 ```
 
-The remote call's **provenance** is what binds the listener's X25519 key to
-their Holochain agent; the artist approves in the native app; the grant lands
-as a private entry on the listener's own chain.
+The remote call's **provenance** binds the listener's X25519 key to their
+Holochain agent; the artist approves in the native app
+(`MusicApp.artist.grant()`); the grant lands as a private entry on the
+listener's own chain. HWC and the candidate gateway now carry standard
+`call_remote` in both directions — see [call-remote.md](call-remote.md).
 
-Exact gaps at the pinned baseline (all reproduced in the interop test):
+### Browser states (`web/src/app/main.js`, `data-access-state`)
 
-1. **HWC cannot make remote calls.** `packages/core/src/ribosome/host-fn/call.ts`
-   supports only `CallTarget::ConductorCell(Local)`. `send_access_request`
-   fails inside the browser with `[HostFn:call] No ConductorCell in target`
-   (check E1). Nothing is sent; the UI says so.
-2. **The gateway drops incoming remote calls for browser agents.**
-   `h2hc-linker` `src/gateway_kitsune.rs` forwards only `RemoteSignalEvt` to
-   the browser; `CallRemoteReq` for a proxied browser agent is ignored. A
-   native artist's `send_grant` to a browser listener therefore times out
-   ("recipient unreachable") and stays in the native outbox. It does not
-   falsely report delivery.
-3. **HWC refuses non-author provenance.** Imposter's patch made the ribosome
-   reject zome calls whose provenance is not the local agent because remote
-   capability checks are not implemented. Even if (2) forwarded the call,
-   `receive_grant` (provenance = artist, authorised by the `inbox` unrestricted
-   cap grant) would be refused.
-4. **Imposter's encrypted delivery cannot carry Music messages.** Its gateway
-   frames are domain-separated (`imposter.h2hc.private-role.v1`), use
-   `game_role_request` / `game_role_deliver` capabilities and a game-specific
-   envelope. Reusing them would mean a second, unreviewed grant protocol.
+| State | Shown when | Established by |
+| --- | --- | --- |
+| `none` | no request, no grant | local |
+| `sending` | request in flight | — |
+| `awaiting` | `send_access_request` returned Ok: the artist's conductor stored the private request | the artist's own `ZomeCallResponse::Ok` |
+| `unavailable` | artist node unreachable, or it refused the delivery (rate limit, invalid) | the error; explicitly "nothing approved or declined" |
+| `checking` | reading the private inbox | — |
+| `granted` | a grant from `get_inbox_grants` (or the recovery import) verified for this agent, key and exact manifest; "Playback authorised" | local verification |
+| `expired` | stored streaming grant past `expires_at` (stays expired after restart: every playback re-verifies) | local verification |
+| `rejected` | a delivered/imported grant failed verification | local verification |
+| `unsupported` | the browser conductor cannot make remote calls | HWC error |
 
-What was implemented safely instead: everything the browser can verify
-locally (recipient key, request payload in the native format, inbox sync from
-`get_inbox_grants`, full grant verification and storage, playback) is in
-place and ready for when a transport exists. An **"Import an artist-issued
-grant"** control accepts a signed grant file and applies exactly the same
-checks; the interop test uses it as an operator-assisted, out-of-band path to
-exercise playback (check D1). It does not authenticate the X25519 key to the
-artist — the operator must convey the browser's public recipient key and agent
-key to the artist authentically — and it is not presented as Holochain
-private delivery.
+Music has no "declined" message, so the browser never claims a decision it
+has not received. The request log (`RequestLog`, per agent, public facts only)
+only drives the "awaiting" text.
 
-## Interoperability proposal
+### Recovery import
 
-Superseded by the source-verified design in [call-remote.md](call-remote.md):
-standard Holochain `call_remote` for browser agents (signed `ZomeCallParams`
-over SHA-512, `CallRemoteReq`/`CallRemoteRes` through the gateway, native
-nonce/expiry and capability-grant checks in HWC), no new grant format, no
-Music DNA change. Its HWC-side authoriser is implemented and tested against
-canonical Holochain 0.7 vectors (`web/hwc/remote-call/`); the gateway work and
-HWC runtime wiring remain. Private grant delivery stays **BLOCKED** until a
-native artist's approval reaches a browser listener over Holochain in the
-interop test; the out-of-band import is not counted as that.
+The "Recovery: import a grant file received outside Holochain" control is a
+collapsed diagnostic. It applies exactly the same verification, does not
+authenticate the X25519 key to the artist, and is not used by the acceptance
+checks (it is used only to feed grants that must be **rejected**: tampered,
+other track, other listener).

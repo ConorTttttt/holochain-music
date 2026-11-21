@@ -1,8 +1,8 @@
 # `call_remote` for browser agents (HWC + h2hc-linker)
 
-**Status: BLOCKED for Music private grants. Design and HWC-side foundation
-ready; gateway and HWC runtime work not started.** Music's DNAs, request and
-grant formats are not changed by any of this.
+**Status: implemented (experimental) in HWC and a candidate gateway; see
+[integration-tests.md](integration-tests.md) for Checkpoint E/F evidence.**
+Music's DNAs, request, grant and licence formats are unchanged.
 
 Music's private workflow is two `call_remote`s with capability-gated inbox
 functions (`dna/coordinator/src/lib.rs`):
@@ -16,76 +16,117 @@ The remote call's *provenance* authenticates the sender; the recipient's
 `init` created an Unrestricted `inbox` grant listing exactly those two
 functions; the recipient stores a private entry.
 
-## Reference semantics (Holochain 0.7.0 sources)
+## Reference semantics (Holochain 0.7.0 sources, verified)
 
 | Step | Native implementation |
 | --- | --- |
-| Wire | `holochain_p2p` `WireMessage::CallRemoteReq { msg_id, to_agent, zome_call_params_serialized, signature }` → `CallRemoteRes { msg_id, response }` (request/response over kitsune2, same correlation as `GetReq/GetRes`) |
+| Wire | `holochain_p2p` `WireMessage::CallRemoteReq { msg_id, to_agent, zome_call_params_serialized, signature }` → `CallRemoteRes { msg_id, response }` or `ErrorRes { msg_id, error }`, over kitsune2 `send_notify`, reply to the requesting peer URL |
 | Params | `ZomeCallParams { provenance, cell_id, zome_name, fn_name, cap_secret, payload, nonce: [u8;32], expires_at }`, bytes = `holochain_serialized_bytes::encode` |
 | Signature | Ed25519 by `provenance` over **`sha2_512(bytes)`** (`ZomeCallParams::serialize_and_hash`, `is_valid_signature`) |
-| Receive | `Cell::handle_call_remote`: decode, verify signature, then `call_zome` |
-| Authorise | `ZomeCallInvocation::is_authorized`, in order: nonce witness (must be Fresh), cap grant, blocks. The nonce is written only after the signature verified. |
-| Nonce | `witness_nonce` (holochain_data 0.7.0): Expired if `expires ≤ now`; Future if `expires > now + 50 min`; Duplicate if seen for that agent; else Fresh |
+| Outgoing | `host_fn/call.rs` `CallTarget::NetworkAgent`: provenance = the calling cell's agent, `fresh_nonce` (5 min), network failure → `ZomeCallResponse::NetworkError(e)` |
+| Receive | `Cell::handle_call_remote`: decode, verify signature (failure → error/`ErrorRes`), then `call_zome`; a zome error is also an `ErrorRes` |
+| Authorise | `ZomeCallInvocation::is_authorized`, in order: nonce witness (must be Fresh; else `Unauthorized(BadNonce("<Duplicate|Expired|Future>"))`), cap grant (else `Unauthorized(BadCapGrant)`), blocks |
+| Nonce | `witness_nonce`: Expired if `expires ≤ now`; Future if `expires > now + 50 min`; Duplicate if seen for that agent; else Fresh |
 | Grant | `CapGrant::is_valid`: chain author always; else function granted, Assigned lists caller, Transferable/Assigned secret matches, Unrestricted needs none |
 
-## What exists today
+## Implementation
 
-| Piece | State |
-| --- | --- |
-| HWC outgoing (`call` host fn, `CallTarget::NetworkAgent`) | refused: `[HostFn:call] No ConductorCell in target` (interop check E1) |
-| HWC ZomeCallParams signing (used for remote signals) | **incompatible**: signs `blake2b256(bytes)` instead of `sha2_512(bytes)` |
-| HWC incoming provenance | Imposter patch refuses any non-author provenance (correct until capability checks exist) |
-| h2hc-linker outgoing | only `RemoteSignalEvt` fire-and-forget; no `CallRemoteReq`/response correlation |
-| h2hc-linker incoming | forwards `RemoteSignalEvt` to the browser WebSocket; **drops `CallRemoteReq`** (the native caller times out: "recipient unreachable"; Music's outbox keeps the grant for retry — no false delivery) |
-| Imposter role frames | domain `imposter.h2hc.private-role.v1`, capabilities `game_role_*`: not a carrier for Music |
+```
+ browser cell (HWC worker)                 H2HC gateway (candidate)                 native conductor
+ call(NetworkAgent) ─ sign sha512 ─► POST /call_remote/{dna} ──► CallRemoteReq ───────► handle_call_remote
+   (Lair, own agent)    (bearer,      provenance == session agent,                      ... ZomeCallResponse
+                         call_remote_send)  sig, cell, expiry, bounds ◄── CallRemoteRes ◄┘
+ ZomeCallResponse ◄────────── 200 {response} / 4xx-5xx {error} → NetworkError
 
-## Foundation delivered in this round (HWC side, inert)
+ native send_grant ─► CallRemoteReq ──► gateway: sig, cell, expiry, recipient has call_remote_receive,
+                                        current socket for (dna, agent), bounds ──► WS call_remote_incoming
+ HWC: websocket-service (acknowledged registration, authenticated agent == to_agent)
+      → offscreen (Chromium) / background (Firefox) → worker CALL_ZOME_REMOTE → callZomeRemote():
+        decode → sha512 signature → cell → persistent nonce (SQLite) → live CapGrant from chain
+        → execute with provenance = verified caller → ZomeCallResponse::Ok | Unauthorized | error
+ ◄── WS call_remote_response (same agent, same socket) ── gateway ──► CallRemoteRes / ErrorRes
+```
 
-`web/hwc/remote-call/` (applied by `build-extension.sh`, not wired into the
-runtime):
+### HWC (`web/hwc/remote-call/`, applied by `build-extension.sh`)
 
-* `remote-call-auth.ts`: `encodeZomeCallParams` / strict `decodeZomeCallParams`
-  (canonical re-encoding enforced), `verifyZomeCallSignature` (SHA-512),
-  `MemoryNonceWitness` with the native rules, `capGrantIsValid`
-  (`CapGrant::is_valid`), and `authorizeRemoteCall` in native order;
-* `vectors-rs/`: a Rust generator using `holochain_zome_types 0.7.0`'s own
-  `ZomeCallParams::serialize_and_hash` and Ed25519 → `zome-call-vectors.json`;
-* tests (9): byte-identical encoding of native params, native signatures
-  verify, our signature equals native, the HWC `blake2b256` scheme is
-  rejected, replay refused, nonce not consumed by a bad signature, tampered
-  bytes / other cell / expired / far-future / forged caller / ungranted
-  function refused, Transferable and Assigned grant rules.
+* `remote-call-auth.ts` — strict canonical decode, SHA-512 signature check,
+  native-order authorisation, `CapGrant::is_valid`, denial kinds.
+* `remote-call-runtime.ts` — outgoing signing (`signOutgoingCall`),
+  native `ZomeCallResponse` codec, live grants from the source chain (deleted
+  or updated grants ignored), incoming outcomes, transport/witness interfaces.
+* `runtime.patch` —
+  * `host-fn/call.ts`: `CallTarget::NetworkAgent`; refused in validation and
+    `init` contexts; the webpage cannot choose the provenance.
+  * `ribosome/index.ts`: `callZomeRemote()` is the **only** path that may run
+    a zome function with a non-author provenance. Authorisation is recorded in
+    a module-private `WeakMap` keyed by the request object, so no caller can
+    forge it by building a request; the page path keeps the Imposter
+    restriction. Zome/fn/payload/provenance come only from the signed params.
+    `call_info().cap_grant` reports `RemoteAgent(grant)` for remote callers.
+  * `sqlite-schema.ts` + worker `witnessRemoteCallNonce`: table
+    `remote_call_nonces(agent, nonce, expires_us, PRIMARY KEY(agent, nonce))`
+    in the persistent OPFS SQLite database, `INSERT OR IGNORE` + `changes()`
+    (atomic; the worker is single-threaded and calls are serialised), written
+    before and outside the zome-call transaction, only after the signature
+    verified. Survives worker and browser restarts.
+  * `websocket-service.ts`: `call_remote_incoming` accepted only on an
+    authenticated socket whose agent is the addressee and whose registration
+    for that DNA the gateway acknowledged; otherwise answered with an error.
+  * Chromium binding: `offscreen/index.ts` finds the enabled installed cell
+    for exactly (DNA, agent), runs `CALL_ZOME_REMOTE`, publishes the records,
+    answers on the same socket (never on a replaced one).
+  * Worker transport: `ProxyNetworkService.callRemoteSync` (`POST /call_remote`,
+    bearer added by the transport; Chromium through the offscreen sync XHR,
+    Firefox directly from the worker).
+* `firefox-binding.patch` — the same incoming path for Imposter's Firefox
+  background executor; applies after Imposter's `firefox-desktop.patch`.
+* Tests (`remote-call-*.test.ts`, 20): byte-identical native encodings of
+  params, signatures **and `ZomeCallResponse` (Ok, Unauthorized BadCapGrant,
+  Unauthorized BadNonce with secret, NetworkError)** from
+  `vectors-rs` (`holochain_zome_types 0.7.0`); replay across a "restart";
+  concurrent duplicates (exactly one executes); forged signature, wrong cell,
+  wrong DNA, expired, far-future, impersonation, ungranted function; nonce not
+  consumed by rejected calls; live-grant selection.
 
-## Remaining work (separately reviewable, in dependency order)
+### Gateway (`web/gateway/`)
 
-1. **HWC — signing fix**: sign `sha2_512(encode(params))` (shared helper with
-   the authoriser); keep remote signals behind Imposter's fail-closed gate.
-2. **h2hc-linker — outgoing**: WebSocket frame `call_remote_request
-   {dna, target_agent, params_bytes, signature, request_id}` for sessions with
-   a new admission capability `call_remote_send`; the gateway verifies the
-   signature and that `params.provenance` equals the session's authenticated
-   agent (no impersonation), sends `CallRemoteReq`, correlates `CallRemoteRes`
-   by `msg_id`, and returns `{request_id, response | error}` with a timeout.
-3. **h2hc-linker — incoming**: for a registered browser agent with
-   `call_remote_receive`, forward `CallRemoteReq` as `call_remote_incoming
-   {request_id, params_bytes, signature}`; reply `CallRemoteRes` with the
-   browser's `ZomeCallResponse` bytes, or `ErrorRes` on timeout/disconnect.
-   Bound queue depth, size (Music grants ≤ 8 KiB) and rate per sender.
-4. **HWC — incoming runtime**: on `call_remote_incoming`, run
-   `authorizeRemoteCall` with a **persistent** nonce witness (IndexedDB/OPFS,
-   survives restart), live cap grants read from the local chain, then execute
-   with the verified provenance through a dedicated entry point (the general
-   page path keeps refusing foreign provenance). Return `ZomeCallResponse::Ok`
-   / `Unauthorized` in the native encoding.
-5. **HWC — outgoing runtime**: `CallTarget::NetworkAgent` in `call` → sign →
-   gateway frame → await response (the ribosome call is synchronous: needs the
-   same sync-XHR/worker bridging HWC uses for DHT reads, with a timeout).
-6. **Acceptance (Music interop harness)**: E1 becomes PASS; new checks: native
-   artist sees the browser request in `MusicApp.artist.requests()`, approves
-   with `MusicApp.artist.grant()`, the browser's "Check for grants" imports it
-   from `get_inbox_grants`, verifies and plays; replayed/forged/expired/
-   ungranted calls refused; revoked sessions cannot send or receive; Imposter
-   role-delivery tests unchanged.
+`build-candidate.sh` reproduces the accepted source from Imposter's recipe
+(`293563649f…`) — source tree `46122443…` — and applies `call-remote.patch`:
 
-Steps 2–3 need the gateway source with Imposter's admission/session patches
-(revision `9f5eb04b…`) and a Nix build; they are the critical path.
+* `POST /call_remote/{dna}` behind `call_remote_send` + DNA scope; provenance
+  must be the session's authenticated agent; cell must be `(dna, target)`;
+  signature verified; expiry witnessable; no self-calls; 32 KiB params;
+  30 calls/min and 4 pending per agent, 256 pending total; 25 s timeout (below
+  HWC's 30 s synchronous wait). Returns the recipient's exact
+  `ZomeCallResponse` bytes or an error; nothing is reported as delivered
+  because it was queued.
+* Incoming `CallRemoteReq`: same signature/cell/expiry checks; recipient must
+  currently hold `call_remote_receive` (checked at delivery time) and be
+  registered on a live socket; 60 incoming calls/min per caller, 8 pending per
+  recipient; 30 s timeout; answers bound to the request ID, the addressed
+  agent **and** the same socket; answers must decode as `ZomeCallResponse`;
+  socket close or revocation fails pending calls immediately (→ `ErrorRes`).
+* Responses to the gateway's own outgoing calls are matched on `msg_id` **and**
+  the peer URL the request was sent to.
+* The gateway never signs zome calls and never executes zome functions.
+  Without an auth store (development mode) incoming delivery fails closed and
+  the HTTP route does not exist.
+* Remote signals stay fail-closed; Imposter's role relay is unchanged.
+* Rust tests (10 new, 207 total) cover native-signature acceptance and the
+  raw-bytes scheme rejection, forged/tampered/short signatures, impersonation,
+  wrong DNA/target/self, expiry, recipient isolation, answer binding to
+  agent+socket, replayed answers, disconnect, invalid answers and peer-bound
+  response routing.
+
+## Known limits
+
+* A browser→browser call between two agents served by the **same** Chromium
+  extension would wait on the offscreen thread that is making the synchronous
+  request; Music only uses browser↔native calls. Different browsers are fine.
+* Incoming calls need the cell's signing key loaded (it is after any page
+  zome call; Firefox preloads explicitly). If Lair is locked the call fails
+  and the artist's outbox retries.
+* HWC has no block list (the 0.7 HDK removed `block_agent`; HWC has no admin
+  API), so `BlockedProvenance` cannot arise.
+* Emitted signals from an incoming call are not forwarded to pages (Music's
+  inbox functions emit none; the UI reads the inbox).
