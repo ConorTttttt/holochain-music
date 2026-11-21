@@ -5,7 +5,7 @@ import { loadConfig } from '../config.js';
 import { MusicHolochain, State, STATE_TEXT } from '../adapters/holochain/hwc.js';
 import { Catalogue } from '../adapters/catalogue/catalogue.js';
 import { MediaAdapterClient } from '../adapters/media/adapter-client.js';
-import { GrantStore, RequestOutcome, requestAccess, syncInboxGrants } from '../adapters/grants/grants.js';
+import { GrantStore, RequestLog, RequestOutcome, requestAccess, syncInboxGrants } from '../adapters/grants/grants.js';
 import { PlayerState, TrackPlayer } from '../player/track-player.js';
 import { sha256Hex } from '../security/v1.js';
 
@@ -26,7 +26,7 @@ const short = h => (h && h.length > 20 ? `${h.slice(0, 10)}…${h.slice(-6)}` : 
 const diagnostics = new URLSearchParams(location.search).has('diagnostics');
 
 const app = {
-  config: null, hc: null, catalogue: null, media: null, grants: new GrantStore(),
+  config: null, hc: null, catalogue: null, media: null, grants: new GrantStore(), requests: new RequestLog(), lastSync: null,
   trusted: new Map(), // track key -> resolve() result
   player: null, current: null, queue: [], view: ['browse'], chunkDigests: [],
 };
@@ -40,6 +40,10 @@ window.hmWeb = {
   get player() { return app.player && { state: app.player.state, error: app.player.error, stats: { ...app.player.stats }, position: app.player.positionFrames, frames: app.player.durationFrames, format: app.player.format }; },
   get chunkDigests() { return diagnostics ? [...app.chunkDigests] : null; },
   async recipientPublicKey() { return app.hc?.agent ? (await app.grants.recipientKey(app.hc.agent)).publicHex : null; },
+  // Diagnostics only (?diagnostics=1): the stored grant exactly as signed
+  // (wrapped key, no secrets) and the last inbox sync summary.
+  async storedGrant(fileId) { return diagnostics && app.hc?.agent ? (await app.grants.get(app.hc.agent, fileId))?.grant ?? null : null; },
+  get lastSync() { return diagnostics ? app.lastSync : null; },
   get trusted() { return [...app.trusted.entries()].map(([key, t]) => ({ key, digest: t.digest, file_id: t.manifestBody.file_id, artist_key_hex: t.artistKeyHex, hosts: t.hosts.map(h => ({ url: h.url, fingerprint: h.fingerprint, node_agent: h.node_agent })) })); },
 };
 
@@ -168,15 +172,13 @@ async function track(agent, trackId) {
       }
     } }));
   const access = el('div', { class: 'card', id: 'access-card' }, el('h2', { text: 'Your access' }));
-  if (stored) {
-    access.append(el('p', { class: 'notice ok', id: 'access-status', text: stored.kind === 'perpetual-personal' ? 'You hold a personal-use licence from the artist.' : `You hold a streaming grant until ${new Date(stored.expires_at * 1000).toLocaleString()}.` }));
-  } else {
-    access.append(el('p', { class: 'muted', id: 'access-status', text: 'You need the artist’s permission to play this track. The artist decides in their own Holochain Music app.' }));
-  }
+  access.append(accessStatus(t, stored));
+  // A pending request: look for the artist's grant in this cell's private inbox.
+  if (!stored && app.requests.get(app.hc.agent, t.file_id)) doSync(t, access, { quiet: true }).catch(() => {});
   const requestBox = el('div', { class: 'actions' },
     el('button', { class: 'btn', type: 'button', text: 'Request streaming', onclick: () => doRequest(t, 'stream', access) }),
     el('button', { class: 'btn primary', type: 'button', text: 'Request licence', onclick: () => doRequest(t, 'perpetual-personal', access) }),
-    el('button', { class: 'btn', type: 'button', text: 'Check for grants', onclick: () => doSync(access) }));
+    el('button', { class: 'btn', type: 'button', id: 'check-grants', text: 'Check for grants', onclick: () => doSync(t, access) }));
   access.append(requestBox, importBox(t, access));
   return [el('h1', { text: t.title }), el('p', {}, el('a', { href: '#', text: t.artist_name, onclick: ev => { ev.preventDefault(); show('artist', t.artist_agent); } })),
     el('div', { class: 'actions' }, el('button', { class: 'btn primary', type: 'button', text: 'Play', onclick: () => play(t) }),
@@ -194,39 +196,82 @@ async function track(agent, trackId) {
 
 function importBox(t, access) {
   const area = el('textarea', { class: 'grant', id: 'grant-json', 'aria-label': 'Artist-issued grant JSON', placeholder: 'Paste an artist-issued grant (JSON)' });
-  return el('details', {}, el('summary', { text: 'Import an artist-issued grant file' }),
-    el('p', { class: 'muted', text: 'For grants an artist sent you outside Holochain. It is checked exactly like a delivered grant: artist signature, your identity, your key and this exact track. A grant for anyone else will not work.' }),
+  return el('details', { class: 'diagnostic' }, el('summary', { text: 'Recovery: import a grant file received outside Holochain' }),
+    el('p', { class: 'muted', text: 'Not needed normally: the artist’s approval arrives privately through Holochain (Check for grants). Use this only if an artist sent you a grant file another way. It is checked exactly like a delivered grant: artist signature, your identity, your key and this exact track. A grant for anyone else will not work.' }),
     area, el('button', { class: 'btn', type: 'button', id: 'grant-import', text: 'Verify and import', onclick: async () => {
       try {
         const trusted = await resolveTrusted(t);
         const r = await app.grants.accept(JSON.parse(area.value), { agent: app.hc.agent, trusted, via: 'imported' });
         area.value = '';
-        access.querySelector('#access-status').replaceWith(el('p', { class: 'notice ok', id: 'access-status', text: `Grant verified (${r.kind === 'perpetual-personal' ? 'personal-use licence' : 'streaming'}).` }));
+        access.querySelector('#access-status').replaceWith(status('granted', 'ok', `Grant verified (${r.kind === 'perpetual-personal' ? 'personal-use licence' : 'streaming'}). Playback authorised.`));
       } catch (e) {
-        access.querySelector('#access-status').replaceWith(el('p', { class: 'notice bad', id: 'access-status', text: `Grant rejected: ${e.message}` }));
+        access.querySelector('#access-status').replaceWith(status('rejected', 'bad', `Grant rejected: ${e.message}`));
       }
     } }));
 }
 
-async function doRequest(t, kind, access) {
-  const r = await requestAccess({ holochain: app.hc, store: app.grants, agent: app.hc.agent, track: t, kind });
-  const box = access.querySelector('#access-status');
-  if (r.outcome === RequestOutcome.SENT) box.replaceWith(el('p', { class: 'notice ok', id: 'access-status', text: 'Request delivered privately to the artist.' }));
-  else if (r.outcome === RequestOutcome.TRANSPORT_UNSUPPORTED) {
-    box.replaceWith(el('div', { class: 'notice', id: 'access-status' },
-      el('strong', { text: 'Requests cannot be sent from the browser yet. ' }),
-      'Holochain Music delivers requests privately with an authenticated Holochain remote call, which this browser conductor does not support yet. Nothing was sent. Your public recipient key is shown in Identity & network if the artist offers another way.'));
-  } else box.replaceWith(el('p', { class: 'notice bad', id: 'access-status', text: `Request failed: ${r.error}` }));
+const status = (state, cls, ...kids) => el('div', { class: `notice ${cls}`, id: 'access-status', 'data-access-state': state }, ...kids);
+const KIND_TEXT = { 'perpetual-personal': 'personal-use licence', stream: 'streaming access' };
+
+/** The access state of one track, from verified local facts only. */
+function accessStatus(t, stored) {
+  if (stored) {
+    const expired = stored.expires_at && stored.expires_at * 1000 <= Date.now();
+    if (expired) return status('expired', 'bad', `Your streaming grant expired on ${new Date(stored.expires_at * 1000).toLocaleString()}. Request access again.`);
+    return status('granted', 'ok', el('strong', { text: 'Access granted. ' }),
+      stored.kind === 'perpetual-personal' ? 'You hold a personal-use licence from the artist. Playback authorised.'
+        : `You hold streaming access until ${new Date(stored.expires_at * 1000).toLocaleString()}. Playback authorised.`);
+  }
+  const pending = app.requests.get(app.hc.agent, t.file_id);
+  if (pending) {
+    return status('awaiting', '', el('strong', { text: 'Awaiting the artist’s decision. ' }),
+      `Your request for ${KIND_TEXT[pending.kind] ?? 'access'} was delivered privately on ${new Date(pending.sent_at * 1000).toLocaleString()}. The artist decides in their own Holochain Music app; use Check for grants to see whether access has arrived.`);
+  }
+  return status('none', 'muted', 'You need the artist’s permission to play this track. The artist decides in their own Holochain Music app.');
 }
 
-async function doSync(access) {
+async function doRequest(t, kind, access) {
+  const box = access.querySelector('#access-status');
+  box.replaceWith(status('sending', '', 'Sending your request privately to the artist…'));
+  const r = await requestAccess({ holochain: app.hc, store: app.grants, agent: app.hc.agent, track: t, kind });
+  let next;
+  if (r.outcome === RequestOutcome.SENT) {
+    app.requests.record(app.hc.agent, t.file_id, kind);
+    next = status('awaiting', 'ok', el('strong', { text: 'Request delivered privately to the artist. ' }),
+      'Awaiting the artist’s decision. The artist decides in their own Holochain Music app; use Check for grants to see whether access has arrived.');
+  } else if (r.outcome === RequestOutcome.TRANSPORT_UNSUPPORTED) {
+    next = status('unsupported', '', el('strong', { text: 'Requests cannot be sent from this browser conductor. ' }),
+      'Holochain Music delivers requests privately with an authenticated Holochain remote call, which this browser conductor does not support. Nothing was sent.');
+  } else if (r.outcome === RequestOutcome.UNREACHABLE) {
+    next = status('unavailable', 'bad', el('strong', { text: 'Access unavailable right now. ' }),
+      'The artist’s Holochain node could not be reached, so nothing was delivered. Nothing has been approved or declined; try again later.');
+  } else if (r.outcome === RequestOutcome.REFUSED) {
+    next = status('unavailable', 'bad', el('strong', { text: 'The artist’s node did not accept the request. ' }),
+      `${r.error.replace(/^.*recipient refused:?\s*/i, '').slice(0, 200)}. This is not a decision on your request.`);
+  } else {
+    next = status('failed', 'bad', `Request failed: ${r.error}`);
+  }
+  access.querySelector('#access-status').replaceWith(next);
+}
+
+async function doSync(t, access, { quiet = false } = {}) {
+  if (!quiet) access.querySelector('#access-status').replaceWith(status('checking', '', 'Checking your private inbox…'));
   const results = await syncInboxGrants({ holochain: app.hc, store: app.grants, agent: app.hc.agent,
     resolveTrusted: async (owner, fileId) => {
-      const t = (await app.catalogue.artistTracks(owner)).find(x => x.file_id === fileId);
-      return t ? resolveTrusted(t) : null;
+      const track = (await app.catalogue.artistTracks(owner)).find(x => x.file_id === fileId);
+      return track ? resolveTrusted(track) : null;
     } });
-  const good = results.filter(r => !r.error).length;
-  access.querySelector('#access-status').replaceWith(el('p', { class: 'notice', id: 'access-status', text: `${good} verified grant(s) in your private inbox.` }));
+  app.lastSync = results.map(r => ({ file_id: r.file_id, kind: r.kind ?? null, duplicate: r.duplicate ?? null, error: r.error ?? null }));
+  const stored = await app.grants.get(app.hc.agent, t.file_id);
+  const mine = results.filter(r => r.file_id === t.file_id);
+  let next = accessStatus(t, stored);
+  if (!stored && mine.some(r => r.error)) {
+    next = status('rejected', 'bad', `A grant arrived for this track but did not verify: ${mine.find(r => r.error).error}`);
+  } else if (!stored && !quiet) {
+    next.append(el('span', { class: 'muted', text: ' No verified grant for this track in your private inbox yet.' }));
+  }
+  const current = access.querySelector('#access-status');
+  if (current) current.replaceWith(next);
 }
 
 async function library() {
