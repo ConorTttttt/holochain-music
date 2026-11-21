@@ -92,7 +92,10 @@ const state = page => hm(page, () => window.hmWeb?.state);
 
 // Operator admission for a Music listener: DHT access plus standard
 // Holochain call_remote in both directions (request out, grant in).
-const LISTENER_CAPS = ['dht_read', 'dht_write', 'k2', 'call_remote_send', 'call_remote_receive'];
+// HM_CONTROL_ACCEPTED_GATEWAY=1: control run against the accepted gateway,
+// which has no call_remote (and rejects those capability names).
+const LISTENER_CAPS = process.env.HM_CONTROL_ACCEPTED_GATEWAY
+  ? ['dht_read', 'dht_write', 'k2'] : ['dht_read', 'dht_write', 'k2', 'call_remote_send', 'call_remote_receive'];
 
 async function connectAndAdmit(name, page, { admitFirst = true } = {}) {
   const agent = await until(() => hm(page, () => window.hmWeb.agent), `${name} agent`, 60000, 300);

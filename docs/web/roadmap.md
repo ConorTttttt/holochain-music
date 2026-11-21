@@ -1,13 +1,25 @@
 # Roadmap and follow-up work
 
-Ordered by dependency. Priorities 1–4 of the brief are working with real
-components; priority 5 (private grants) is blocked on transport; 6 depends on 5.
+Private grant delivery over standard Holochain `call_remote` now works end to
+end with real components (Checkpoints E and F PASS locally; see
+[integration-tests.md](integration-tests.md)). Still experimental.
 
-1. **H2HC/HWC `call_remote` relay** (unblocks Checkpoints E and F) — design, native semantics and the tested HWC-side authoriser in [call-remote.md](call-remote.md). **This is the next dependency.**
-2. **Signed links from the gateway** — record verification is done in HWC ([patch](../../web/hwc/record-verification/README.md)); link authorship still needs h2hc-linker to return signed `CreateLink` actions.
-3. **Deployment rehearsal** — HTTPS site, TLS gateway and adapter, two native authorities, operator admission, two physical machines.
-4. **Experience** — albums view polish, artwork over the adapter (`artwork_manifest_sha256` is already in records), queue persistence, playlists, offline encrypted storage (OPFS) with a tested disconnected-playback gate, service worker for static assets only.
-5. **Guest mode** — read-only discovery without HWC, once a gateway read API with verifiable records exists; must not invent a second catalogue.
+1. **Firefox Desktop live acceptance** of the same grant workflow — the build
+   (`firefox-binding.patch` over Imposter's Firefox patch) type-checks, builds
+   and passes the Firefox executor tests; needs a runner with Firefox ≥ 130 and
+   Geckodriver (Imposter's `firefox-desktop.yml` recipe) and the harness ported
+   from Playwright Chromium to Geckodriver/web-ext.
+2. **Imposter regressions on the candidate gateway** — run Imposter's
+   mixed-browser and repeatable-lobby acceptance with
+   `h2hc-linker-call-remote-candidate` substituted for the accepted binary.
+3. **Upstream review** — offer `web/hwc/remote-call` (HWC) and
+   `web/gateway/call-remote.patch` (h2hc-linker) to Holo-Host as separate PRs.
+4. **Signed links from the gateway** — link authorship is still
+   gateway-trusted (see security.md); needs signed `CreateLink` actions.
+5. **Deployment rehearsal** — HTTPS site, TLS gateway, two native authorities,
+   two physical machines.
+6. **Experience** — automatic periodic inbox sync, artist-side UX (desktop app
+   unchanged this round), OPFS offline storage.
 
 ## Prompts for follow-up agents
 

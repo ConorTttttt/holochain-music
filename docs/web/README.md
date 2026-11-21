@@ -37,8 +37,9 @@ the proposed fix.
 - [setup.md](setup.md) — run it, build HWC, provision the gateway, connect native participants, reproduce tests
 - [architecture.md](architecture.md) — components, decisions, media transport
 - [security.md](security.md) — trust boundaries, what the browser verifies, remaining vulnerabilities
-- [grants.md](grants.md) — grant compatibility and the private-delivery blocker
-- [call-remote.md](call-remote.md) — native `call_remote` semantics, what HWC/h2hc-linker lack, the HWC-side foundation and the remaining steps
+- [grants.md](grants.md) — grant compatibility, private delivery and browser access states
+- [call-remote.md](call-remote.md) — standard `call_remote` for browser agents: native semantics, HWC and gateway implementation, limits
+- [imposter-compatibility.md](imposter-compatibility.md) — assessment of the newer Imposter browser branches
 - [integration-tests.md](integration-tests.md) — test matrix and evidence
 - [roadmap.md](roadmap.md) — next steps and prompts for follow-up agents
 
@@ -47,9 +48,9 @@ the proposed fix.
 | Component | Version |
 | --- | --- |
 | Music DNAs | Source must equal `main` (CI hard check). Hashes are not pinned across machines: zome Wasm embeds toolchain- and path-specific bytes. Every interop run requires the native conductor and HWC to report identical hashes for the built bundle (hard check A2); CI writes the run's hashes to the job summary. Observed locally: `music_catalogue` `uhC0k6tJ5iJFWusUqhJjjt0crDBsW7AhwRqzXhDeMf6reThaN7Uqn`, `music_storage` `uhC0kkLUOg2uytGWLz_sTeVtfJBqa0criBmAYAPwAIUhoDp_9G4RV` |
-| Holo Web Conductor | `Holo-Host/holo-web-conductor@0c391226e78769d44ccb4661881ed8998b15f903` + Imposter browser-alpha patches + Music patches (`web/hwc/`: multi-cell routing, record verification, inert call_remote authoriser) |
+| Holo Web Conductor | `Holo-Host/holo-web-conductor@0c391226e78769d44ccb4661881ed8998b15f903` + Imposter browser-alpha patches + Music patches (`web/hwc/`: multi-cell routing, record verification, standard call_remote) |
 | Imposter baseline | `followup/browser-alpha-final-acceptance@a39aaf926ebcc2aadad71ee4bba0b7c2677de67f` (contains `release/browser-alpha-rc1@0b58e5a`) |
-| H2HC gateway | accepted Imposter revision-2 `h2hc-linker`, SHA-256 `8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f`, source `9f5eb04b5be12e3e9e7fcc304bd905da1449ade9` |
+| H2HC gateway | **call_remote candidate**: accepted source (Imposter recipe `293563649f…`, reproduced tree `46122443afff00607ba24726e7f1ae24af4598f5`) + `web/gateway/call-remote.patch`, built by `web/gateway/build-candidate.sh` (local build SHA-256 `e703aaaf7ef03afc1cb2b19a7cf3fa4d04015d19f3cbed015dda5e7aea6d2565`; CI artifact records its own). Accepted baseline unchanged: SHA-256 `8f3f8e0b6a6fc02b27776182458cf0d970bc02f76db9f6f6b6842c04f138746f`, source `9f5eb04b5be12e3e9e7fcc304bd905da1449ade9` |
 | Holochain | 0.7.0 release binaries (`hc`, `holochain`, `lair-keystore`, `kitsune2-bootstrap-srv`) |
 
 All pins are machine-readable in [`web/hwc/pins.json`](../../web/hwc/pins.json).

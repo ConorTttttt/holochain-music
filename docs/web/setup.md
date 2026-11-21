@@ -52,7 +52,23 @@ persistent Chromium profile. After rebuilding, press *Reload* on the extension.
 
 ## 4. Gateway (operator)
 
-Recover the accepted gateway from the Imposter archive ref and check it:
+Private grant delivery needs the **call_remote candidate** gateway (the
+accepted gateway plus `web/gateway/call-remote.patch`). Build it from source;
+the script first reproduces the accepted source exactly, then applies the
+patch and runs `cargo fmt --check`, `cargo test` and strict clippy:
+
+```bash
+git clone https://github.com/Holo-Host/h2hc-linker.git h2hc
+git -C "$IMPOSTER" fetch origin "$(jq -r .gateway.recipe_commit web/hwc/pins.json)"
+bash web/gateway/build-candidate.sh h2hc "$IMPOSTER" gateway-candidate
+(cd gateway-candidate && sha256sum -c SHA256SUMS)
+```
+
+The binary is not reproducible bit-for-bit across machines (embedded cargo
+paths); record the SHA-256 and `build-provenance.txt` of the build you deploy.
+
+Without private grants (browse/verify only), the accepted gateway still works;
+recover it from the Imposter archive ref and check it:
 
 ```bash
 git -C "$IMPOSTER" fetch --depth=1 origin refs/heads/archive/browser-alpha-gateway-14428255589 && git -C "$IMPOSTER" show FETCH_HEAD:h2hc-linker-linux-x86_64.gz | gunzip > h2hc-linker && sha256sum h2hc-linker
@@ -66,8 +82,13 @@ the native participants, behind TLS. Admit a listener after they share the
 agent key shown in **Identity & network**:
 
 ```bash
-curl -fsS -X POST "$GATEWAY/admin/agents" -H "Authorization: Bearer $(cat "$SECRET_FILE")" -H 'content-type: application/json' -d '{"agent_pubkey":"uhCAk…","capabilities":["dht_read","dht_write","k2"]}'
+curl -fsS -X POST "$GATEWAY/admin/agents" -H "Authorization: Bearer $(cat "$SECRET_FILE")" -H 'content-type: application/json' -d '{"agent_pubkey":"uhCAk…","capabilities":["dht_read","dht_write","k2","call_remote_send","call_remote_receive"]}'
 ```
+
+`call_remote_send` lets the listener send access requests (signed by its own
+agent only); `call_remote_receive` lets artists' grants reach it. Omit both to
+admit a browse-only listener; the accepted gateway rejects these capability
+names, so use plain `["dht_read","dht_write","k2"]` with it.
 
 Revoke with `-X DELETE` and `{"agent_pubkey": …}`. Keep the admin route on
 loopback; the Imposter operator runbook (`docs/installed-hwc-browser-alpha.md`
