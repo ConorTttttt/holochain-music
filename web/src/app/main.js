@@ -241,7 +241,8 @@ async function doRequest(t, kind, access) {
       'Awaiting the artist’s decision. The artist decides in their own Holochain Music app; use Check for grants to see whether access has arrived.');
   } else if (r.outcome === RequestOutcome.TRANSPORT_UNSUPPORTED) {
     next = status('unsupported', '', el('strong', { text: 'Requests cannot be sent from this browser conductor. ' }),
-      'Holochain Music delivers requests privately with an authenticated Holochain remote call, which this browser conductor does not support. Nothing was sent.');
+      'Holochain Music delivers requests privately with an authenticated Holochain remote call, which this browser conductor does not support. Nothing was sent.',
+      el('span', { class: 'muted detail', text: ` (${String(r.error).slice(0, 200)})` }));
   } else if (r.outcome === RequestOutcome.UNREACHABLE) {
     next = status('unavailable', 'bad', el('strong', { text: 'Access unavailable right now. ' }),
       'The artist’s Holochain node could not be reached, so nothing was delivered. Nothing has been approved or declined; try again later.');

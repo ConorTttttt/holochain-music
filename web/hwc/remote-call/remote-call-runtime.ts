@@ -58,26 +58,36 @@ const hex = (b: Uint8Array) => Array.from(b, x => x.toString(16).padStart(2, '0'
 const bytes = (v: unknown): Uint8Array | null =>
   v instanceof Uint8Array ? v : Array.isArray(v) && v.every(x => Number.isInteger(x)) ? new Uint8Array(v) : null;
 
+/*
+ * Native serde (holochain_integrity_types 0.7 capability/grant.rs):
+ *   CapAccess        #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+ *     {type:"unrestricted"} | {type:"transferable", value:{secret}} | {type:"assigned", value:{secret, assignees}}
+ *   GrantedFunctions same tagging: {type:"all"} | {type:"listed", value:[[zome, fn], ...]}
+ * Exactly these shapes are accepted (vectors: cap_grants in zome-call-vectors.json).
+ */
 function normalizeAccess(a: any): CapAccess | null {
-  if (a === 'Unrestricted' || (a && typeof a === 'object' && 'Unrestricted' in a)) return 'Unrestricted';
-  if (a?.Transferable) {
-    const secret = bytes(a.Transferable.secret);
-    return secret ? { Transferable: { secret } } : null;
+  if (!a || typeof a !== 'object' || typeof a.type !== 'string') return null;
+  if (a.type === 'unrestricted' && !('value' in a)) return 'Unrestricted';
+  if (a.type === 'transferable') {
+    const secret = bytes(a.value?.secret);
+    return secret?.length === 64 ? { Transferable: { secret } } : null;
   }
-  if (a?.Assigned) {
-    const secret = bytes(a.Assigned.secret);
-    const assignees = Array.isArray(a.Assigned.assignees) ? a.Assigned.assignees.map(bytes) : null;
-    return secret && assignees && assignees.every(Boolean) ? { Assigned: { secret, assignees } } : null;
+  if (a.type === 'assigned') {
+    const secret = bytes(a.value?.secret);
+    const assignees = Array.isArray(a.value?.assignees) ? a.value.assignees.map(bytes) : null;
+    return secret?.length === 64 && assignees && assignees.every((x: Uint8Array | null) => x?.length === 39)
+      ? { Assigned: { secret, assignees } } : null;
   }
   return null;
 }
 
 function normalizeFunctions(f: any): GrantedFunctions | null {
-  if (f === 'All' || (f && typeof f === 'object' && 'All' in f)) return 'All';
-  if (f?.Listed && Array.isArray(f.Listed)) {
-    const listed = f.Listed.filter((p: unknown) => Array.isArray(p) && p.length === 2
+  if (!f || typeof f !== 'object' || typeof f.type !== 'string') return null;
+  if (f.type === 'all' && !('value' in f)) return 'All';
+  if (f.type === 'listed' && Array.isArray(f.value)) {
+    const listed = f.value.filter((p: unknown) => Array.isArray(p) && p.length === 2
       && typeof p[0] === 'string' && typeof p[1] === 'string');
-    return listed.length === f.Listed.length ? { Listed: listed } : null;
+    return listed.length === f.value.length ? { Listed: listed } : null;
   }
   return null;
 }
@@ -87,14 +97,16 @@ function normalizeFunctions(f: any): GrantedFunctions | null {
  * whose action was neither deleted nor updated. Anything unparseable is
  * ignored (fails closed).
  */
-export function liveCapGrants(storage: GrantStorage, dnaHash: Uint8Array, agent: Uint8Array): ZomeCallCapGrant[] {
+export type LiveCapGrant = ZomeCallCapGrant & { /** native-serialised value, for call_info() */ raw: unknown };
+
+export function liveCapGrants(storage: GrantStorage, dnaHash: Uint8Array, agent: Uint8Array): LiveCapGrant[] {
   const actions = storage.queryActions(dnaHash, agent) || [];
   const dead = new Set<string>();
   for (const a of actions) {
     if (a?.actionType === 'Delete' && a.deletesActionHash) dead.add(hex(bytes(a.deletesActionHash)!));
     if (a?.actionType === 'Update' && a.originalActionHash) dead.add(hex(bytes(a.originalActionHash)!));
   }
-  const grants: ZomeCallCapGrant[] = [];
+  const grants: LiveCapGrant[] = [];
   for (const a of actions) {
     if ((a?.actionType !== 'Create' && a?.actionType !== 'Update') || a.entryType !== 'CapGrant') continue;
     if (dead.has(hex(bytes(a.actionHash)!))) continue;
@@ -104,7 +116,7 @@ export function liveCapGrants(storage: GrantStorage, dnaHash: Uint8Array, agent:
     try { raw = decode(entry.entryContent); } catch { continue; }
     const access = normalizeAccess(raw?.access);
     const functions = normalizeFunctions(raw?.functions);
-    if (access && functions && typeof raw?.tag === 'string') grants.push({ tag: raw.tag, access, functions });
+    if (access && functions && typeof raw?.tag === 'string') grants.push({ tag: raw.tag, access, functions, raw });
   }
   return grants;
 }
@@ -219,3 +231,14 @@ export interface CallRemoteTransport {
 export function hasCallRemoteTransport(n: unknown): n is CallRemoteTransport {
   return typeof (n as CallRemoteTransport)?.callRemoteSync === 'function';
 }
+
+/*
+ * The call_remote transport is registered separately from the DHT
+ * NetworkService: that service is wrapped by record verification, which
+ * deliberately exposes only verified DHT members. A call_remote reply is the
+ * recipient's ZomeCallResponse, not DHT data (see docs/web/security.md for its
+ * trust classification).
+ */
+let transport: CallRemoteTransport | null = null;
+export function setCallRemoteTransport(t: CallRemoteTransport | null): void { transport = t; }
+export function getCallRemoteTransport(): CallRemoteTransport | null { return transport; }

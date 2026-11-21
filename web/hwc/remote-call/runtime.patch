@@ -122,17 +122,16 @@ index bdf09a2..7607d45 100644
     * Whether this context is running inside the DNA's `init` callback.
     *
 diff --git a/packages/core/src/ribosome/host-fn/call.ts b/packages/core/src/ribosome/host-fn/call.ts
-index 568e905..a040eec 100644
+index 568e905..4c20492 100644
 --- a/packages/core/src/ribosome/host-fn/call.ts
 +++ b/packages/core/src/ribosome/host-fn/call.ts
-@@ -21,6 +21,60 @@ import { extractPtrAndLen } from "../runtime";
+@@ -21,6 +21,59 @@ import { extractPtrAndLen } from "../runtime";
  import { getHostFunctionRegistry } from "./index";
  import { toUint8Array } from "../../utils/bytes";
  import type { CallContext } from "../call-context";
-+import { getNetworkService } from "../../network";
 +import { getLairClient } from "../../signing";
 +import {
-+  signOutgoingCall, hasCallRemoteTransport, decodeZomeCallResponse,
++  signOutgoingCall, getCallRemoteTransport, decodeZomeCallResponse,
 +  type ZomeCallResponseValue,
 +} from "../../remote-call/remote-call-runtime";
 +
@@ -163,8 +162,8 @@ index 568e905..a040eec 100644
 +  const rawPayload = field(callObj, 'payload');
 +  const payload = rawPayload instanceof Uint8Array ? rawPayload
 +    : Array.isArray(rawPayload) ? new Uint8Array(rawPayload) : new Uint8Array([0xc0]);
-+  const network = getNetworkService();
-+  if (!hasCallRemoteTransport(network)) {
++  const network = getCallRemoteTransport();
++  if (!network) {
 +    return { NetworkError: 'call_remote transport unavailable' };
 +  }
 +  const [dnaHash, agent] = callContext.cellId;
@@ -186,7 +185,7 @@ index 568e905..a040eec 100644
  
  /**
   * Cross-zome call host function.
-@@ -59,6 +113,11 @@ export const call: HostFunctionImpl = (context, inputPtr, inputLen) => {
+@@ -59,6 +112,11 @@ export const call: HostFunctionImpl = (context, inputPtr, inputLen) => {
      throw new Error(`[HostFn:call] Missing target (keys=${keys})`);
    }
  
@@ -215,7 +214,7 @@ index c4b6c39..1938980 100644
    const callInfoData: CallInfo = {
      provenance: callContext.provenance as AgentPubKey,
 diff --git a/packages/core/src/ribosome/index.ts b/packages/core/src/ribosome/index.ts
-index 456184f..d26576c 100644
+index 456184f..7b1209a 100644
 --- a/packages/core/src/ribosome/index.ts
 +++ b/packages/core/src/ribosome/index.ts
 @@ -43,6 +43,18 @@ import {
@@ -292,7 +291,7 @@ index 456184f..d26576c 100644
      };
    } catch (error) {
      // Rollback transaction on any error - discard all chain updates
-@@ -654,3 +675,67 @@ export type {
+@@ -654,3 +675,68 @@ export type {
  export type { HostFunctionContext, HostFunctionImpl } from "./host-fn/base";
  export { getHostFunctionRegistry } from "./host-fn";
  export { RibosomeError, RibosomeErrorType } from "./error";
@@ -348,7 +347,8 @@ index 456184f..d26576c 100644
 +  };
 +  authorizedRemoteRequests.set(request, {
 +    provenance: params.provenance,
-+    grant: grant ? { RemoteAgent: grant } : { ChainAuthor: agentPubKey },
++    // call_info().cap_grant: CapGrant::RemoteAgent(ZomeCallCapGrant) in native serde form.
++    grant: grant ? { RemoteAgent: (grant as { raw?: unknown }).raw ?? grant } : { ChainAuthor: agentPubKey },
 +  });
 +  try {
 +    const result = await callZome(request);
@@ -473,7 +473,7 @@ index 1f96ffc..adb4da5 100644
    // bearer, verifiedRemoteCaller or nativeValidated flag is accepted here.
    // Background rechecks the browser-supplied sender metadata.
 diff --git a/packages/extension/src/offscreen/ribosome-worker.ts b/packages/extension/src/offscreen/ribosome-worker.ts
-index 14920a5..fb7886c 100644
+index 14920a5..725d650 100644
 --- a/packages/extension/src/offscreen/ribosome-worker.ts
 +++ b/packages/extension/src/offscreen/ribosome-worker.ts
 @@ -73,7 +73,9 @@ if (typeof document === 'undefined') {
@@ -482,7 +482,7 @@ index 14920a5..fb7886c 100644
  import { createLogger } from '../lib/logger';
 -import { callZome, type ZomeCallRequest } from '@hwc/core/ribosome';
 +import { callZome, callZomeRemote, type ZomeCallRequest } from '@hwc/core/ribosome';
-+import { witnessWith } from '@hwc/core/remote-call/remote-call-runtime';
++import { witnessWith, setCallRemoteTransport } from '@hwc/core/remote-call/remote-call-runtime';
 +import type { WitnessResult } from '@hwc/core/remote-call/remote-call-auth';
  import { encode, decode } from '@msgpack/msgpack';
  import { SCHEMA_SQL } from '@hwc/core/storage/sqlite-schema';
@@ -623,7 +623,15 @@ index 14920a5..fb7886c 100644
  self.onmessage = async (event: MessageEvent) => {
    const { id, type, payload } = event.data;
  
-@@ -1699,6 +1807,15 @@ self.onmessage = async (event: MessageEvent) => {
+@@ -1641,6 +1749,7 @@ self.onmessage = async (event: MessageEvent) => {
+         setStorageProvider(storage);
+         // Every record/link/details response from the gateway is verified before use.
+         setNetworkService(withRecordVerification(networkService));
++        setCallRemoteTransport(networkService);
+ 
+         // Set Lair client for signing
+         setLairClient(proxyLairClient);
+@@ -1699,6 +1808,15 @@ self.onmessage = async (event: MessageEvent) => {
          break;
        }
  

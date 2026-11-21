@@ -71,7 +71,9 @@ class FakeStorage implements GrantStorage, NonceWitnessStorage {
   }
 }
 
-const inboxGrant = { tag: 'inbox', access: 'Unrestricted', functions: { Listed: [['music_storage', 'receive_access_request'], ['music_storage', 'receive_grant']] } };
+// Native serde shape of Music's init() grant (adjacently tagged, see cap_grants vectors).
+const inboxGrant = { tag: 'inbox', access: { type: 'unrestricted' }, functions: { type: 'listed', value: [['music_storage', 'receive_access_request'], ['music_storage', 'receive_grant']] } };
+const transferable = (secret: Uint8Array) => ({ tag: 't', access: { type: 'transferable', value: { secret } }, functions: { type: 'all' } });
 
 describe('outgoing call_remote signing (CallTarget::NetworkAgent)', () => {
   it('produces the native bytes and signature for the same params', () => {
@@ -121,15 +123,37 @@ describe('ZomeCallResponse encoding equals holochain_serialized_bytes', () => {
 describe('live capability grants from the source chain', () => {
   it('ignores deleted, updated and malformed grants', () => {
     const s = new FakeStorage(new Table());
-    const deleted = s.addGrant(1, { tag: 'a', access: 'Unrestricted', functions: 'All' });
+    const deleted = s.addGrant(1, { tag: 'a', access: { type: 'unrestricted' }, functions: { type: 'all' } });
     s.actions.push({ actionType: 'Delete', deletesActionHash: deleted });
-    const updated = s.addGrant(2, { tag: 'b', access: 'Unrestricted', functions: 'All' });
-    s.addGrant(3, { tag: 'b2', access: { Transferable: { secret: new Uint8Array(64).fill(1) } }, functions: 'All' }, 'Update');
+    const updated = s.addGrant(2, { tag: 'b', access: { type: 'unrestricted' }, functions: { type: 'all' } });
+    s.addGrant(3, { ...transferable(new Uint8Array(64).fill(1)), tag: 'b2' }, 'Update');
     s.actions.push({ actionType: 'Update', originalActionHash: updated, entryType: 'CapGrant', actionHash: new Uint8Array(39).fill(9), entryHash: new Uint8Array(39).fill(200) });
-    s.addGrant(4, { tag: 'bad', access: { Weird: 1 }, functions: 'All' });
+    s.addGrant(4, { tag: 'bad', access: { Weird: 1 }, functions: { type: 'all' } });
+    s.addGrant(6, { tag: 'legacy-shape', access: 'Unrestricted', functions: 'All' });
     s.addGrant(5, inboxGrant);
     const tags = liveCapGrants(s, new Uint8Array(39), new Uint8Array(39)).map(g => g.tag).sort();
     expect(tags).toEqual(['b2', 'inbox']);
+  });
+});
+
+describe('native CapGrant entries (holochain_integrity_types 0.7 serde)', () => {
+  it('reads every native grant shape exactly', () => {
+    const s = new FakeStorage(new Table());
+    V.cap_grants.forEach((g: any, i: number) => {
+      const actionHash = new Uint8Array(39).fill(i + 1);
+      const entryHash = new Uint8Array(39).fill(50 + i);
+      s.entries.set(toHex(entryHash), hex(g.entry_content));
+      s.actions.push({ actionType: 'Create', entryType: 'CapGrant', actionHash, entryHash });
+    });
+    const grants = liveCapGrants(s, new Uint8Array(39), new Uint8Array(39));
+    expect(grants.map(g => g.tag)).toEqual(['inbox', 't', 'a']);
+    expect(grants[0].access).toBe('Unrestricted');
+    expect(grants[0].functions).toEqual({ Listed: [['music_storage', 'receive_grant']] });
+    expect(grants[1].functions).toBe('All');
+    expect((grants[1].access as any).Transferable.secret).toEqual(new Uint8Array(64).fill(5));
+    expect((grants[2].access as any).Assigned.assignees[0].length).toBe(39);
+    // The native value is kept for call_info().cap_grant = RemoteAgent(grant).
+    expect(toHex(new Uint8Array(encode(grants[0].raw)))).toBe(V.cap_grants[0].entry_content);
   });
 });
 
@@ -157,7 +181,7 @@ describe('incoming call_remote authorisation (native order and outcomes)', () =>
   it('replay is BadNonce(Duplicate) byte-identically, including after a restart', () => {
     const table = new Table();
     const c = V.cases[1];
-    const grant = { tag: 't', access: { Transferable: { secret: hex(c.cap_secret) } }, functions: 'All' };
+    const grant = transferable(hex(c.cap_secret));
     const s1 = new FakeStorage(table); s1.addGrant(1, grant);
     expect(authorizeIncoming(s1, cellOf(c), hex(c.bytes), hex(c.signature), NOW).execute).toBeDefined();
     expect(toHex(authorizeIncoming(s1, cellOf(c), hex(c.bytes), hex(c.signature), NOW).response!))
